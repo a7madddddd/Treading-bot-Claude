@@ -84,12 +84,16 @@ the original Floor **only when it is higher**.
   entry.
 - On activation the trailing floor = **5% below the current market price**.
 
-### Ratchet
+### Ratchet — compounded 5% steps (APPROVED)
 
-Trailing thresholds are +10%, +15%, +20%, +25%, +30%, … above the
-weighted-average entry. At each threshold the trailing floor is
-recalculated as 5% below the market price.
+Trailing thresholds are **compounded 5% increments from the previous
+trailing threshold**, not linear 5% steps from the weighted-average
+entry. See `decisions.md` D-0004.
 
+- The activation threshold is the weighted-average entry × 1.10.
+- Each next threshold = previous threshold × 1.05.
+- At each threshold the trailing floor = current market price × 0.95
+  (i.e. 5% below the price that triggered the threshold).
 - The trailing floor **can only move up**. It never moves down.
 - A temporary dip below a trailing threshold does not lower or reset it.
 - The trailing floor never overrides the original Floor downward.
@@ -102,12 +106,16 @@ recalculated as 5% below the market price.
 
 Weighted-average entry = **$100**
 
-| Price   | Threshold | Trailing floor |
-|---------|-----------|----------------|
-| $110.00 | +10%      | $104.50        |
-| $115.50 | +15%      | $109.73        |
-| $121.28 | +20%      | $115.22        |
-| $127.63 | +25%      | $121.24        |
+Compounded thresholds: 100 × 1.10 = 110.00; 110.00 × 1.05 = 115.50;
+115.50 × 1.05 = 121.275; 121.275 × 1.05 = 127.34.
+Floor at each = threshold × 0.95.
+
+| Threshold reached | Trailing floor |
+|-------------------|----------------|
+| $110.000          | $104.500       |
+| $115.500          | $109.725       |
+| $121.275          | $115.211       |
+| $127.339          | $120.972       |
 
 If price falls afterward, the floor stays at its highest calculated value.
 

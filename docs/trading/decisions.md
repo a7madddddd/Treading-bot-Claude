@@ -42,6 +42,22 @@ Each entry:
   enabled and requires explicit Controller change to this decision.
 - **Rationale:** Safety while the system is being built and evaluated.
 
+## D-0004 — Trailing-floor thresholds are compounded 5% steps
+
+- **Date:** 2026-09-13
+- **Status:** APPROVED
+- **Approved by:** Controller
+- **Context:** The source spec showed two arithmetic patterns for the
+  trailing thresholds after activation. The example numbers ($115.50,
+  $121.28, ~$115.22) match a compounded 5% ratchet, not a linear
+  +5% step off the weighted-average entry.
+- **Decision:** Trailing thresholds compound from the previous threshold:
+  activation = avg_entry × 1.10; next = previous × 1.05. The trailing
+  floor at each threshold is 5% below the market price used at that
+  threshold (i.e. threshold × 0.95 when the threshold is exactly reached).
+- **Rationale:** Matches the numerical examples in the source spec.
+- **Supersedes:** none. Clarifies D-0001.
+
 ## D-0003 — Controller approval required for entries and ladders
 
 - **Date:** 2026-09-13
