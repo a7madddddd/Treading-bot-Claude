@@ -1,635 +1,822 @@
-# D-0026 — Dynamic Universe Selection Mechanism — Analysis (PROPOSED / NOT APPROVED)
+# D-0026 — Dynamic Universe Selection Mechanism (Third Pass — Configurable Design)
 
-Analytical work for the D-0026 selection mechanism.
-**Nothing in this document is APPROVED.** Every numeric threshold and
-knob is a **PROPOSED value awaiting Controller approval**. The
-underlying D-0026 architectural principle (dynamic, symbol-agnostic
-engine; no TSLA fallback) remains as recorded in `decisions.md`.
+**Status: PROPOSED / NOT APPROVED.** This document supersedes the fixed-number
+framing of the original first-pass design (numbers like "$25M ADV$", "10 bps
+spread", "N=20" have been removed from the recommended mechanism). It
+incorporates the findings of the second-pass evidence review
+(`universe-parameter-validation.md`) and restructures the mechanism around
+**configurable parameters calibrated from historical data**, not constants
+picked by convention.
+
+The underlying D-0026 architectural principle — dynamic, symbol-agnostic
+engine; TSLA test-only; EMPTY on failure — remains APPROVED as recorded in
+`decisions.md`. This document proposes the **mechanism** inside that
+principle. Nothing here is approved. No numeric threshold is frozen.
+
+Read alongside:
+- `universe-parameter-validation.md` — the evidence trail behind the design
+  choices in this document (why spread/ATR% are load-bearing, why a single
+  weighted score was rejected, why CRASH→EMPTY was reversed, etc.)
+- `architecture/universe.md` — the engine/universe boundary contract
+- `architecture/state-management.md` — the persistence contract
 
 ---
 
-## 1. Universe source — what is initially eligible for scanning
+## 0. The question the universe must answer, every day
 
-### Recommendation
+> *"Among the currently tradable US stocks and eligible ETFs, which symbols
+> currently offer the best opportunities for the approved strategy, after
+> liquidity, execution quality, volatility, market regime, concentration, and
+> risk constraints?"*
 
-Draw the base pool from **Alpaca's tradable US-listed equities and equity
-ETFs**, then apply hard filters. Concretely:
+This is a **relative, adaptive** question — not "which symbols pass a fixed
+checklist." The mechanism below is designed so the answer changes as market
+conditions change, without any code or policy change to the strategy engine.
 
-- **Data source:** `GET /v2/assets` with `status=active` and
-  `tradable=true`. Alpaca is our execution venue, so if a symbol is not
-  tradable through Alpaca it must not enter our universe.
-- **Include:** US common stocks and equity ETFs listed on **NASDAQ,
-  NYSE, ARCA, BATS**.
-- **Exclude by category** (PROPOSED — needs Controller approval):
-  - **OTC / pink sheet** securities — thin liquidity, wide spreads,
-    fragile fills that break the ladder math.
-  - **Penny stocks** below a minimum price threshold (PROPOSED: below
-    $5).
-  - **Leveraged and inverse ETFs** (e.g. TQQQ, SQQQ, UVXY) — their
-    daily-rebalance mechanics distort what a −5% / −8% / −10% level
-    means, and the trailing-floor logic assumes conventional price
-    behavior.
-  - **Halted / delisted** — must skip on any run where broker status is
-    not `active`.
-  - **Newly IPO'd** — insufficient history to compute ATR, average
-    volume, or the eligibility filters below (PROPOSED warm-up: 30
-    calendar days since first Alpaca-tradable date).
-  - **Symbols on Alpaca's easy-to-borrow / hard-to-borrow / no-short
-    lists** are still fine for our approved long-only ladder, but
-    should be flagged in the record for the Controller.
-- **Include with care:**
-  - **Broad-market equity ETFs** (SPY, QQQ, IWM, sector SPDRs) — fine
-    mechanically, but they behave differently from single names
-    (lower vol, tighter ranges). Whether to include them or restrict
-    to individual stocks is a **Controller choice** (PROPOSED default:
-    include).
+---
 
-### Why exclude leveraged/inverse ETFs
-
-Their price decays via daily rebalancing. A −10% Floor on TQQQ during
-a choppy sideways week can trigger even when the underlying index is
-flat. The approved ladder logic (D-0001) is built assuming the fill
-reference is a meaningful anchor; on a leveraged ETF it is not.
-
-### FACT vs ASSUMPTION
-
-- **FACT:** Alpaca exposes `/v2/assets` with `tradable`, `status`,
-  `exchange`, and `easy_to_borrow` flags. This is documented API.
-- **ASSUMPTION:** the filters above capture what the Controller
-  intends. The exact minimum price / warm-up days / ETF-inclusion
-  policy are proposals.
-
-## 2. Market-day opportunity discovery — signals that actually matter
-
-The approved strategy is: buy an initial slug, ladder on drawdown,
-protective and trailing floor. It is **long-only, mean-reversion-tolerant
-on entry, trend-following on exit**. That shape tells us which signals
-are useful and which are noise.
-
-### Signals I recommend using
-
-1. **Average dollar volume (ADV$)** — 20 trading-day rolling. Below a
-   minimum, fills at 40 shares are fine but the ladder rungs can move
-   the tape on thin names. PROPOSED minimum: **$25M/day** for
-   individual stocks, **$50M/day** for ETFs.
-2. **Bid-ask spread as % of price** — quality-of-execution proxy.
-   PROPOSED cap: **10 bps (0.10%)** median over the last hour of the
-   prior session.
-3. **20-day ATR as % of price** — controls how "explosive" the symbol
-   is. Too low and no Ladder ever triggers; too high and Floor
-   triggers on ordinary noise before Ladder 2 has a chance.
-   PROPOSED band: **1.5% ≤ ATR% ≤ 6.0%**.
-4. **20-day trend proxy** — SMA(20) slope, or price vs SMA(20). We do
-   not want to enter a symbol that is in free-fall; we want a symbol
-   that is stable-to-rising so the initial buy has a reasonable expected
-   value before ladders even come into play. PROPOSED: `price ≥
-   SMA(20) × 0.98` (i.e. within 2% below SMA20 or above it).
-5. **Relative volume (RVOL)** — today's cumulative volume vs the
-   trailing 20-day average at the same time-of-day. A moderate RVOL
-   (say 1.0×–3.0×) suggests active but not manic tape.
-6. **Sector membership** — for concentration constraints, not scoring
-   directly (see §5).
-
-### Signals I recommend NOT using
-
-- **Very short-term momentum** (1-min / 5-min) — the strategy is not
-  intraday-momentum; this would over-weight names that just had a
-  spike.
-- **News-based sentiment** as a screening filter — introduces
-  unpredictable behavior, hallucination risk from LLM summaries, and
-  hard-to-backtest signals. News and Capitol Trades stay research-only
-  per D-0019 (see §6).
-- **Gap-open filters** — they overlap with what ATR% already captures
-  and add a discontinuity at the open that biases the pre-market run.
-- **Options-implied vol / IV rank** — the strategy is on the stock
-  itself; adding options data expands complexity without a clear
-  edge for the ladder.
-
-### Why this set
-
-Each signal maps to a real risk the ladder faces:
-- ADV$ → can we get filled without moving the tape?
-- Spread → will our market buy at Ladder 1/2 pay a bad price?
-- ATR% → will Floor blow through Ladder 2 before it can act?
-- Trend → is the initial entry going into a knife?
-- RVOL → is today's tape usable at all?
-
-If a signal doesn't map to a real risk, it doesn't earn its complexity.
-
-## 3. Ranking
-
-### Recommendation
-
-**Hard filters first, then a bounded composite score, then a
-sector-constrained top-N.**
-
-- **Hard filters** (a symbol either passes or does not — no partial
-  credit):
-  - Alpaca `tradable=true`, `status=active`.
-  - Exchange whitelist (§1).
-  - Not on the exclusion categories (§1).
-  - Warm-up period satisfied.
-  - Price ≥ min-price.
-  - ADV$ ≥ min-ADV$.
-  - Spread ≤ max-spread.
-  - ATR% within band.
-  - Trend condition satisfied.
-- **Composite score** (only among symbols that passed hard filters):
-  - Sub-scores in [0, 1] for each of: ADV$ (higher is better),
-    Spread (tighter is better), ATR% (mid-band is best — an inverted-U
-    around the median), Trend (positive slope preferred), RVOL
-    (moderate preferred).
-  - `score = w_liq × ADV$_sub + w_exec × Spread_sub + w_vol × ATR_sub
-    + w_trend × Trend_sub + w_rvol × RVOL_sub`.
-  - PROPOSED weights (**subject to Controller approval and later
-    backtesting**): `w_liq = 0.30`, `w_exec = 0.20`, `w_vol = 0.20`,
-    `w_trend = 0.20`, `w_rvol = 0.10`.
-- **Sector-constrained top-N**:
-  - Sort by composite score descending.
-  - Walk the list and admit symbols subject to a per-sector cap
-    (§5).
-  - Stop when we have N symbols (PROPOSED N: **20**), or the list is
-    exhausted.
-
-### Should hard filters happen before scoring?
-
-Yes. Scoring is expensive and meaningless for a symbol that fails a
-tradability or execution-quality filter. Hard filters are the
-"gatekeeper" — the whole point is that "which of the eligible symbols
-scored highest" is a very different question from "which of all
-symbols scored highest ignoring eligibility". We only care about the
-first.
-
-### Relative or absolute?
-
-**Relative to today's eligible pool.** The composite score's
-sub-scores are computed as within-pool ranks or percentiles, not
-absolute cutoffs. This makes the score self-normalizing across regimes:
-on a low-vol day, symbols with a lower absolute ATR% can still rank
-well, because they are ranked within today's pool.
-
-### How often should ranking refresh?
-
-- **Nightly / pre-open recompute** using the prior session's completed
-  bars — canonical, deterministic, reproducible.
-- **Optional midday recompute** at ~11:30 CT if desired — but the
-  Controller must approve because it introduces intraday churn.
-
-## 4. Market regime
-
-### Recommendation
-
-**The universe mechanism should be regime-aware; the strategy engine
-must not change.**
-
-The universe is the right layer for regime adaptation because:
-- Changing the strategy would touch approved policy (out of scope).
-- Changing eligibility thresholds by regime keeps risk consistent
-  across market conditions without altering how the ladder works when
-  it does fire.
-
-Proposed regime signals (**not approved**):
-- **VIX level** (via a broad-market ETF proxy if VIX-direct data is
-  not available on Alpaca IEX free tier).
-- **SPY 20-day realized vol vs its 1-year median.**
-- **SPY 5-day return** (for detecting rapid sell-offs).
-
-Proposed regime buckets:
-
-- **NORMAL:** default thresholds from §2 and §3.
-- **HIGH VOL:** widen ATR% cap slightly, tighten trend requirement
-  (require positive slope, not just `price ≥ SMA20 × 0.98`), reduce
-  N (e.g. 10 candidates instead of 20).
-- **CRASH / BROAD SELLOFF:** the universe subsystem returns
-  **EMPTY** and no new proposals are made. Existing positions remain
-  under their approved protective controls (Floor, Trailing Floor).
-  Rationale: a laddered long strategy is structurally poor in a
-  waterfall. Better to sit out than to buy the falling knife.
-- **LOW VOL:** default thresholds; no change.
-
-Regime detection thresholds are all **PROPOSED**. The Controller
-should decide which of {NORMAL, HIGH VOL, CRASH, LOW VOL} deserve
-different treatment.
-
-### Important boundary
-
-Regime awareness lives in the universe subsystem. The strategy engine
-never sees "the regime"; it sees "the current approved universe". This
-preserves the D-0026 separation.
-
-## 5. Sector / concentration
-
-### Recommendation
-
-**Apply a per-sector cap during top-N admission** (§3).
-
-- PROPOSED cap: **at most 2 symbols per GICS sector** for a top-20
-  universe. Rationale: prevents a "5 semiconductor names, all trading
-  together" concentration where one sector move dominates portfolio
-  risk.
-- Beyond raw sector, consider a **pairwise correlation guard**
-  (PROPOSED): among admitted symbols, do not admit a new symbol whose
-  60-day return correlation with any already-admitted symbol exceeds
-  0.85. This is stricter than sector alone and catches theme-driven
-  clusters (e.g. two AI names in different sectors).
-
-### Trade-offs
-
-- **Pro:** reduces the chance that a single market driver simultaneously
-  triggers Ladder 2 on multiple open trades and blows through the
-  portfolio-level dollar risk we haven't yet capped (portfolio-level
-  hard risk limits are still TBD in `risk-management.md`).
-- **Con:** removes some of the highest-ranked names when they cluster.
-  A strong day for one sector could produce 5 names that would all
-  score well, but we admit only 2. On a strict alpha view, that costs
-  expected return.
-- **Net:** for a paper-trading learning system without portfolio-level
-  hard risk limits yet, the concentration guard is the right tradeoff.
-
-## 6. Data sources
-
-### Two lanes, kept separate
-
-- **Lane A — Market data (drives eligibility, screening, ranking, and
-  D-0012 trigger evaluation):**
-  - Alpaca `/v2/assets` (universe list).
-  - Alpaca `/v2/stocks/{symbol}/bars` (historical bars for ATR, ADV$,
-    RVOL, SMA20).
-  - Alpaca `/v2/stocks/{symbol}/snapshots` or
-    `/v2/stocks/{symbol}/quotes/latest` (spread proxy).
-  - Alpaca `/v2/stocks/{symbol}/trades/latest` (D-0012 Last Trade for
-    triggers).
-- **Lane B — Research (Perplexity, Capitol Trades — per D-0019):**
-  - Independent evidence sources.
-  - Structured findings deposited into the research log.
-
-### Should research influence universe selection?
-
-**No — not automatically.** Recommended architecture:
-
-- **Candidate discovery:** driven purely by Lane A. Research does not
-  add symbols to the candidate pool.
-- **Candidate ranking:** driven purely by Lane A. Research does not
-  change the score.
-- **Post-screening context for the Controller:** yes. After Lane A
-  produces the top-N, the Controller's proposal message (Telegram)
-  MAY be enriched with a Lane B "context blurb" per symbol — recent
-  news headlines, congressional trade disclosures, Perplexity
-  summary. **This is information for the human, not a gating signal.**
-- **Final trade decision:** stays with the Controller as always
-  (D-0003).
-
-### Why
-
-The safest architecture is: research informs the human, deterministic
-quant informs the machine. This preserves D-0019 (research is
-independent evidence), D-0003 (Controller approves), and D-0026 (engine
-is symbol-agnostic and deterministic).
-
-## 7. Refresh frequency
-
-### Recommendation
-
-- **Primary refresh:** once per trading day at **07:00 America/Chicago**
-  (aligned with the existing Capitol Trades pre-market slot in D-0021).
-  Uses the prior session's fully-settled bars for deterministic
-  results.
-- **Optional midday refresh:** at 11:30 CT, using intraday data up to
-  the prior half-hour. **Not enabled by default.** The Controller
-  should decide whether the extra churn is worth it. If enabled, it
-  runs on a separate schedule slot so it never overlaps with a
-  strategy-engine tick on the same lock.
-
-### Universe change ≠ trade
-
-- If the 07:00 refresh drops symbol X and adds symbol Y:
-  - Symbol X's **existing position** (if any) is untouched. Existing
-    positions live under their approved protective controls until
-    they exit naturally.
-  - Symbol Y becomes eligible **as a candidate** on the next strategy
-    tick. The Controller still has to approve the initial entry
-    (D-0003).
-  - A **universe delta notification** at IMPORTANT level informs the
-    Controller: "added: Y, Z / removed: X, W".
-
-## 8. New symbols
-
-### Rules (PROPOSED)
-
-- **Warm-up:** symbol must have ≥ **30 calendar days** of Alpaca-
-  tradable history so ATR, ADV$, SMA20, RVOL are all computable
-  robustly. Symbols that recently IPO'd fail this filter until day 30.
-- **First universe entry:** produces a `first_seen_by_universe_at`
-  timestamp in state. The engine does **not** immediately treat the
-  symbol as an active trade — it becomes a **candidate**. Any initial
-  entry still requires Controller approval (D-0003).
-- **Stability guard:** on the same day a symbol enters the universe
-  for the first time, its **initial entry proposal is deferred by one
-  scheduler tick** (i.e. it appears in tomorrow's runs, not today's).
-  This gives the human a chance to see the new candidate in the
-  universe delta notification before the engine can propose an entry.
-- **Rejection carry-over:** if the Controller rejected an initial-entry
-  proposal on a symbol yesterday, the engine does not re-propose that
-  symbol today unless it re-enters the universe after having left
-  (i.e. a real regime change, not noise).
-
-## 9. Symbol removal
-
-### Rules
-
-| State when symbol leaves the universe | What happens |
-|---|---|
-| No position, no open proposals | Symbol simply drops out. Not tradable next tick. |
-| Open ladder proposal (PROPOSAL_PENDING for Ladder 1 or 2) | Proposal is cancelled with reason `universe_dropped`; Controller is notified IMPORTANT; the pending proposal cannot be approved after cancellation. |
-| Approved proposal not yet submitted | Do NOT auto-cancel. This is a **human-approved trade**. Engine logs a warning and notifies the Controller CRITICAL: "Symbol dropped from universe between approval and submission — approve the drop or the trade." The engine holds the submission (blocked_universe_dropped) until the Controller responds. |
-| Initial entry already open, no ladders yet | **Position is untouched.** Protective floor and (if activated) trailing floor continue to govern exit. No auto-liquidation on universe change. Controller is notified IMPORTANT. |
-| Position open with one or both ladders filled | Same — position is untouched. All approved protective exits continue. Controller is notified IMPORTANT. |
-
-### Hard rule
-
-**Removing a symbol from the universe MUST NOT close an existing
-position.** Only approved protective exits or an explicit Controller
-decision close positions. The universe layer is upstream of and
-subordinate to the execution layer's approved-exit rules.
-
-## 10. Failure safety
-
-### Behavior per failure mode
-
-| Failure | Universe subsystem response |
-|---|---|
-| `/v2/assets` unreachable | Retry with bounded backoff (bounds PROPOSED); on final failure, return **EMPTY universe**; notify CRITICAL. |
-| Bars API partial (some symbols missing bars) | Symbols with insufficient bars fail the eligibility filter individually. If ≥ 50% of the base pool has missing data (PROPOSED threshold), return EMPTY; notify CRITICAL. |
-| Ranking computation error | Log CRITICAL; return EMPTY universe; do not attempt to substitute a previous day's universe (staleness > 1 session is not safe). |
-| Zero candidates after filters | Return EMPTY universe; notify IMPORTANT (there was no error — the market simply has no eligible names today under current thresholds). |
-| Stale market data (last bar > **15 minutes** old during session, PROPOSED) | Refuse the run; log CRITICAL; return EMPTY; try again at next slot. |
-| Alpaca down at strategy-tick time | Strategy engine handles this per `execution.md §6` — this is orthogonal to universe. |
-| Perplexity down | Universe subsystem does not care (Lane A only). Research notification may be missing on that day's proposals; log IMPORTANT. |
-| Capitol Trades scraper broken | Same as Perplexity failure — universe untouched. |
-
-### Cardinal rule
-
-**Empty ≠ fall back to TSLA. Empty ≠ invent symbols. Empty ≠ use
-yesterday's universe.**
-
-An empty universe means: the strategy engine sees no candidates today
-and MUST NOT create any initial-entry proposals. Existing positions
-continue under their approved protective controls. The next scheduled
-refresh tries again.
-
-This is the concrete implementation of D-0026's "must not trade if a
-valid universe cannot be generated" clause.
-
-## 11. Architecture
-
-### Recommended layered design
+## 1. Selection pipeline — stages and why each exists
 
 ```
-┌──────────────────────────────┐
-│  Alpaca /v2/assets           │  data lane A (deterministic)
-│  Alpaca bars + snapshots     │
-└──────────────┬───────────────┘
-               │
-               ▼
-┌──────────────────────────────┐
-│  Eligibility Filter (hard)   │  §1, §2 hard filters
-│  - tradable, active, exch    │
-│  - warm-up, min price        │
-│  - ADV$, spread, ATR%, trend │
-└──────────────┬───────────────┘
-               │
-               ▼
-┌──────────────────────────────┐
-│  Opportunity Scanner + Scorer│  §2, §3
-│  - per-symbol sub-scores     │
-│  - composite score           │
-└──────────────┬───────────────┘
-               │
-               ▼
-┌──────────────────────────────┐
-│  Regime + Concentration      │  §4, §5
-│  - regime bucket             │
-│  - sector cap                │
-│  - correlation guard         │
-│  - top-N admission           │
-└──────────────┬───────────────┘
-               │
-               ▼
-┌──────────────────────────────┐
-│  Approved Universe Store     │  SQLite (D-0024)
-│  - dated snapshots           │
-│  - delta from previous       │
-└──────────────┬───────────────┘
-               │
-               ▼
-┌──────────────────────────────┐
-│  Strategy Engine             │  D-0001..D-0011
-│  (symbol-agnostic)           │  reads current universe as input
-│  - triggers                  │
-│  - state machine per level   │
-│  - proposals                 │
-└──────────────┬───────────────┘
-               │
-               ▼
-┌──────────────────────────────┐
-│  Telegram Approval (D-0025)  │
-│  + Post-screening research   │  Perplexity / Capitol Trades
-│  (Lane B, context blurb only)│  (advisory, non-gating)
-└──────────────┬───────────────┘
-               │  Controller approves
-               ▼
-┌──────────────────────────────┐
-│  Execution Engine (paper)    │
-│  D-0007 re-check on submit   │
-└──────────────────────────────┘
+A. Tradability / structural eligibility
+        ↓
+B. Data quality
+        ↓
+C. Execution-quality constraints
+        ↓
+D. Strategy-mechanics compatibility
+        ↓
+E. Market-regime adaptation
+        ↓
+F. Opportunity ranking
+        ↓
+G. Sector / concentration / correlation constraints
+        ↓
+H. Top-N selection
+        ↓
+I. Persist dated universe snapshot
+        ↓
+   ApprovedUniverseSnapshot  →  Strategy Engine (symbol-agnostic)
 ```
 
-### What each layer must NOT do
+### A. Tradability / structural eligibility
 
-- **Eligibility filter** must not score; only accept/reject.
-- **Scanner + scorer** must not admit symbols that failed hard filters.
-- **Regime + concentration** must not modify per-symbol scores; it
-  only decides admission.
-- **Universe store** must not trigger orders on its own.
-- **Strategy engine** must not query for new symbols outside the
-  approved universe.
-- **Research** must not modify the universe.
-- **Execution** must not consult the universe at submit time — it
-  consults state, approval, D-0007 re-check, and the active floor.
+**What it does:** removes symbols the system cannot or should not trade at
+all, independent of any market condition — Alpaca `tradable=true` /
+`status=active`, exchange whitelist, category exclusions (OTC, leveraged/
+inverse ETFs, halted).
 
-## 12. Configuration
+**Why it exists first:** these are binary, non-market-dependent facts. A
+symbol that isn't tradable through our own broker, or that is structurally
+incompatible with fixed-percentage ladder math (leveraged/inverse ETFs — see
+`universe-parameter-validation.md` Task 6), should never reach any later,
+more expensive stage. This is the cheapest possible filter and should run
+first for that reason alone, independent of anything data-quality or
+market-condition related.
 
-### Should be configurable (env or config table via the repository)
+**Configurable or fixed:** the *category* exclusions (OTC, leveraged/inverse,
+halted) are structural findings, not calibratable numbers — they don't
+belong in the parameter catalog in §3. The exchange whitelist is
+configuration but essentially static (doesn't need market-data calibration).
 
-- `min_price` (PROPOSED: $5)
-- `min_dollar_volume_stocks` (PROPOSED: $25M/day)
-- `min_dollar_volume_etfs` (PROPOSED: $50M/day)
-- `max_spread_bps` (PROPOSED: 10)
-- `atr_pct_min` (PROPOSED: 1.5%)
-- `atr_pct_max` (PROPOSED: 6.0%)
-- `warmup_days` (PROPOSED: 30)
-- `candidate_count_N` (PROPOSED: 20)
-- `sector_cap` (PROPOSED: 2 per GICS sector)
-- `correlation_max` (PROPOSED: 0.85)
-- `regime_buckets` and their per-bucket overrides
-- `refresh_schedule` (primary 07:00 CT; optional midday 11:30 CT)
-- Ranker weights (`w_liq`, `w_exec`, `w_vol`, `w_trend`, `w_rvol`)
+### B. Data quality
 
-### Should be hardcoded or captured in code review
+**What it does:** removes symbols where the required inputs for later stages
+are missing, stale, or unreliable — insufficient bar history (warm-up),
+missing spread/quote data, stale timestamps.
 
-- Exchange whitelist (NASDAQ, NYSE, ARCA, BATS).
-- Exclusion of OTC / pink sheet / leveraged / inverse ETFs.
-- Fail-safe rule: empty universe on any hard-fail path.
-- No TSLA fallback (D-0026 §5).
-- Cardinal rule: universe change never triggers an order.
+**Why it exists second:** every stage after this one performs numeric
+computation (ATR, ADV$, spread, trend, regime fit). Running those
+computations on bad data produces silently wrong eligibility decisions, which
+is worse than an explicit exclusion. This stage exists to make "I don't have
+good enough data on this symbol" an explicit, auditable outcome rather than
+an implicit source of noisy scores.
 
-## 13. Testing
+**Configurable or fixed:** warm-up period (minimum days of history) and
+staleness threshold are genuine calibratable parameters — see §3.
 
-Extends `verification-plan.md` with a new section devoted to the
-universe subsystem:
+### C. Execution-quality constraints
 
-- **Historical replay.** For each of the last N approved trading days,
-  produce the universe using data as of that morning's 07:00 CT
-  snapshot. Verify determinism: two runs of the same date produce the
-  same universe.
-- **Ranking stability.** For two consecutive days on a quiet market,
-  the universe overlap should be high (e.g. ≥ 60%). If it churns
-  wildly, the ranker weights are too sensitive.
-- **Empty-universe test.** Force all sources to return errors;
-  confirm the subsystem returns EMPTY, the strategy engine creates no
-  proposals, and existing simulated positions are untouched.
-- **API failure tests.** `/v2/assets` 500, timeout, malformed body,
-  cut connection; confirm the retry-then-EMPTY path.
-- **Stale-data test.** Feed bars whose last timestamp is > 15 min old;
-  confirm refusal.
-- **New symbol test.** Introduce a symbol whose first Alpaca-tradable
-  date is 20 days ago; confirm rejected by warm-up. At 31 days,
-  confirm accepted and produces `first_seen_by_universe_at`.
-- **Removed symbol test.** Symbol leaves the universe on day D+1;
-  simulated open position on that symbol is preserved and reports
-  correct protective exits; open proposal is cancelled per §9;
-  approved-but-not-submitted proposal is held per §9.
-- **Regime test.** Feed high-vol day parameters; confirm regime bucket
-  detected and thresholds adjusted; feed crash-day parameters; confirm
-  EMPTY.
-- **Restart/recovery.** Universe snapshot written to SQLite at 07:00;
-  kill and restart the process before the 08:30 strategy tick;
-  confirm strategy loads the same snapshot.
-- **DST test.** Spring-forward and fall-back dates verify the 07:00 CT
-  refresh actually fires at 07:00 CT under both CST and CDT.
-- **Sector-cap test.** Feed a synthetic day where the top 5 scores are
-  all semiconductors; confirm the sector cap admits at most 2 and
-  fills the rest from other sectors.
+**What it does:** filters on spread and liquidity **relative to our own
+order size**, not generic institutional screening convention.
 
-## 14. Recommendation — what I would choose
+**Why it exists here, as a hard filter, not a score input:** per
+`universe-parameter-validation.md` Task 1 and Task 5, spread quality is
+**load-bearing** — a bad fill directly corrupts `original_initial_entry_fill_price`,
+which is frozen for the life of the trade (D-0001, D-0009) and never
+recalculated. A symbol with unacceptable execution quality should never
+reach ranking; averaging a bad spread into a composite score (as the
+first-pass design did) lets a symbol "buy its way past" a real risk with a
+good score elsewhere. This must be a hard gate.
 
-### The mechanism
+**Configurable or fixed:** liquidity floor and spread cap are the two
+parameters most in need of calibration against our own actual order size
+(10/10/20 shares) rather than generic convention — see §3.
 
-1. **07:00 CT once-per-day refresh.** Deterministic, uses complete
-   prior-session bars, aligned with the approved pre-market slot.
-2. **Hard filters first.** Alpaca tradability, exchange whitelist,
-   exclusion categories, warm-up, min price, ADV$, spread, ATR%,
-   trend.
-3. **Composite score** over five sub-scores (ADV$, spread, ATR%,
-   trend, RVOL), self-normalized within today's pool.
-4. **Regime awareness in the universe layer only.** NORMAL / LOW VOL /
-   HIGH VOL / CRASH buckets adjust thresholds. CRASH returns EMPTY.
-5. **Sector cap and pairwise-correlation guard** during top-N
-   admission.
-6. **Top-N** (PROPOSED N = 20) written as a dated snapshot to SQLite.
-7. **Strategy engine reads the current snapshot as input.** No
-   TSLA anywhere.
-8. **Research (Perplexity + Capitol Trades) is post-screening
-   context**, delivered to the Controller with proposal messages.
-   Not a gating signal, not a universe input.
-9. **Fail-safe:** any failure → EMPTY universe. Empty means no new
-   proposals; existing positions continue under approved protective
-   controls.
-10. **New / removed symbols** handled per §8 and §9. Removal never
-    closes an open position; approval-in-flight is held for Controller
-    review; pending proposals are cancelled with notification.
+### D. Strategy-mechanics compatibility
 
-### Why this and not something else
+**What it does:** filters on volatility (ATR%) calibrated specifically to the
+approved Ladder/Floor spacing (0%, −5%, −8%, −10%), and — as a soft signal
+only, not a hard gate per the second-pass reversal — trend context.
 
-- **Aligned with the approved strategy shape.** The signals map to
-  concrete ladder risks, not generic "what's hot today" heuristics.
-- **Symbol-agnostic engine preserved.** The engine's inputs are
-  `current_universe` and per-symbol market data. It has zero symbol
-  logic.
-- **No invented policy shortcuts.** Every threshold is a proposal.
-- **Deterministic and testable.** Same data → same universe.
-- **Regime-aware without touching approved strategy.** Regime
-  adaptation is a knob on the universe filter, not on the ladder math.
-- **Research stays honest.** Perplexity and Capitol Trades remain
-  research per D-0019; they do not gain quiet influence over trades.
-- **Fail-safe by construction.** The "cardinal rule" is a single
-  short branch: on any hard-fail path, return EMPTY.
+**Why it exists here, separately from execution quality:** this is the
+*other* load-bearing, strategy-derived filter (per Task 1/Task 5): too little
+volatility and Ladder 1 essentially never fires (wasted candidate slot); too
+much volatility relative to the 2-point Ladder2-to-Floor gap and a single bad
+session can blow through the whole ladder without giving the Controller a
+real chance to review each step (see `universe-parameter-validation.md`
+§Task 2.4 for the geometric reasoning). This is kept as its own stage,
+distinct from execution quality, because the two answer different questions
+("can we get a good fill" vs. "does this symbol's volatility fit our fixed
+percentage spacing") and calibrating them together would obscure which one
+is driving an exclusion.
 
-### What I am not recommending
+**Configurable or fixed:** ATR% band (lower and upper) is the parameter most
+directly derivable from strategy geometry, and therefore the best candidate
+for a **formula-based** (not constant) threshold — see §3 and §5.
 
-- Auto-execution based on Capitol Trades signals — violates D-0003 and
-  D-0019.
-- Perplexity as a candidate generator — introduces LLM hallucination
-  risk into deterministic policy.
-- Scanning "all US equities every hour" — burns broker rate limits
-  and does not produce better trades than a curated top-N.
-- A single monolithic ranker without hard filters — makes scoring
-  effectively a soft filter, which is harder to reason about.
+### E. Market-regime adaptation
 
-## 15. Relationship with the approved strategy
+**What it does:** classifies today's broad-market condition (e.g. via a
+volatility/drawdown proxy on a broad index) and adjusts the **thresholds**
+used by stages C and D — not the strategy, not stage D's underlying logic,
+just the numeric inputs.
 
-Unchanged.
+**Why it exists as a distinct stage, after D and before F:** per
+`universe-parameter-validation.md` Task 4, the earlier "CRASH → EMPTY" idea
+is **rejected** — a laddered strategy often has its best entries during
+broad drawdowns, existing positions are already protected by Floor/Trailing
+regardless of regime, and Controller approval already gates every new entry.
+The correct response to a high-volatility or selloff regime is to
+**tighten** execution/volatility thresholds (since spreads widen and
+single-session moves get larger in stress, which is exactly what stages C
+and D are already measuring) — not to zero the candidate list. Placing this
+as an explicit stage, rather than folding it into C/D's constants, makes the
+adaptation auditable: "today's thresholds were regime-adjusted because
+regime=HIGH_VOL" is a loggable, explainable fact.
 
-- Universe subsystem answers: *which symbols are worth evaluating today?*
-- Strategy engine answers: *given this symbol and its current market
-  state, does the approved ladder logic want to enter, add, or exit?*
-- Controller answers: *approve or reject this specific proposed trade.*
-- Execution engine answers: *can this approved order safely be submitted
-  under the D-0007 re-check and the active protective floor?*
+**Configurable or fixed:** regime classification thresholds and the
+per-regime adjustment magnitudes are calibratable parameters — see §3.
 
-No responsibility is merged. No approved policy semantics change.
+### F. Opportunity ranking
 
-## 16. Documentation review
+**What it does:** among symbols that survived stages A–E, produces an
+ordering — NOT via a single weighted composite score (rejected in the
+second-pass analysis, Task 5), but via secondary signals (liquidity beyond
+the execution-quality floor, relative volume, trend-as-soft-signal) applied
+only to symbols that already passed the load-bearing hard gates.
 
-### Existing D-0026 documentation
+**Why it exists after the hard filters, not combined with them:** this is
+the direct implementation of the Task 5 finding — mixing load-bearing
+filters (spread, ATR% fit) into the same weighted formula as secondary
+quality signals (trend, RVOL) implies they matter equally, which the
+strategy's own mechanics don't support. Keeping ranking as a separate,
+later stage that only operates on filter-survivors avoids a name "buying
+its way" into the universe on a strong secondary score despite failing a
+load-bearing requirement.
 
-- `docs/trading/decisions.md` D-0026 — principle is APPROVED
-  (dynamic, symbol-agnostic, TSLA test-only, no fallback). Mechanism
-  is still TBD, which matches this document's status. No change
-  needed to the D-0026 decision entry.
-- `docs/architecture/universe.md` — §5-§7 already reflect the "TSLA
-  is TEST-ONLY, no fallback" rules. Mechanism section is high-level;
-  it can point to this file for the detailed proposal.
-- `docs/trading/pre-apply-checklist.md` B15 — currently says
-  "Universe subsystem design + Controller approval"; can be updated
-  to point at this analysis as the design under review.
+**Configurable or fixed:** the secondary-score composition (which signals,
+what relative emphasis) is a calibratable parameter set — see §3.
 
-### Recommended follow-up updates (only after Controller review, not now)
+### G. Sector / concentration / correlation constraints
 
-- If Controller approves this design in whole or with modifications:
-  supersede D-0026 with a new decision (or a follow-up D-XXXX) that
-  records the approved mechanism, including which PROPOSED thresholds
-  became APPROVED and which changed.
-- Extend `state-management.md` with the universe snapshot table
-  contract (columns: `snapshot_id`, `snapshot_at`, `symbol`, `rank`,
-  `score`, `first_seen_by_universe_at`, `sector`, `notes`).
-- Add a corresponding section to `verification-plan.md` for the
-  universe tests in §13 above.
+**What it does:** applies diversification rules during admission — a
+per-sector cap and a pairwise-correlation guard among symbols about to be
+admitted — rather than as a factor inside the ranking score (per Task 5's
+"threshold-then-diversify" recommendation).
 
-### Contradictions or stale references
+**Why it exists after ranking, not before or folded in:** diversification
+should act on the *already-ranked* candidate list ("of my best candidates,
+avoid clustering") rather than distort the ranking itself. Applying it as an
+explicit, separate admission rule keeps the reasoning auditable: a symbol
+excluded here was excluded specifically for concentration reasons, not
+because it scored poorly.
 
-- No TSLA-as-production references remain in the current docs; §5-§7
-  of `universe.md` and D-0026 in `decisions.md` are consistent with
-  this analysis.
-- One minor tightening for later: `overview.md` §5 mentions the
-  scheduler will pick up "the approved schedule"; when the universe
-  refresh joins the schedule, that section should list it explicitly
-  (07:00 CT primary, optional 11:30 CT). Not urgent.
+**Important open sequencing issue (carried from the second pass,
+unresolved):** both parameters are partial substitutes for the still-TBD
+portfolio-level hard risk limits (`risk-management.md §5`). Setting them
+independently, before those limits exist, risks solving the concentration
+problem in the wrong order. This stage's existence in the pipeline is
+recommended; its exact parameters should likely wait on the portfolio-limit
+decision — flagged again in §6/F below.
 
-## 17. Status
+**Configurable or fixed:** sector cap and correlation threshold — see §3.
 
-**PROPOSED / NOT APPROVED.** Every threshold, weight, cap, and
-schedule slot in this document is a proposal awaiting Controller
-approval. The D-0026 principle (dynamic, symbol-agnostic, TSLA
-test-only, no fallback, empty-if-broken) remains APPROVED as recorded
-in `decisions.md`.
+### H. Top-N selection
+
+**What it does:** truncates the diversification-constrained, ranked list to
+a final count.
+
+**Why it exists as its own stage:** N is not really a screening parameter —
+it's an **operational capacity constraint** tied to how many simultaneous
+candidates the Controller can meaningfully review and act on within the
+D-0007 5-minute approval window if multiple trigger simultaneously (per
+Task 2.6). Keeping it as the final, separate stage makes this distinction
+clear: N is bounded by human/operational capacity and (once they exist)
+portfolio-level risk limits, not by "how many symbols look good today."
+
+**Configurable or fixed:** N — see §3, and note it is explicitly tied to an
+operational constraint that itself needs to be measured (Controller's real
+response capacity), not just picked.
+
+### I. Persist dated universe snapshot
+
+**What it does:** writes the final admitted list, with full provenance
+(scores, which stage excluded any borderline symbol, regime classification
+used, timestamp) to the SQLite state store (D-0024), and constructs the
+`ApprovedUniverseSnapshot` object the strategy engine consumes (§4).
+
+**Why it exists as the final stage:** this is the hard boundary between
+"universe subsystem" and "strategy engine" that D-0026 requires. Everything
+before this point is the universe subsystem's internal business; everything
+after this point is what the symbol-agnostic strategy engine is allowed to
+see. Persisting a dated, immutable snapshot (rather than a live-queryable
+view) also gives us reproducibility for later backtesting/calibration (§6)
+and for post-hoc audit of "why was symbol X in today's universe."
+
+---
+
+## 2. Failure behavior (unchanged from earlier passes, restated for completeness)
+
+Any hard failure at stages A–I (data source unreachable, ranking computation
+error, insufficient data breadth, stale data beyond threshold) results in an
+**EMPTY** `ApprovedUniverseSnapshot`. Zero candidates surviving the filters
+legitimately (not an error, just no fit today) is also a valid, distinct
+EMPTY outcome — logged at a lower severity than a genuine failure.
+
+**EMPTY means:** no new initial-entry proposals today. It does NOT mean:
+fall back to TSLA, invent symbols, or reuse a stale prior snapshot as if it
+were current. Existing open positions are entirely unaffected — they
+continue under their approved protective controls (Floor, Trailing)
+regardless of universe state.
+
+---
+
+## 3. Configurable parameter catalog
+
+For every parameter: what it controls, why the strategy needs it, what
+failure/risk it prevents, what data is required to calibrate it, and its
+recommended **form** (absolute constant / percentile-relative /
+volatility-adjusted / liquidity-adjusted / regime-dependent). **No value is
+proposed as a number in this section.** Values belong to the calibration
+process in §6, not to design documents.
+
+### 3.1 Liquidity floor (execution-quality stage, C)
+
+- **Controls:** the minimum trading activity (e.g. average dollar volume)
+  required for a symbol to be considered for execution-quality evaluation.
+- **Why the strategy needs it:** our order sizes are small and fixed (10,
+  10, 20 shares); the risk isn't "can institutions trade this size," it's
+  "can 40 shares be filled without materially moving the price or paying an
+  unusual premium."
+- **Risk it prevents:** market impact on our own fills; wide effective
+  spread on thin names that only shows up intraday, not in a daily average.
+- **Calibration data needed:** historical daily volume and, ideally,
+  intraday volume profile, for a broad symbol universe, to determine at what
+  liquidity level a 10–40 share order stops being distinguishable from
+  market noise.
+- **Recommended form:** **liquidity-adjusted, relative to our own order
+  size** rather than an absolute institutional-convention number (e.g.
+  "our worst-case order value must be below X% of a recent representative
+  bar's dollar volume") — not a flat "$25M ADV$" style constant.
+
+### 3.2 Spread cap (execution-quality stage, C)
+
+- **Controls:** the maximum acceptable bid-ask spread (as % of price, or in
+  relation to the D-0007 approval band) for a symbol to pass execution-
+  quality screening.
+- **Why the strategy needs it:** spread directly degrades the fill price
+  that becomes the frozen `original_initial_entry_fill_price` — an error
+  here propagates through the entire trade's Ladder/Floor levels.
+- **Risk it prevents:** a materially mispriced initial entry that silently
+  shifts every subsequent trigger level away from what the Controller
+  believed they were approving.
+- **Calibration data needed:** historical or live quoted spread (true
+  quote data, not just a high-low proxy) across a broad symbol set, and
+  ideally its distribution around the same times of day our routine
+  actually executes (D-0021's 08:30–14:30 CT checks).
+- **Recommended form:** **percentile-relative within today's eligible pool**,
+  cross-checked against the fixed 0.5% D-0007 re-check band (the spread
+  should consume only a bounded fraction of that band) rather than a flat
+  bps constant applied uniformly across all price levels.
+
+### 3.3 ATR% band (strategy-mechanics stage, D)
+
+- **Controls:** the acceptable range of a symbol's recent volatility
+  (expressed as ATR as % of price) for the Ladder/Floor spacing to
+  function as intended.
+- **Why the strategy needs it:** too low, and Ladder 1 (−5%) essentially
+  never fires; too high relative to the 2-point Ladder2-to-Floor gap, and a
+  single session can skip past the Controller's intended step-by-step
+  review (`universe-parameter-validation.md` Task 2.4).
+- **Risk it prevents:** wasted candidate slots (never-triggering, low-ATR
+  names) and "no-warning Floor hits" (excessive-ATR names that jump straight
+  from entry to Floor).
+- **Calibration data needed:** historical daily bars, specifically to
+  measure, for a range of ATR% values, the empirical distribution of
+  outcomes (Ladder1-only / Ladder1+2 / Floor-without-Ladder2-having-had-a-
+  chance) when the frozen approved strategy logic is simulated forward.
+- **Recommended form:** **strategy-geometry-derived formula, not a
+  convention-based constant.** The upper bound in particular should be
+  expressed as a function of the Ladder2-to-Floor gap (currently 2
+  percentage points) rather than picked independently — e.g. structured as
+  "upper bound approximately K × (Floor% − Ladder2%)" for some calibratable
+  K, so that if the approved Ladder/Floor spacing ever changes (a separate,
+  Controller-gated policy decision), the volatility band updates
+  automatically rather than silently going stale. The lower bound should
+  similarly be tied to "how many sessions of typical movement are needed to
+  plausibly reach Ladder 1," not a flat percentage.
+
+### 3.4 Regime classification thresholds and per-regime adjustments (regime stage, E)
+
+- **Controls:** what counts as NORMAL / HIGH VOL / LOW VOL / SELLOFF today,
+  and how much stages C/D's thresholds tighten or loosen in each bucket.
+- **Why the strategy needs it:** execution quality and single-session
+  volatility both plausibly worsen in stress; adapting thresholds (not
+  emptying the universe) keeps the candidate quality bar consistent across
+  regimes rather than letting stress conditions silently admit worse
+  candidates under the same nominal thresholds.
+- **Risk it prevents:** admitting candidates in a high-vol regime whose
+  execution quality or volatility profile would have failed under normal
+  conditions, simply because the fixed thresholds weren't regime-aware; also
+  prevents the opposite failure mode (empty universe during legitimate
+  opportunity-rich drawdowns), corrected from the first-pass design.
+- **Calibration data needed:** a broad-market volatility/drawdown proxy
+  (e.g. realized volatility on a market index) across a multi-year period
+  covering multiple real regimes, to determine what regime-detection
+  thresholds actually separate meaningfully different execution/volatility
+  environments (rather than reacting to noise).
+- **Recommended form:** **regime-dependent**, by construction — this
+  parameter *is* the regime-adaptation mechanism. The regime-detection
+  threshold itself should likely be **percentile-relative to trailing
+  history** (e.g., "today's realized volatility is in the top decile of the
+  trailing year") rather than an absolute VIX-style level, so it remains
+  meaningful without needing to be manually re-tuned as long-run market
+  volatility drifts over multi-year horizons.
+
+### 3.5 Ranking / secondary-score composition (ranking stage, F)
+
+- **Controls:** how filter-survivors are ordered — which secondary signals
+  (liquidity beyond the floor, RVOL, trend-as-soft-signal) contribute, and
+  their relative emphasis.
+- **Why the strategy needs it:** among symbols that already meet the
+  load-bearing bars, we still need to order them if the survivor count
+  exceeds N; the ordering should favor genuinely better opportunities, not
+  arbitrary tie-breaking.
+- **Risk it prevents:** admitting a materially weaker candidate over a
+  materially stronger one when both pass the hard gates, purely due to
+  ranking order.
+- **Calibration data needed:** the same historical-bars dataset as §3.3,
+  used to test whether symbols ranked higher by a given secondary-score
+  formula actually produced better realized outcomes (using the frozen
+  strategy simulation) than symbols ranked lower, among filter-survivors.
+- **Recommended form:** **percentile-based within today's filter-survivor
+  pool** (not absolute), so the ranking is self-normalizing across days
+  with different overall market character, consistent with the second-pass
+  recommendation to avoid a single opaque weighted score and instead use
+  transparent, auditable secondary ranking among filter-survivors only.
+
+### 3.6 Sector cap (concentration stage, G)
+
+- **Controls:** the maximum number of admitted symbols from the same
+  sector/industry classification.
+- **Why the strategy needs it:** without it, a single sector-wide move
+  could simultaneously trigger Ladder 2 (or Floor) across multiple
+  concurrently-held trades, compounding correlated risk that the
+  per-trade Ladder/Floor math was never designed to account for across
+  multiple positions at once.
+- **Risk it prevents:** concentrated, correlated drawdown risk across
+  simultaneously open trades.
+- **Calibration data needed:** this parameter is **structurally entangled**
+  with the still-TBD portfolio-level hard risk limits (`risk-management.md
+  §5`) — see §6/F. Historical sector-correlation data helps validate a
+  chosen cap, but the cap's *purpose* (bounding aggregate portfolio risk)
+  can't be fully specified until the portfolio-level limits exist.
+- **Recommended form:** likely **derived from the portfolio-level risk
+  limit** once approved (e.g., expressed as a function of "max acceptable
+  simultaneous same-sector dollar exposure" divided by typical per-trade
+  sizing), rather than an independently chosen headcount.
+
+### 3.7 Correlation threshold (concentration stage, G)
+
+- **Controls:** the maximum acceptable pairwise historical return
+  correlation between an already-admitted symbol and a new candidate.
+- **Why the strategy needs it:** catches theme-driven clustering that
+  sector classification alone misses (e.g. two different-sector names that
+  move together on a common driver).
+- **Risk it prevents:** same concentration risk as §3.6, via a different
+  and complementary measurement.
+- **Calibration data needed:** historical return series for computing
+  rolling pairwise correlations, plus the same portfolio-risk-limit
+  dependency as §3.6.
+- **Recommended form:** **percentile-relative** (e.g., "reject a pairing in
+  the top decile of pairwise correlation observed across the current
+  candidate pool") rather than a fixed correlation coefficient, so the
+  threshold adapts to whatever the typical correlation structure of the
+  admitted pool looks like on a given day (which itself varies by regime —
+  correlations tend to rise in stress).
+
+### 3.8 Top-N (final selection stage, H)
+
+- **Controls:** how many symbols the strategy engine ultimately receives
+  today.
+- **Why the strategy needs it:** bounds the number of simultaneous
+  candidates against the Controller's realistic capacity to review D-0007-
+  gated proposals, and (once they exist) portfolio-level risk limits.
+- **Risk it prevents:** approval fatigue / alert overload if too many
+  triggers fire in the same scheduler tick across too many concurrently
+  eligible symbols; under-utilization of the strategy if too small.
+- **Calibration data needed:** **not primarily a market-data question** —
+  this needs operational data: how often do multiple symbols actually
+  trigger in the same hourly check, and how does the Controller's real
+  approval throughput compare to that, once the system is actually running
+  (even in a dry-run/shadow mode). Historical market-data backtesting can
+  estimate "how many candidates would plausibly trigger per day" but cannot
+  by itself answer "how many can a human safely review."
+- **Recommended form:** likely a **regime-dependent** ceiling (tighter in
+  high-vol regimes, when more symbols are likely to trigger simultaneously)
+  bounded above by an operational-capacity constant that should be set from
+  observed Controller usage, not guessed in advance.
+
+### 3.9 Warm-up period and staleness threshold (data-quality stage, B)
+
+- **Controls:** minimum history required before a newly listed/tradable
+  symbol is eligible, and how old market data can be before a refresh is
+  refused.
+- **Why the strategy needs it:** ATR/ADV$/trend/regime computations need
+  enough history to be statistically meaningful; stale data anywhere in the
+  pipeline produces silently wrong eligibility and ranking decisions.
+- **Risk it prevents:** admitting a symbol on noisy, insufficient history;
+  trading decisions built on outdated prices.
+- **Calibration data needed:** sensitivity analysis on how much history the
+  ATR/ADV$/trend calculations need before they stabilize (this is closer to
+  a statistical/engineering question than a strategy-outcome question, and
+  can likely be answered analytically rather than needing a full backtest).
+- **Recommended form:** likely closer to a **fixed engineering constant**
+  (bounded by how many bars a rolling ATR/SMA calculation needs to be
+  statistically stable) rather than something that needs strategy-outcome
+  calibration — flagged as the one parameter category in this catalog that
+  may not require the full backtest process in §6, only a simpler
+  statistical-stability check.
+
+---
+
+## 4. The `ApprovedUniverseSnapshot` contract (engine boundary)
+
+Per the Controller's explicit requirement, the strategy engine must receive
+something conceptually like:
+
+```
+ApprovedUniverseSnapshot(
+    snapshot_id,
+    snapshot_at,              # timestamp, America/Chicago
+    regime,                   # classification used for this snapshot,
+                               # informational only — engine does not
+                               # branch on it
+    symbols: [
+        {
+            symbol,
+            rank,
+            score_summary,     # for audit/notification purposes only
+            first_seen_by_universe_at,
+            sector,
+        },
+        ...
+    ],
+    is_empty: bool,
+    empty_reason: str | null,  # "no_candidates" | "data_failure" |
+                                # "computation_failure" | ...
+)
+```
+
+The strategy engine's only contract with this object:
+
+- It knows a **date-stamped list of symbols** it is allowed to evaluate for
+  new initial entries.
+- It knows nothing about **how** the list was produced — not the filters,
+  not the ranking formula, not the regime detector, not the data source.
+- If `is_empty`, it creates zero new initial-entry proposals for the cycle,
+  and logs `empty_reason` for observability — but takes no other action.
+- **This snapshot has zero authority over already-open trades.** Per D-0026
+  and the second-pass analysis (Task 8), a symbol's removal from a
+  subsequent snapshot never closes a position, never blocks a submission
+  already past Controller approval and pending only the existing D-0007
+  re-check, and never overrides any approved protective control.
+
+This is the concrete mechanism that lets the universe change daily "without
+changing the strategy engine," as requested — the engine's code has zero
+knowledge of tickers, sectors, screening logic, or regimes; it only consumes
+this typed object.
+
+---
+
+## 5. Dynamic vs. fixed — summary table
+
+| Parameter | Recommended form | Why not a flat constant |
+|---|---|---|
+| Liquidity floor | Liquidity-adjusted to our own order size | Generic institutional thresholds ($25M+) assume position sizes we don't use (Task 2.2 finding) |
+| Spread cap | Percentile-relative + cross-checked vs. D-0007 band | Flat bps caps ignore price-level effects and the actual approval-tolerance interaction |
+| ATR% band | Formula derived from Ladder2-to-Floor gap | The correct band is a function of *our own* ladder spacing, not a generic volatility convention |
+| Regime thresholds | Percentile-relative to trailing history | An absolute vol level drifts out of relevance as long-run market volatility shifts over years |
+| Ranking / secondary score | Percentile-relative within today's survivor pool | Self-normalizes across differing daily market character; avoids one opaque global formula |
+| Sector cap | Derived from (future) portfolio risk limit | Currently a proxy for a risk control that doesn't exist yet; shouldn't be set independently |
+| Correlation threshold | Percentile-relative within candidate pool | Correlation structure itself shifts by regime; a fixed coefficient doesn't track that |
+| Top-N | Regime-dependent ceiling, capped by measured operational capacity | Partly a market question, partly a "how much can the Controller actually review" question — the latter isn't a market-data question at all |
+| Warm-up / staleness | Likely a fixed engineering constant | Driven by statistical stability of rolling calculations, not by strategy-outcome calibration |
+
+---
+
+## 6. Historical-data calibration process (design only — nothing built, nothing run)
+
+### What we currently have
+
+**FACT, reverified:** zero historical market data in this repository.
+
+### 6.1 Historical data required
+
+- **Daily OHLCV bars**, broad US equity + eligible-ETF universe (e.g. all
+  Alpaca-tradable symbols meeting stage-A structural eligibility),
+  sourced from Alpaca's historical bars API (same venue as execution).
+- **Minimum period: at least 3 full years**, chosen specifically to contain
+  more than one real market regime (at minimum one genuine broad-market
+  correction or selloff, one sustained low-volatility period, and one
+  sustained bullish trend) — a shorter window risks calibrating parameters
+  against a single, unrepresentative regime.
+- **Bar timeframe: daily bars as the primary series**, consistent with
+  Task 1's finding that this strategy's holding period and relevant metrics
+  (ATR, ADV$, SMA, RVOL) are all naturally daily-granularity. Intraday bars
+  (e.g. hourly) are only needed if we later validate the fill-quality proxy
+  more precisely (using intraday high-low range around our actual 08:30–
+  14:30 CT check times), which is a secondary, lower-priority data need.
+- **Sector/industry classification** (GICS or a free equivalent) for the
+  concentration-parameter analysis.
+- **A spread history proxy** — true historical quoted spread is often a
+  paid data product; absent that, a high-low-range-based proxy must be
+  explicitly labeled as an approximation in any resulting calibration, not
+  presented as validated execution-quality data.
+- **A broad-market volatility/drawdown series** (e.g. realized volatility
+  and drawdown on a market-index proxy) for the regime-classification
+  calibration in §3.4.
+
+### 6.2 Metrics to measure per candidate parameter set
+
+For each proposed configuration of the parameters in §3, run the frozen,
+versioned approved strategy logic forward from each historical day's
+universe and measure:
+
+- Candidate count (daily distribution)
+- Signal count and type (Ladder1-only / Ladder1+2 / Floor-hit / Trailing
+  activation) distribution
+- "Wasted slot" rate (candidates that never triggered anything while in the
+  universe)
+- "No-warning Floor" rate (trades reaching Floor without Ladder1 or Ladder2
+  ever having fired — the failure mode §3.3's upper ATR% bound targets)
+- Execution-quality proxy at simulated fill times
+- Universe turnover / day-over-day churn
+- Sector/correlation concentration over time
+- Opportunity coverage vs. a broader, less-filtered reference set (what
+  fraction of hindsight-good outcomes were actually admitted)
+- Regime-segmented versions of all of the above (separately for labeled
+  bull / selloff / low-vol sub-periods)
+
+### 6.3 How to compare candidate parameter sets
+
+- **Fix the strategy logic** identically across every comparison run — the
+  only variable that changes between runs is the universe-selection
+  configuration (per the Controller's explicit requirement, restated from
+  the second-pass Task 3 design).
+- Compare configurations **pairwise on the same historical period**, not by
+  looking at absolute numbers from separate, differently-windowed runs.
+- Report **regime-segmented** results, not just an aggregate — a
+  configuration that looks good in aggregate could be doing so entirely on
+  the strength of one regime and poorly in another; the aggregate would
+  hide that.
+- Prefer configurations that show **stable, explainable** behavior across
+  the tested regimes over configurations that show the single best
+  aggregate number — a configuration that swings wildly between regimes is
+  itself a red flag even if its best-case number is attractive.
+
+### 6.4 How to avoid overfitting
+
+- **Split the historical period**: calibrate candidate parameter *forms*
+  and rough ranges on an in-sample period, then validate on a held-out
+  out-of-sample period the calibration process never touched. A parameter
+  set that performs well in-sample but degrades materially out-of-sample is
+  evidence of overfitting, not of a good parameter.
+- **Prefer fewer, more robust parameters over many finely-tuned ones** — the
+  formula-based recommendations in §3 (e.g., ATR% band as a function of the
+  Ladder2-to-Floor gap, rather than an independently fit constant) are
+  partly motivated by overfitting resistance: a formula tied to strategy
+  geometry has a built-in economic rationale and is less likely to be an
+  artifact of the specific historical sample than a freely-fit numeric
+  constant.
+- **Sensitivity-test around any proposed value** — a parameter whose
+  measured outcomes change drastically for small changes in its value is a
+  sign of a fragile, overfit choice; prefer values that sit on a stable
+  plateau of the outcome metrics.
+- **Cross-validate across sub-periods**, not just one in-sample/out-of-
+  sample split, given we specifically want multi-regime robustness (§6.1).
+- **Be explicit about what was NOT tested** — any parameter proposed for
+  approval should state which regimes/periods it was and was not validated
+  against, so the Controller can weigh residual uncertainty explicitly
+  rather than have it hidden behind a single performance number.
+
+### 6.5 Evidence required before a parameter moves from PROPOSED to APPROVED
+
+A parameter should only be proposed for approval (with a specific value or
+formula-with-calibrated-constants) once:
+
+1. The calibration process in §6.1–6.4 has actually been run (not
+   estimated, not assumed) using real historical data.
+2. Results are reported regime-segmented, not just in aggregate.
+3. Out-of-sample validation confirms the in-sample finding holds up (§6.4).
+4. A sensitivity analysis shows the chosen value sits on a stable region of
+   the outcome metrics, not a narrow local optimum.
+5. The specific evidence (not just a conclusion) is presented to the
+   Controller for review — consistent with CLAUDE.md §4's requirement that
+   FACT/ASSUMPTION/HYPOTHESIS/RECOMMENDATION be clearly distinguished.
+
+**No parameter in this document currently meets this bar.** All are
+PROPOSED forms/formulas awaiting the calibration process itself to be
+authorized and run.
+
+---
+
+## 7. Final recommended D-0026 mechanism
+
+### A. PRINCIPLES — safe to approve now
+
+(Restated from `decisions.md` D-0026, unchanged, reaffirmed by this
+document):
+
+1. The trading universe is dynamically generated from current market
+   conditions — never a hardcoded or static production list.
+2. The strategy engine is completely symbol-agnostic and receives only an
+   `ApprovedUniverseSnapshot` — it has no knowledge of how symbols were
+   selected.
+3. TSLA is TEST-ONLY. It is never a production default, candidate, or
+   fallback under any circumstance, including universe-generation failure.
+4. Universe generation failure of any kind (data outage, computation error,
+   insufficient data breadth, stale data) produces an **EMPTY** snapshot —
+   never TSLA, never a fabricated symbol list, never a reused prior-day
+   snapshot presented as current.
+5. A market regime classified as high-stress / selloff (CRASH) does **not**
+   automatically mean EMPTY. It tightens execution-quality and volatility
+   thresholds (stages C/D via stage E). Only genuine data/computation
+   failures, or a legitimately empty filter-survivor set, produce EMPTY.
+6. Selection uses a **multi-stage** pipeline (hard structural/quality/
+   strategy-mechanics gates first, then ranking among survivors, then
+   diversification constraints, then a final count) — not a single opaque
+   weighted composite score.
+7. Spread (execution quality) and ATR% (strategy-mechanics fit) are
+   load-bearing, hard-gate constraints because they interact directly with
+   the approved Ladder/Floor mechanics (frozen entry reference, fixed
+   percentage spacing) — they are not secondary ranking inputs.
+8. Leveraged and inverse ETFs are structurally excluded — their
+   daily-rebalancing mechanics are incompatible with fixed-percentage
+   ladder math, independent of any calibratable threshold.
+9. No artificial delay is imposed on newly discovered symbols beyond what
+   the existing schedule already provides (the gap between the universe
+   refresh and the first strategy check) — no evidence supports an
+   additional one-cycle hold.
+10. A symbol leaving the universe never introduces an additional execution
+    veto beyond the existing D-0007 re-check. It never cancels an
+    already-open position, and it never overrides a Controller decision
+    already made — only un-decided (still-pending) proposals are cancelled,
+    with notification.
+11. Perplexity and Capitol Trades remain independent research/context
+    sources (D-0019). They never modify universe membership, ranking,
+    approval, or execution — at most, they annotate a Controller-facing
+    proposal message, as a parallel, non-blocking, best-effort addition.
+12. Universe selection is strictly subordinate to the approved strategy,
+    the existing risk controls, Controller approval (D-0003), and the
+    execution-time D-0007 re-check. It can narrow what the strategy engine
+    is allowed to consider; it can never widen or override the strategy's,
+    Controller's, or execution layer's authority.
+
+### B. ARCHITECTURE — safe to approve now
+
+1. **Pipeline order:** A (tradability) → B (data quality) → C (execution
+   quality) → D (strategy-mechanics fit) → E (regime adaptation, adjusting
+   C/D's thresholds) → F (ranking among survivors) → G (concentration
+   constraints) → H (final count) → I (persist dated snapshot). Rationale
+   for each stage's existence and position is in §1.
+2. **Engine boundary:** the strategy engine consumes only the
+   `ApprovedUniverseSnapshot` object defined in §4. It contains zero
+   selection logic, zero data-source knowledge, and zero regime awareness.
+3. **Persistence:** every snapshot is dated, immutable once written, and
+   stored via the D-0024 repository abstraction (SQLite for MVP) — this
+   gives both operational auditability and the reproducibility needed for
+   the calibration process in §6.
+4. **Refresh cadence:** primary daily refresh aligned with the existing
+   pre-market schedule slot (07:00 America/Chicago per D-0021); a midday
+   refresh is not recommended pending evidence that the daily-bar-based
+   morning snapshot actually misses materially important intraday
+   developments (`universe-parameter-validation.md` Task 7).
+5. **Failure handling:** any hard failure at any pipeline stage collapses
+   to an EMPTY snapshot with a logged, specific `empty_reason` — never a
+   silent fallback of any kind.
+
+### C. CONFIGURABLE PARAMETERS — keep TBD
+
+All parameters catalogued in §3 remain **TBD in exact value or formula
+constant**. Their recommended **forms** (percentile-relative,
+liquidity-adjusted, formula-derived, regime-dependent, or — for warm-up/
+staleness only — likely a fixed engineering constant) are proposed for
+Controller review, but **no specific number is proposed for approval in
+this document.**
+
+### D. HISTORICAL DATA REQUIRED
+
+See §6.1. Summary: daily OHLCV bars (≥3 years, multi-regime), sector
+classification, a labeled spread proxy, and a broad-market volatility/
+drawdown series — none of which currently exist in this repository.
+
+### E. CALIBRATION / BACKTEST PLAN
+
+See §6.2–§6.5. Summary: fix the strategy, vary only universe-selection
+configuration, measure a defined metric set, compare regime-segmented
+results, validate out-of-sample, sensitivity-test before proposing any
+value for approval.
+
+### F. FUTURE DECISIONS REQUIRED
+
+1. Authorize collection of the historical dataset in §6.1 (a
+   planning-to-implementation boundary decision, not itself an
+   implementation step).
+2. Authorize building the frozen, versioned strategy-simulation engine
+   needed to run the calibration process (also a boundary decision — no
+   code has been written under the current planning-mode instruction).
+3. Decide the **sequencing** of §3.6/§3.7 (sector cap, correlation
+   threshold) relative to the still-TBD portfolio-level hard risk limits
+   (`risk-management.md §5`) — should concentration parameters wait until
+   that decision exists?
+4. Decide the scope of ETF inclusion for the MVP universe (all eligible
+   categories from day one, or single-stocks-only initially with ETF
+   categories phased in later) — a scope decision, not a numeric one.
+5. Decide whether stage-B's warm-up/staleness parameters should be
+   calibrated via the full backtest process or via the lighter statistical-
+   stability check noted in §3.9.
+6. Once calibration evidence exists (§6.5's five conditions met), review
+   and approve specific parameter values/formula constants — explicitly
+   NOT before then.
+
+### G. FINAL PROPOSED D-0026 POLICY WORDING
+
+> **D-0026 — Dynamic Universe Selection Mechanism (configurable design).**
+>
+> The production trading universe is generated daily by a multi-stage
+> pipeline — tradability, data quality, execution-quality, strategy-
+> mechanics compatibility, regime-adjusted thresholds, opportunity ranking,
+> concentration constraints, and final count — producing a dated, immutable
+> `ApprovedUniverseSnapshot` that is the sole interface to the fully
+> symbol-agnostic strategy engine.
+>
+> Spread and ATR% are load-bearing hard filters, evaluated before any
+> ranking, because they interact directly with the approved Ladder/Floor
+> mechanics (frozen entry reference; fixed percentage spacing). Ranking
+> among filter-survivors uses secondary signals (liquidity beyond the
+> execution-quality floor, relative volume, trend context) and does not
+> re-litigate the hard filters. Diversification constraints (sector,
+> correlation) are applied as admission rules on the ranked, filter-
+> survivor list, not folded into a single score.
+>
+> A high-stress or selloff market regime **tightens** execution-quality and
+> volatility thresholds; it does **not** automatically empty the universe.
+> Only genuine data or computation failure, or a legitimately empty
+> filter-survivor set, produces an EMPTY snapshot. EMPTY means no new
+> initial-entry proposals for that cycle; it never triggers a TSLA fallback,
+> a fabricated symbol list, or reuse of a prior snapshot as current.
+> Existing open positions are wholly unaffected by universe state and
+> continue under their approved protective controls.
+>
+> Leveraged and inverse ETFs are structurally excluded. Newly discovered
+> symbols are not subject to any artificial hold beyond the schedule's
+> existing gap between refresh and the first strategy check. A symbol
+> leaving the universe never closes an open position, never adds an
+> execution veto beyond the existing D-0007 re-check, and never overrides a
+> Controller decision already made.
+>
+> Perplexity and Capitol Trades remain independent, non-blocking research
+> annotations on Controller-facing proposals; they never influence universe
+> membership, ranking, approval, or execution.
+>
+> **Every numeric threshold and formula constant referenced by this
+> mechanism (liquidity floor, spread cap, ATR% band, regime-classification
+> thresholds, ranking composition, sector cap, correlation threshold, N, and
+> warm-up/staleness) is explicitly TBD**, to be calibrated via the
+> historical-data process in §6 before any specific value is proposed for
+> Controller approval. This document approves the **mechanism's shape**, not
+> its numbers.
+
+---
+
+## 8. Status
+
+**PROPOSED / NOT APPROVED.** The principles in §7A and the architecture in
+§7B are presented as safe to approve as **direction**, per the Controller's
+request — but this document does not itself mark D-0026 APPROVED; that
+remains the Controller's explicit action, recorded in `decisions.md`. No
+parameter value or formula constant in §3 is proposed for approval. No code
+has been written. No historical data has been collected. No live routine has
+been touched.

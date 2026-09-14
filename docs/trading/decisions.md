@@ -469,6 +469,64 @@ Controller approval per CLAUDE.md §9.
   underlying engine has no TSLA anywhere in its logic. There is no
   interim "approved universe = ['TSLA']" for production.
 
+## D-0026 mechanism — third-pass configurable redesign (still PROPOSED)
+
+- **Date:** 2026-09-14
+- **Status:** PROPOSED / NOT APPROVED (the mechanism inside D-0026; the
+  D-0026 architectural principle itself remains APPROVED as originally
+  recorded above)
+- **Proposed by:** Claude, per Controller direction to avoid freezing
+  arbitrary numeric thresholds and instead redesign around configurable,
+  data-calibratable parameters
+- **What changed from the first-pass mechanism:**
+  - Selection restructured into an explicit 9-stage pipeline (A.
+    tradability → B. data quality → C. execution quality → D.
+    strategy-mechanics fit → E. regime adaptation → F. ranking → G.
+    concentration → H. Top-N → I. persist snapshot), replacing the
+    first pass's single weighted composite score.
+  - Every numeric threshold (liquidity floor, spread cap, ATR% band,
+    regime thresholds, ranking weights, sector cap, correlation
+    threshold, Top-N, warm-up/staleness) is documented as a
+    **configurable parameter** with its controlling purpose, the
+    strategy risk it addresses, required calibration data, and a
+    recommended **form** (percentile-relative, liquidity-adjusted,
+    formula-derived from Ladder/Floor geometry, or regime-dependent) —
+    but **no specific value is proposed**.
+  - CRASH-regime handling reversed from "return EMPTY" to "tighten
+    execution-quality and volatility thresholds" — a laddered strategy
+    often has its best entries during drawdowns, existing positions are
+    already protected regardless of regime, and Controller approval
+    already gates every new entry.
+  - New-symbol one-scheduler-cycle delay dropped as unjustified —
+    redundant with the existing gap between the universe refresh and
+    the first strategy check.
+  - The proposed "universe-dropped" execution veto on an
+    approved-but-unsubmitted proposal is withdrawn; the existing
+    D-0007 re-check remains the sole execution-time gate.
+  - Introduced the `ApprovedUniverseSnapshot` contract as the sole
+    interface between the universe subsystem and the symbol-agnostic
+    strategy engine (`architecture/universe.md §2`).
+  - Added a historical-data calibration process (data required, period,
+    bar timeframe, metrics, comparison methodology, overfitting
+    safeguards, and the evidence bar a parameter must clear before
+    moving from PROPOSED to APPROVED) — `universe-selection-analysis.md
+    §6`.
+- **What did NOT change:** TSLA test-only, no fallback, symbol-agnostic
+  engine, universe subordinate to strategy/risk/Controller/execution,
+  Perplexity and Capitol Trades remain non-gating research annotations,
+  existing positions unaffected by universe membership changes.
+- **Cross-references:** `docs/trading/universe-selection-analysis.md`
+  (third pass, the current proposed mechanism), `docs/trading/
+  universe-parameter-validation.md` (second-pass evidence trail behind
+  these design choices), `docs/architecture/universe.md` (engine
+  boundary, updated to match).
+- **Decision required:** Controller review of the principles (§7A) and
+  architecture (§7B) in `universe-selection-analysis.md` — these are
+  presented as safe to approve as *direction*. No numeric parameter is
+  ready for approval; per Controller instruction, none should be forced
+  before the historical-data calibration process (§6) is authorized and
+  run.
+
 ## D-0021 — Market-open anchor and pre-market research anchor
 
 - **Date:** 2026-09-14
