@@ -8,6 +8,110 @@ specifies the methodology that would need to run **before** any numeric
 parameter in `universe-selection-analysis.md §3` moves from PROPOSED to
 APPROVED.
 
+**Updated 2026-09-14** with §0 (reconciling this document's original
+data-source analysis, written around Alpaca's historical-data API, with
+the free/GitHub-native data-sourcing effort that ran afterward — D-0027,
+D-0028, and the Hugging Face verification passes — and their final
+verdict: **B16 is CLOSED, verdict C, current data is insufficient**) and
+new §§17–22 (calibration objective, explicit historical-period design,
+corporate-action normalization, daily feature construction, a negative/
+failure-test catalog, a five-stage acceptance-gate pipeline, the
+relationship to the live architecture, what can safely be done now, and
+an updated final status). Sections §1–§16 are the original methodology
+pass and are **retained unchanged** — the walk-forward design, metrics
+catalog, overfitting safeguards, and per-parameter calibration matrix
+they contain are source-agnostic and still apply regardless of which
+data source eventually supplies the bars. Nothing in this update
+authorizes data acquisition, code, or numeric approval.
+
+---
+
+## 0. Reconciling this document with D-0027/D-0028 and the accepted data sources (2026-09-14)
+
+### 0.1 Why this section exists
+
+§§1–2 below were written evaluating **Alpaca's own historical-data API**
+(bars, quotes/trades, Corporate Actions API, Assets endpoint) as the
+prospective data source for calibration. That research is still
+factually valid — nothing about it has been retested or contradicted —
+but it predates a separate, later research effort (`docs/trading/
+github-native-data-sources.md`, decisions D-0027 and D-0028, and the
+Hugging Face verification pass) that the Controller specifically
+directed toward **free, GitHub/publicly-hosted sources**, independent of
+Alpaca, and which concluded — after exhaustive, empirically-verified
+search — that the free-data-sourcing question is **closed for now**,
+with verdict **C: current data is not sufficient for D-0026 calibration.**
+
+This document does not silently pick one data-sourcing effort over the
+other. Both remain valid, unreconciled options for the Controller:
+
+- **Path 1 (this document's original §1–§2):** Alpaca's own bars/quotes/
+  corporate-actions APIs, with identified gaps (no point-in-time
+  universe history, no sector classification, SIP subscription cost for
+  full-market spread data) — **not pursued or authorized to date.**
+- **Path 2 (D-0027/D-0028/HF verification):** free, GitHub-hosted
+  sources — `eliangcs/pystock-data`, `fja05680/sp500`,
+  `github.com/datasets/finance-vix` — **accepted as real, verified, but
+  insufficient on their own**, per the final accepted conclusions below.
+
+### 0.2 Final accepted data conclusions (per B16, closed)
+
+These are the conclusions this calibration plan now designs around,
+restated here for a single point of reference (full detail and evidence
+remain in `github-native-data-sources.md` and `decisions.md` D-0027/
+D-0028):
+
+- **`eliangcs/pystock-data`** — verified real daily OHLCV, 2009-01-01 to
+  2017-03-31, raw and split/dividend-adjusted prices both present as
+  separate columns. **Useful only as a historical control for its
+  available period** — not modern-regime-capable.
+- **`fja05680/sp500`** — verified real, point-in-time daily S&P 500
+  constituent membership, 1996 to current, with delisting timing
+  verified against known events. **Validation/control/benchmark only —
+  NOT a replacement for D-0026's dynamic, symbol-agnostic universe.**
+- **`github.com/datasets/finance-vix`** — verified regime source, 1990
+  to current.
+- **Hugging Face Candidate A** (`mito0o852/OHLCV-1m`) — **NOT approved
+  as ROOT.** Provenance/license remains insufficiently verified (no
+  license or terms-of-use text has ever been read; "sourced from
+  Finnhub.io" is unconfirmed).
+- **Hugging Face Candidate B** (`elkassabgi/hfdatalibrary`) — **NOT
+  approved as ROOT.** Actual row-level OHLCV was never verified (only
+  metadata, pipeline documentation, and a ticker list were reachable);
+  disclosed uneven coverage (a 51.8% average gap rate in its bottom
+  liquidity quintile) and a documented corporate-action defect history.
+- **Modern broad-market OHLCV for 2018–2026:** **NOT solved**, by any
+  free source found.
+- **Broad point-in-time dynamic universe** (beyond the S&P 500):
+  **NOT solved.**
+- **Delisted-security OHLCV coverage:** **NOT solved** — of the
+  Controller's five standing test names (FDO, RSH, DELL, HNZ, BBI),
+  only FDO has verified pre-delisting price history anywhere in this
+  research (via pystock-data, within its 2009-2017 window).
+- **DELL identity:** **unresolved** — the ticker has referred to two
+  unrelated companies (Dell Inc., private 2013; Dell Technologies,
+  relisted 2018) and no source checked distinguishes them by inception
+  date.
+
+**Therefore: D-0026 numeric calibration MUST remain BLOCKED**, per §21
+below, regardless of which data-sourcing path (Alpaca or free/
+GitHub-native) is eventually pursued — neither has, on its own or
+combined, produced calibration-grade data yet.
+
+### 0.3 What this means for §§1–16 below
+
+Every requirement, methodology step, and acceptance gate in the original
+§§1–16 (data contract, spread-proxy analysis, survivorship-bias design,
+walk-forward methodology, regime segmentation, the full parameter
+calibration matrix, strategy-mechanics preservation, metrics catalog,
+control-experiment design, sensitivity testing, overfitting protection,
+acceptance criteria, and the failure-policy table) **remains the
+intended methodology** for whichever data source or combination of
+sources is eventually authorized. Nothing about the free/GitHub-native
+findings changes *how* calibration should be done — only that *no data
+source currently on the table (Alpaca-unauthorized, or the three
+free/GitHub-native candidates) currently clears the bar to begin.*
+
 ## Repository inspection performed before writing this document
 
 **FACT** (verified by full file listing, not assumed): the repository
@@ -1431,9 +1535,457 @@ PROPOSED, regardless of how much further design work is done in Phase 1.
 
 ---
 
+---
+
+## 17. Calibration objective (2026-09-14 addition)
+
+### What exactly are we optimizing?
+
+**Not a single number.** D-0026 calibration optimizes for a **defensible,
+stable, regime-aware universe-selection configuration that measurably
+improves the frozen strategy's real-world outcomes over a non-selective
+baseline, without concentrating risk or depending on a fragile, narrowly-
+tuned parameter.** Concretely, per §9's metric catalog, this means
+jointly acceptable performance across:
+
+- Strategy-outcome quality (signal-type distribution, wasted-slot rate,
+  no-warning-Floor rate) — §8, §9.
+- Execution-quality proxies (spread-impact proxy, slippage proxy) — §9.
+- Risk/concentration control (sector, correlation, regime-segmented
+  drawdown behavior) — §9.
+- Stability under sensitivity testing and across walk-forward windows —
+  §11, §12.
+
+### What does "good universe selection" mean?
+
+A universe-selection configuration is "good" if it **measurably and
+stably outperforms the non-TSLA control baselines (§10)** on the metrics
+above, **across every observed regime bucket** (§6), not just in
+aggregate or in one favorable period — and does so **without** requiring
+a fragile, precisely-tuned constant (§11's robustness criterion). "Good"
+is a comparative, evidence-based standard, never an arbitrary invented
+target.
+
+### How do we avoid optimizing merely for backtest P&L?
+
+This is the single most important discipline in this section, and it is
+already structurally enforced by §9's explicit separation of metric
+categories:
+
+1. **P&L is never a first-class calibration metric in this design.**
+   §9 defines universe-quality, strategy-outcome, execution-quality, and
+   risk metrics — no metric in that catalog is "simulated dollar
+   return." A configuration is not judged by how much money a backtest
+   would have made.
+2. **Why not:** raw P&L is trivially overfit-prone (a large enough
+   parameter search will always find *some* configuration that happened
+   to make money on a fixed historical sample), conflates universe
+   quality with strategy mechanics the calibration must not touch (§8),
+   and rewards concentration/luck rather than the risk-controlled,
+   repeatable behavior D-0026 exists to produce.
+3. **What replaces it:** the metrics in §9, evaluated jointly — a
+   configuration that produces excellent simulated P&L but a high
+   no-warning-Floor rate, poor sector diversification, or unstable
+   sensitivity results is **not** a good configuration under this
+   framework, regardless of its hypothetical return.
+4. **Explicit rule:** if a future calibration run shows a configuration
+   with strong simulated P&L but weak performance on the §9 metric set,
+   the §9 metrics govern the decision, not the P&L number. This must be
+   stated up front, before any calibration runs, precisely so it cannot
+   be quietly relaxed after seeing which configuration "wins" on
+   returns alone.
+
+---
+
+## 18. Historical periods — explicit design (2026-09-14 addition)
+
+The Controller asked for explicit period design mapped to known regimes,
+building on §5's general walk-forward methodology (which deliberately
+left exact window lengths unspecified pending real data characteristics
+— that reasoning still holds; what follows maps the **regime blocks**,
+not final window lengths, onto the calibration/validation/holdout roles,
+and onto what data is currently available for each).
+
+| Period | Regime character | Data currently available | Intended role |
+|---|---|---|---|
+| 2010–2017 | Post-GFC recovery, low-to-moderate vol, one notable 2015-2016 drawdown | **Yes** — `pystock-data` (2009-2017), `fja05680/sp500` overlapping | **Separately-authorized historical methodology/control exercise ONLY — see the explicit constraints immediately below this table.** Not calibration evidence. |
+| 2018–2019 | 2018 Q4 vol spike, otherwise calm | **No verified OHLCV** | Would-be walk-forward window — **blocked** |
+| 2020 | COVID crash + V-shaped recovery — the most extreme single-regime test available in modern market history | **No verified OHLCV** | Would-be critical stress-test window — **blocked**, and its absence is the single most consequential gap in the current data picture |
+| 2021 | Post-COVID melt-up, low realized vol, meme-stock idiosyncrasies | **No verified OHLCV** | Would-be walk-forward window — **blocked** |
+| 2022 | Rate-hike bear market, sustained drawdown (a genuinely different regime shape from 2020's sharp crash) | **No verified OHLCV** | Would-be walk-forward window, complementary to 2020's regime shape — **blocked** |
+| 2023–2026 | Recovery/AI-led rally, current regime | **No verified OHLCV** (`fja05680/sp500` membership only, no matching price layer) | Intended reserved, untouched holdout (§5, §12) once data exists — **blocked** |
+
+### Calibration / validation / holdout role assignment (once data exists)
+
+- **Calibration (walk-forward training + validation, §5):** the 2010–2022
+  span, structured as rolling windows per §5's methodology — deliberately
+  spanning at least one sharp-crash regime (2020) and one grinding-bear
+  regime (2022), so the walk-forward process is tested against
+  structurally different adverse conditions, not just one crash shape.
+- **Reserved, untouched holdout (§5, §12):** the most recent available
+  block (currently 2023–2026, subject to shift once real data coverage
+  is known) — never used in any walk-forward iteration, evaluated
+  exactly once after parameter selection is locked in.
+- **Historical control, not primary calibration evidence:** 2009–2017
+  (pystock-data's actual window) — usable as an early, low-confidence
+  walk-forward block if the identity/corporate-action layers can be
+  resolved for it, but explicitly **not** sufficient alone to calibrate
+  parameters intended to govern 2023-onward live behavior, since it
+  contains none of the post-2017 regime diversity.
+
+### Explicit constraints on the 2010–2017 (pystock-data + fja05680/sp500) historical control — stated directly, not left to context
+
+`eliangcs/pystock-data` and `fja05680/sp500` together **may be used only
+for a separately authorized historical methodology/control exercise**
+(§24) — a Controller decision distinct from, and not implied by, any
+approval of this document's overall structure and status. Specifically,
+this pairing:
+
+- **MUST NOT** be treated as calibration-grade evidence for the full
+  D-0026 dynamic, symbol-agnostic universe — it covers a single,
+  S&P-500-biased, pre-2018 window, not the broad market D-0026 is
+  designed to select from.
+- **MUST NOT** be used to freeze, approve, or otherwise move any D-0026
+  numeric parameter (§7, §13) toward APPROVED status.
+- **MUST NOT** be presented, described, or cited as validation of
+  modern (2018–2026) strategy or universe behavior — it contains zero
+  verified OHLCV for any period after March 2017 and says nothing about
+  post-2017 regimes.
+- **MUST NOT**, on its own or in combination, move D-0026's calibration
+  status (§22) from BLOCKED to CALIBRATION READY. Reaching CALIBRATION
+  READY requires the full data prerequisites in §22/§25, none of which
+  this pairing satisfies.
+
+Any future use of this pairing is valid **only** as a bounded,
+explicitly-labeled historical/methodology dry run (e.g., exercising the
+walk-forward mechanics or the offline engine's plumbing against real,
+if narrow, data) — never as evidence supporting a Controller-facing
+approval decision of any kind.
+
+**Current status: every period from 2018 onward is blocked on OHLCV.**
+This table exists so that, the moment any period's data becomes
+verified and available, its role in the walk-forward design is already
+decided rather than negotiated ad hoc.
+
+---
+
+## 19. Corporate-action normalization (2026-09-14 addition, consolidating §1.9/§4)
+
+### Price convention: TBD, not decided here
+
+Consistent with the Controller's instruction not to force a choice
+without sufficient evidence, this section states the **decision
+framework**, not a final answer:
+
+- **Raw vs. adjusted:** **TBD.** The frozen strategy's Ladder/Floor
+  levels are percentage moves off a **frozen entry reference price**
+  (D-0001) — this is inherently a *raw-price* concept (the actual fill
+  price, not a retroactively-adjusted one). Historical backtesting,
+  however, needs split/dividend adjustment to avoid fabricating a Floor
+  trigger from a stock split alone (§1.9, §4 point 5). **The likely
+  resolution, not yet decided:** simulate the frozen strategy's
+  percentage-based triggers on a **split-adjusted** series (to avoid
+  fabricated triggers), while treating the *live* system's actual
+  execution as inherently raw (a live fill is always at the real,
+  unadjusted market price) — meaning the historical simulation and the
+  live system are not using "the same" price number, but are each using
+  the *correct* convention for what they represent. This must be
+  explicitly validated, not assumed, once real data exists — flagged
+  as **TBD, pending evidence**, not decided here.
+- **Dividend handling:** **TBD.** D-0026's strategy does not currently
+  model dividend capture as part of its mechanics; whether dividend-
+  adjusted or only split-adjusted prices are appropriate for the
+  historical simulation depends on whether ignoring dividend drops in
+  the historical series would itself fabricate a spurious price move —
+  this has not been analyzed and is flagged as an open question, not
+  resolved here.
+- **Does ATR use adjusted prices?** **Yes, in principle — TBD in
+  practice.** ATR is a volatility measure; an unadjusted series would
+  show a fabricated one-day "volatility spike" at every split boundary,
+  which would corrupt the ATR%-band parameter (§7.3) exactly as an
+  unadjusted Floor trigger would corrupt the strategy simulation. The
+  *principle* (ATR should use adjusted prices) is clear; the *exact*
+  adjustment convention to use is TBD pending the raw-vs-adjusted
+  resolution above, since ATR must use the same convention as whatever
+  the rest of the simulation settles on.
+- **Do execution-price checks use raw/live prices?** **Yes, this one is
+  not TBD.** Per D-0012 (frozen, unchanged by this document), the live
+  trigger-price source is Alpaca's Last Trade — always the real, raw,
+  as-traded price. Nothing about calibration changes this. The
+  calibration engine's simulated "fill price" at each decision point
+  must be understood as approximating what D-0012's live raw-price
+  check would have produced — this is a simulation-fidelity requirement
+  (§8), not a corporate-action question, and it is the reason the
+  raw/adjusted question above is scoped to the *historical trigger
+  simulation*, never to the live system's own price source.
+- **How do historical and live conventions remain consistent?** By
+  keeping the *live* system permanently on raw, as-traded prices
+  (unchanged, D-0012) and treating any adjustment applied in the
+  historical simulation as a **backtest-fidelity technique**, not a
+  change to what "price" means operationally. This must be documented
+  explicitly in whatever offline calibration engine is eventually built
+  (Phase 2, §15) so no confusion arises between "the price the backtest
+  used to decide a trigger fired" and "the price the live system will
+  actually execute against."
+
+### Split handling
+
+Must be applied consistently across the entire historical series before
+any percentage-move-based metric (Ladder/Floor trigger detection, ATR)
+is computed — an unadjusted split is not a small error, it is a
+100%-scale fabrication of a price move on the split date (§1.9, §4).
+
+### Do not mix conventions
+
+Restated as a hard rule, not a preference: **no single calibration run
+may combine raw prices from one source-period with adjusted prices from
+another** without explicit, disclosed reconciliation. If a future
+composite draws pystock-data (which discloses both `close` and
+`adj_close` cleanly) alongside any other source, the adjustment
+convention used from each must be verified compatible before combining
+them into one walk-forward window — this is exactly the "silently mix
+incompatible price treatments" risk the Controller has repeatedly
+flagged across this research thread, restated here as a calibration-
+design constraint, not just a data-quality note.
+
+---
+
+## 20. Daily feature construction (2026-09-14 addition, consolidating §1.7/§3/§9)
+
+Restating and consolidating, in one place, the intended daily inputs
+already scattered across §1, §3, §7, and §9:
+
+| Feature | Source | True or proxy? |
+|---|---|---|
+| **Liquidity** | Daily volume / dollar-volume (§1.1, §1.2) | True (direct measurement), subject to the point-in-time/survivorship caveats of §4 |
+| **ATR / volatility** | Daily high/low/close, adjustment-convention TBD (§19) | True computation, on a price series whose adjustment convention is not yet finalized |
+| **Momentum, if applicable** | Daily closes, rolling trend/SMA context (§7.5) | True computation; whether momentum/trend is used as a hard gate or a soft ranking signal remains an open question per §7.5's third-pass finding (in tension with the strategy's own drawdown-buying purpose) |
+| **Execution-quality proxy** | Historical quotes/trades if available (true), else the high-low range proxy (§1.7, §3) | **Explicitly both** — this document has never claimed the range proxy is true spread, and restates that discipline here: the range proxy measures intraday price dispersion, not the bid/ask quote at a specific moment, and must be labeled as an approximation wherever used (§3) |
+| **Regime classification** | Broad-market volatility/drawdown reference series (§1.8), independently validated (§6) | True computation on the reference series; the *classification rule* itself (percentile/volatility/drawdown/composite) is a parameter under test (§7.4), not a fixed formula |
+
+### True bid/ask spread vs. OHLCV-derived proxies — restated explicitly
+
+**Nothing produced by this calibration plan, and nothing in any dataset
+verified across the whole D-0026 research thread (pystock-data,
+`fja05680/sp500`, `finance-vix`, or either Hugging Face candidate),
+provides true historical bid/ask spread or quote-depth data.** Where
+Alpaca's own historical quotes/trades endpoints are used (§1.7, if that
+path is ever authorized), true spread becomes available subject to the
+IEX-free/SIP-paid coverage tradeoff already documented there. Absent
+that, every "execution-quality" or "spread" figure this calibration
+plan produces is a **range-based proxy**, explicitly labeled as such
+everywhere it appears, per the Controller's standing instruction never
+to conflate the two.
+
+---
+
+## 21. Negative / failure tests (2026-09-14 addition)
+
+Distinct from §14's *calibration-result* failure-policy table (what to
+do when a calibration **run** produces ambiguous or contradictory
+results), this section defines **data- and engine-level negative tests**
+— conditions the offline calibration engine (once built, Phase 2, §15)
+must be explicitly tested against before its output can be trusted at
+all. None of these are implemented here; this is a test **specification**
+only.
+
+| Condition | Required engine behavior under test |
+|---|---|
+| Missing OHLCV for a symbol-day | Symbol-day excluded from that day's candidate pool; never silently treated as zero/flat; logged as a data gap, not a trading signal |
+| Stale prices (a quote/bar that hasn't updated but is repeated) | Detected via a staleness check (§7.9's threshold, once calibrated) and excluded, not treated as a genuine flat trading day |
+| Extreme gaps (e.g. an overnight move inconsistent with any known corporate action) | Flagged for manual/data-quality review; must not be silently absorbed into ATR/trigger calculations as if it were normal volatility — an unflagged extreme gap is exactly the kind of event that could fabricate a spurious Floor trigger (§19) |
+| Zero-volume bars | Excluded from liquidity/ADV$ calculations (a zero-volume "bar" is not evidence of zero liquidity, it's evidence of no trading, which is a data-quality signal, not a liquidity measurement) |
+| Duplicate timestamps | Deduplicated before any aggregation; a duplicate must not silently double-count volume or distort an OHLC aggregation |
+| Bad corporate-action data (e.g. a split applied twice, or a split missed entirely) | The engine must be tested against **both** directions of this failure — Candidate B's own `UNAPPLIED_SPLITS_20260905.md` incident (real, documented, §7 of `github-native-data-sources.md`) is direct proof this is not a hypothetical risk |
+| Ticker reuse (the DELL case, §0.2) | The engine must refuse to silently concatenate two different companies' price histories under one ticker; this requires either a resolved identity layer (not yet available) or an explicit, disclosed exclusion of ambiguous tickers from calibration until resolved |
+| Delisted securities entering/leaving the sample | Must be included in the point-in-time candidate pool up to their actual delisting date, and correctly excluded afterward (§4) — never silently dropped from the whole historical run (which would reintroduce survivorship bias) nor left in past their actual delisting |
+| Missing universe membership for a historical date | If point-in-time membership cannot be established for a date (true for anything outside `fja05680/sp500`'s S&P-500-only coverage today), that date/symbol combination must be excluded and reported as a data gap, not silently defaulted to "assume tradable" |
+| Empty survivor set on a given historical day (all candidates filtered out) | Must map to the same `is_empty` / `empty_reason` semantics the live `ApprovedUniverseSnapshot` contract already defines (`architecture/universe.md §2`) — an empty calibration day is a **valid, loggable outcome**, not an engine error |
+| **CRASH vs. EMPTY, explicitly distinguished** | CRASH (a data-source or engine failure — e.g. a corrupt historical file, an unreconcilable identity conflict) must produce a different, distinctly logged outcome from EMPTY (the universe subsystem correctly found zero eligible candidates on a given day). Conflating these would silently hide real data/engine defects behind an innocuous "no candidates today" outcome. This mirrors, and must not be allowed to regress, the same EMPTY-vs-CRASH distinction already required of the live system. |
+| Insufficient warm-up history for a symbol | Excluded from that day's eligible pool until its rolling calculations (ATR/ADV$/SMA) have enough history to be statistically meaningful, per whatever warm-up threshold §7.9 eventually establishes — never computed on a truncated window and treated as equally reliable to a fully-warmed-up symbol |
+
+**Design principle across every row above:** a data-quality failure must
+always fail **visibly and specifically** (excluded, flagged, logged with
+a reason) — never silently, and never by falling back to a default value
+that could be mistaken for a genuine market observation.
+
+---
+
+## 22. Acceptance gates — five-stage pipeline (2026-09-14 addition)
+
+§13's PROPOSED → APPROVED checklist remains the substantive evidence bar
+for any individual numeric parameter. This section adds the coarser,
+five-stage **pipeline status** the Controller asked for, tracking the
+calibration *effort as a whole* (not one parameter at a time) from
+today's actual state through to a state where individual parameters can
+begin moving through §13.
+
+```
+BLOCKED  →  CALIBRATION READY  →  CALIBRATED  →  VALIDATED  →  APPROVED
+```
+
+| Gate | Definition | Objective, testable entry criteria |
+|---|---|---|
+| **BLOCKED** (current state) | No calibration-grade dataset exists yet. | True today because: no verified broad-market OHLCV exists for 2018-2026 (§0.2); point-in-time universe membership exists only for the S&P 500 (§0.2); delisted-security coverage is verified for only 1 of 5 standing test names (§0.2); DELL's ticker identity is unresolved (§0.2); neither Hugging Face candidate is approved as ROOT (§0.2). |
+| **CALIBRATION READY** | A specific, named dataset (or combination) actually satisfies §4's **Tier 1** fidelity requirement (point-in-time tradable-universe history + corporate-action adjustment) for at least the regime span identified in §18, AND the DELL-class identity-ambiguity problem has an explicit, disclosed resolution (either solved, or the affected tickers explicitly excluded) for every symbol in scope. **A Controller decision to pursue a given data path (§0.1's Path 1/Path 2/a new path) is a planning/authorization decision only — it opens the door to doing the acquisition and verification work, but does NOT by itself satisfy this gate.** The gate requires the actual data prerequisites and evidence below to be demonstrated, empirically, after that authorization — never inferred from the authorization decision alone. | (1) Named dataset(s) documented with the same empirical rigor as `github-native-data-sources.md`. (2) Tier 1 fidelity demonstrated, not assumed — with real evidence, not a plan to obtain it. (3) Identity-ambiguity policy stated in writing. (4) Controller has explicitly authorized Phase 2 (§15) for this specific dataset — a **necessary precondition to begin the verification work, not evidence that the work is done.** |
+| **CALIBRATED** | The offline calibration engine (Phase 2, §15) has been built and run through the full walk-forward process (§5) across every regime bucket in §18 that the data actually covers, producing the full §9 metric set, with the negative/failure tests in §21 passing. | (1) Engine built, offline-only, per §15's Phase 2 boundary. (2) Walk-forward run completed and reported per-regime, not aggregate-only (§6). (3) §21's negative tests demonstrably pass against the actual data used. (4) Sensitivity testing (§11) completed for every parameter in scope. |
+| **VALIDATED** | The single reserved holdout block (§5, §12) has been evaluated **exactly once**, after parameter selection was locked in from walk-forward results alone, and the result — favorable or not — has been reported to the Controller without alteration. | (1) Holdout evaluated exactly once, never before parameter lock-in (§12's central rule). (2) Result reported as-is, including if unfavorable (§14). (3) Control-experiment comparison (§10) included. |
+| **APPROVED** | Individual parameters move here one at a time, per §13's full eight-point checklist, with explicit Controller sign-off per parameter — never as a block. | Full §13 checklist satisfied per parameter; Controller has explicitly approved the specific value/formula in writing (per CLAUDE.md §9's change-control requirement), recorded in `decisions.md`. |
+
+**Current gate: BLOCKED.** Nothing in this document, or any research
+pass that preceded it, has produced evidence sufficient to claim
+CALIBRATION READY. Moving toward CALIBRATION READY **starts with** a
+Controller decision (§0.1's Path 1 vs. Path 2, or a new path) — but
+that decision is only the planning/authorization step. **It does not
+by itself satisfy CALIBRATION READY.** The gate is reached only once
+the actual data prerequisites and evidence in the row above (Tier 1
+fidelity demonstrated, identity ambiguity resolved, dataset documented
+with empirical rigor) exist in fact, which requires doing — and
+completing — the acquisition and verification work the decision merely
+authorizes.
+
+---
+
+## 23. Relationship to the live architecture (2026-09-14 addition)
+
+Restating and confirming, for this document specifically, the boundary
+already established in `docs/architecture/universe.md`:
+
+```
+Dynamic universe selection (A. Tradability → B. Data quality →
+  C. Execution quality → D. Strategy-mechanics fit → E. Regime
+  adaptation → F. Ranking → G. Concentration → H. Top-N →
+  I. Persist dated snapshot)
+        ↓
+ApprovedUniverseSnapshot  (dated, immutable — architecture/universe.md §2)
+        ↓
+Strategy engine  (D-0001..D-0024 — ladder + floor + trailing logic;
+  knows only a date-stamped symbol list, nothing about how it was
+  produced)
+        ↓
+Proposal  (initial entry / Ladder 1 / Ladder 2, per the approval
+  workflow)
+        ↓
+Controller approval  (D-0007, D-0025 — Telegram, authorized user only)
+        ↓
+Price re-check  (D-0007's expiration + ±0.5% band, re-verified
+  immediately before submission)
+        ↓
+Alpaca order  (paper trading only, per CLAUDE.md §1/§6)
+```
+
+**Confirmed: calibration must not introduce universe-selection logic
+into the Strategy Engine.** Everything this calibration plan designs —
+the walk-forward methodology, the parameter catalog (§7), the metrics
+(§9), the acceptance gates (§22) — determines **values that populate
+the universe subsystem's configuration**, which then produces
+`ApprovedUniverseSnapshot` objects. The strategy engine's contract with
+that object remains exactly as thin as `architecture/universe.md §2`
+already specifies: a date-stamped symbol list, nothing else. No
+calibration output — no threshold, no ranking weight, no regime
+classification — is ever consumed directly by the strategy engine; it
+only ever flows through the snapshot boundary. This document does not
+change, and is not proposing to change, that boundary.
+
+---
+
+## 24. What can be done now vs. what must remain blocked (2026-09-14 addition)
+
+Conservative by design — anything ambiguous is placed in the "must
+remain blocked" column.
+
+### Can safely be done now, with existing verified data or none at all
+
+- **Documentation and design work** — exactly what this document,
+  `universe-selection-analysis.md`, `universe-parameter-validation.md`,
+  and `architecture/universe.md` already are. No data dependency.
+- **A low-confidence, explicitly-labeled, pre-2018 historical
+  methodology/control exercise** using `eliangcs/pystock-data`
+  (2009-2017) and `fja05680/sp500` (S&P 500 point-in-time membership,
+  overlapping window) — **if and only if** the Controller separately
+  authorizes even this limited exercise as its own Phase 1→2 transition
+  (§15); nothing here pre-authorizes it. Subject, without exception, to
+  every constraint in §18's "Explicit constraints" subsection: it
+  **MUST NOT** be treated as calibration-grade evidence for the full
+  D-0026 universe, **MUST NOT** be used to freeze or approve any D-0026
+  numeric parameter, **MUST NOT** be presented as validation of modern
+  (2018–2026) behavior, and **MUST NOT** move D-0026's calibration
+  status (§22) from BLOCKED to CALIBRATION READY.
+- **Further design of the identity-resolution policy** for ticker-reuse
+  cases like DELL (§21) — a documentation task, not a data task.
+- **Refining the negative-test specification (§21)** as engineering
+  requirements, ahead of any engine being built.
+
+### Must remain blocked until modern calibration-grade data exists
+
+- Any walk-forward calibration run covering 2018 onward (§18) — no
+  verified OHLCV exists for this span.
+- Any claim of solving, partially or fully, the broad point-in-time
+  dynamic universe beyond the S&P 500 (§0.2).
+- Any numeric parameter moving past PROPOSED (§13, §22) — regardless of
+  how much directional confidence exists about a parameter's likely
+  shape, per the Controller's standing, repeatedly-reaffirmed rule.
+- Any resolution of the raw-vs-adjusted price convention (§19) — this
+  requires real data to test against, not a decision made in the
+  abstract.
+- Building the offline calibration engine itself (Phase 2, §15) — this
+  remains a Controller-authorized, not a default, next step.
+
+---
+
+## 25. Final recommendation — updated status (2026-09-14)
+
+Supersedes only the *status framing* of the original §16 (its
+substantive answers to "is the architecture ready," "are any parameters
+ready," and "what evidence is needed" remain valid and unchanged); this
+section restates the outcome in the Controller's requested format.
+
+```
+D-0026 CALIBRATION STATUS = BLOCKED
+```
+
+**Exact prerequisites required to change this to CALIBRATION READY**
+(per §22's gate definition, all four required, none optional, and
+**none of the four individually sufficient on its own** — in
+particular, item 1 below is a planning/authorization decision, not
+evidence, and does not by itself advance this status past BLOCKED):
+
+1. A Controller decision on which data-sourcing path to pursue —
+   Alpaca's own historical APIs (§1-§2's original analysis, not yet
+   authorized), the free/GitHub-native sources at their current,
+   accepted-but-insufficient state (§0.2), a new source not yet
+   identified, or some explicit combination. **This decision only
+   authorizes the work in items 2-4 below to begin — it does not
+   satisfy CALIBRATION READY by itself.**
+2. Whichever path is chosen must close, with the same empirical rigor
+   already applied throughout this research thread, the specific gaps
+   identified in §0.2: broad-market OHLCV for 2018-2026; point-in-time
+   universe membership beyond the S&P 500; delisted-security price
+   coverage beyond the single verified case (FDO); and the DELL-class
+   ticker-identity ambiguity (resolved or explicitly excluded).
+3. §4's Tier 1 fidelity (point-in-time universe history + corporate-
+   action adjustment) demonstrated for whatever regime span is
+   eventually covered — not assumed.
+4. Explicit Controller authorization of the Phase 1 → Phase 2 transition
+   (§15) — data acquisition and the offline calibration engine build —
+   including any associated cost (e.g., an Alpaca SIP subscription, if
+   that path is chosen).
+
+**Until all four are satisfied, D-0026 remains BLOCKED at this gate.**
+No numeric parameter may be proposed for approval, no calibration code
+may be written, and no historical dataset may be acquired in full,
+consistent with every constraint stated at the top of this task and
+throughout this document.
+
+---
+
 No historical data was collected while producing this document beyond web
 research to verify Alpaca's documented API capabilities (cited above). No
 code was written. No live routine, scheduler, cron, or dependency was
 touched. No approved trading-policy semantics were changed. D-0026 remains
 PROPOSED / NOT APPROVED. TSLA was not used, referenced, or implied as any
-form of fallback or baseline anywhere in this document.
+form of fallback or baseline anywhere in this document. The 2026-09-14
+update (§0, §§17-25) performed no new dataset search, downloaded no data,
+wrote no code, and changed no frozen decision (D-0007, D-0011, D-0012,
+D-0021 through D-0025, or the D-0026 architecture itself) — it is
+documentation-only, consistent with every constraint governing this pass.
