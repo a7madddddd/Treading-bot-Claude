@@ -78,14 +78,48 @@ protective floor and trailing floor manage exit.
 None of these are needed for the engine to be built symbol-agnostic. All
 must be defined before the universe subsystem itself is implemented.
 
-## 5. Interim configuration during MVP
+## 5. TSLA is TEST-ONLY (not a production universe)
 
-Until the universe subsystem exists, the engine's approved universe
-comes from a **static, Controller-approved config** naming the current
-symbols (initially `["TSLA"]`). This is a placeholder, not the design
-target. Every subsequent addition or removal from the interim list is
-a Controller decision recorded in `decisions.md`.
+TSLA is used only as a development / testing symbol — in the
+`tsla-paper-trading-monitor` routine (test symbol) and in fixtures /
+simulations. TSLA is NOT the production trading universe, the default
+trading symbol, a hardcoded production candidate, a default
+recommendation, or a fallback if universe discovery fails.
 
-The interim mechanism must not become the design target by inertia —
-whenever the universe subsystem is proposed, it replaces the static
-config through the repository abstraction, without changing the engine.
+- The strategy engine has **no TSLA constants** anywhere in its logic.
+- No "interim static production config = ['TSLA']" exists. If someone
+  reads that in an older draft, it is superseded by this section and
+  by D-0026.
+- Fixtures, unit tests, property tests, and the deterministic simulator
+  MAY use TSLA (or any symbol) as canned input data.
+
+## 6. No-universe behavior — hard rule
+
+If the universe subsystem cannot produce a valid production universe:
+
+- The engine MUST NOT fall back to TSLA.
+- The engine MUST NOT trade.
+- The engine reports the empty-universe condition and waits.
+- Notification severity: OPTIONAL for transient (single-run) emptiness;
+  IMPORTANT if empty across a full trading day; CRITICAL if the
+  underlying universe subsystem is broken (parser failure, data source
+  down, credentials failure).
+
+Silence is preferable to fabricated candidates. There is no "always
+have something to trade" mode.
+
+## 7. Purpose the future universe subsystem must serve
+
+It should be able to answer, at run time:
+
+*"What are the best trading opportunities available today under the
+approved strategy and risk rules?"*
+
+That includes both:
+- Discovering candidates (whatever data source, screener, or research
+  the mechanism uses), and
+- Ranking them so the strongest eligible opportunities are returned.
+
+The **ranking criteria** are deliberately not defined here. That is a
+separate future decision (see `docs/trading/decisions.md`
+"opportunity-ranking criteria" — deferred).

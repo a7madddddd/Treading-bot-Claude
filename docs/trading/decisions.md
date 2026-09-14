@@ -128,16 +128,35 @@ Each entry:
 - **Rationale:** Keeps behavior explicit and safe; no invention of
   additional retry/roll policy.
 
-## D-0011 — Ladder trigger source and debounce remain TBD
+## D-0011 — Ladder trigger debounce — PROPOSED
 
-- **Date:** 2026-09-14
-- **Status:** DEFERRED (explicit TBD)
-- **Approved by:** Controller (as a deferral)
-- **Decision:** Trigger source (trade prints vs bars vs quote midpoint)
-  and any debounce policy (e.g. "two consecutive prints below trigger")
-  remain TBD. Do NOT implement a debounce yet.
-- **Rationale:** Trigger definition materially affects both signal
-  frequency and safety; must be explicitly defined before code lands.
+- **Date:** 2026-09-14 (proposal; trigger-source part superseded by D-0012)
+- **Status:** **PROPOSED** — awaiting Controller approval
+- **Proposed by:** Claude (analysis in `docs/trading/debounce-analysis.md`)
+- **Proposal:** Ladder trigger debounce is a **per-level state machine
+  plus a re-arm hysteresis rule** that reuses the ±0.5%
+  material-move band already approved in D-0007. Full wording is in
+  `debounce-analysis.md §9`. Summary:
+  - States per Ladder level per trade: `IDLE`, `PROPOSAL_PENDING`,
+    `APPROVED`, `EXECUTED`, `REJECTED`, `BLOCKED_EXPIRED`,
+    `BLOCKED_PRICE`, `BLOCKED_FLOOR_PRIORITY`.
+  - `EXECUTED`, `REJECTED`, `BLOCKED_FLOOR_PRIORITY` are terminal.
+  - A new proposal is created only when `state == IDLE` AND
+    `armed == True`.
+  - `armed` flips to `False` when a proposal is created; flips to
+    `True` again when `p_last ≥ trigger × 1.005` (D-0007's band).
+  - Alpaca `client_order_id = proposal.id` provides broker-side
+    idempotency (D-0025).
+  - All debounce state persisted in SQLite (D-0024); survives
+    restart and reconciliation.
+- **Rationale:** State handles duplicate proposals/orders; re-arm
+  handles oscillation around trigger after expired/blocked-price
+  outcomes; the 0.5% number reuses an already-approved constant.
+- **Note:** the trigger-source half of the original D-0011 (trade
+  prints vs bars vs quote midpoint) is settled by D-0012 (Alpaca
+  Last Trade).
+- **Decision required:** Controller review of `debounce-analysis.md`
+  and explicit APPROVED / REJECTED / MODIFIED response.
 
 ## D-0012 — Market data source: Alpaca Last Trade for ladder triggers
 
@@ -341,33 +360,53 @@ Each entry:
 - **Rationale:** Fastest, simplest mobile approval loop that satisfies
   D-0003 and D-0007 without building a web UI.
 
-## D-0026 — Trading universe: dynamic / market-adaptive, symbol-agnostic engine
+## D-0026 — Trading universe: dynamic / market-adaptive, symbol-agnostic engine (TSLA is TEST-ONLY)
 
-- **Date:** 2026-09-14
+- **Date:** 2026-09-14 (revised same-day per Controller clarification)
 - **Status:** APPROVED (architectural principle)
 - **Approved by:** Controller
-- **Decision:** The trading universe is NOT hardcoded to TSLA or any
-  fixed list. The system supports a **dynamically generated universe**
-  that can change over time as market conditions change.
-  - The strategy engine is **symbol-agnostic** and consumes the
+- **Decision:** The trading universe is NOT hardcoded and NOT limited
+  to any single symbol. The system supports a **dynamically generated
+  universe** that changes as market conditions change.
+  - The strategy engine is **fully symbol-agnostic**. It has no
+    TSLA constants or any other hardcoded ticker. It consumes the
     current approved universe as an input.
-  - Universe **discovery/selection** is a separate subsystem from
-    strategy execution.
+  - **Universe discovery / selection** is a separate subsystem from
+    strategy execution. Its job is to answer: *"What are the best
+    trading opportunities available today under the approved strategy
+    and risk rules?"*
   - The universe-generation mechanism, screening criteria, ranking
     rules, refresh frequency, and approval process are **NOT** defined
-    yet and **must not be invented** — deferred as universe TBD.
-  - The architecture must therefore support future dynamic selection
-    **without** changing the strategy engine.
+    yet and **must not be invented**. That work is a separate future
+    decision (opportunity-ranking criteria are also deferred).
+  - The architecture must support future dynamic selection **without**
+    changing the strategy engine.
+- **TSLA is TEST-ONLY.** TSLA is used as a development / testing symbol
+  in the live `tsla-paper-trading-monitor` routine and in fixtures /
+  simulations only. TSLA must NOT become:
+  - the production trading universe,
+  - the default trading symbol,
+  - a hardcoded production candidate,
+  - a default recommendation,
+  - a fallback symbol if universe discovery fails.
+- **No-universe behavior:** If a valid production universe cannot be
+  generated at run time, the system MUST NOT fall back to TSLA and
+  MUST NOT trade. The engine reports the empty-universe condition,
+  raises an OPTIONAL/IMPORTANT notification per severity, and waits.
+  Silence is preferable to fabricated candidates.
 - **Guardrail:** Dynamic selection does NOT grant permission for
-  autonomous trading in newly discovered symbols. All existing
-  approval (D-0003, D-0007), execution (D-0001, D-0004, D-0008), and
-  risk controls (§Risk) remain authoritative. A new symbol entering
-  the universe is a **candidate**, not an authorized trade.
-- **Supersedes:** D-0013's "TBD" gets converted to "architectural
-  principle approved; concrete mechanism still TBD."
-- **Application:** existing TSLA-specific routine `tsla-paper-trading-monitor`
-  remains TSLA-scoped by configuration until the dynamic universe
-  subsystem is designed; the underlying engine has no TSLA constants.
+  autonomous trading. All existing approval (D-0003, D-0007), execution
+  (D-0001, D-0004, D-0008), and risk controls remain authoritative.
+  A new symbol entering the universe is a **candidate**, not an
+  authorized trade — the initial entry still requires Controller
+  approval.
+- **Supersedes:** D-0013's "TBD" — architectural principle now
+  approved; concrete selection mechanism and opportunity-ranking
+  criteria remain TBD.
+- **Application:** the existing `tsla-paper-trading-monitor` routine
+  remains TSLA-scoped only because TSLA is the test symbol; the
+  underlying engine has no TSLA anywhere in its logic. There is no
+  interim "approved universe = ['TSLA']" for production.
 
 ## D-0021 — Market-open anchor and pre-market research anchor
 

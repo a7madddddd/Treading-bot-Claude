@@ -165,6 +165,7 @@ lives in the repo under `docs/`:
 - `docs/architecture/universe.md` — dynamic, symbol-agnostic universe boundary (D-0026)
 - `docs/architecture/telegram-approval.md` — Telegram approval transport (D-0025)
 - `docs/trading/pre-apply-checklist.md` — single source of truth for what must happen before APPLY
+- `docs/trading/debounce-analysis.md` — D-0011 analysis and PROPOSED debounce design
 - `docs/development-workflow.md` — the 7-phase workflow
 - `routines/README.md` — index of live account Routines snapshotted into the repo
 - `routines/<slug>/prompt.md` — redacted snapshot of the live prompt
