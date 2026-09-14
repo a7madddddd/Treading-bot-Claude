@@ -469,6 +469,80 @@ Controller approval per CLAUDE.md §9.
   underlying engine has no TSLA anywhere in its logic. There is no
   interim "approved universe = ['TSLA']" for production.
 
+## D-0026 — Data-acquisition pilot: environment cannot reach any data source
+
+- **Date:** 2026-09-14
+- **Status:** Controller authorized a small, controlled Phase 2
+  data-acquisition pilot (explicitly not Phase 3). This entry records
+  that the pilot **could not execute**. Phase 2 remains APPROVED
+  (research/design + now-attempted acquisition scope); D-0026 mechanism
+  and every numeric parameter remain PROPOSED / NOT APPROVED; Phase 3
+  remains NOT approved. Full acquisition and numeric calibration remain
+  **NOT authorized**.
+- **What happened:** tested direct retrieval (via `curl`, a different
+  code path than the earlier `WebFetch` attempts) against the actual
+  data-serving endpoints — not just terms pages — for every source in
+  the approved architecture: Stooq (two domains), SEC EDGAR (two
+  subdomains), Nasdaq Trader, FRED, and Yahoo's chart endpoint. **All
+  blocked**, with the proxy's own log recording the identical cause for
+  every failure: `"gateway answered 403 to CONNECT (policy denial or
+  upstream failure)"`. Only `raw.githubusercontent.com` was reachable.
+  This is a **systemic, environment-level network egress policy**
+  (confirmed via the proxy's own allowlist, which includes only
+  `api.anthropic.com`, `registry.npmjs.org`, `pypi.org`, and similar —
+  no financial-data domain), not a per-source or per-page restriction,
+  and not something addressable by retrying different URLs.
+- **What was still produced, honestly, without fabrication:**
+  - Pilot instrument selection (8 documented cases, deliberately not
+    TSLA-only and not TSLA at all — AAPL, an unfixed-in-advance
+    small/mid-cap class, SPY, META/FB for the ticker-change case, LEH/BBBY
+    for the delisted case, KO/GE for long-history depth, a to-be-selected
+    2025 IPO, TQQQ for the leveraged-ETF exclusion test, and a
+    known-split case).
+  - A refined, five-way canonical identity model (company identity via
+    CIK / security-instrument identity via a new surrogate key / ticker
+    history / listing-exchange identity / trading history) — this
+    **corrects and supersedes** the simpler CIK-anchored design in
+    `free-root-data-source-recommendation.md §8`, which risked
+    conflating "company" and "tradable security" as always one-to-one,
+    per the Controller's own instruction to not assume CIK alone
+    represents every instrument.
+  - A WHAT WE KNOW / WHAT WE CAN INFER / WHAT WE CANNOT KNOW decomposition
+    of point-in-time universe membership — this did not require live
+    data and stands as a real finding.
+  - Ten PASS/FAIL data-quality gates, defined for future evaluation once
+    real pilot data exists.
+  - The `DataCoverageLog` table structure, populated with real values
+    only where retrieval actually succeeded (confirmation that the
+    community GitHub delisted-list is reachable and lists the case-E
+    delisted symbols) and explicitly marked "NOT RETRIEVED" everywhere
+    else, with the reason given once rather than repeated as if it
+    varied by symbol.
+- **Final decision block:** STOOQ PILOT = INCONCLUSIVE (not FAIL — this
+  is not a finding about Stooq itself); DELISTED PRICE HISTORY =
+  INCONCLUSIVE; POINT-IN-TIME UNIVERSE = PARTIAL (this one finding did
+  not depend on live retrieval); CANONICAL IDENTITY = INCONCLUSIVE
+  (design complete, empirically untested); FULL ACQUISITION = NOT
+  AUTHORIZED; NUMERIC D-0026 CALIBRATION = NOT AUTHORIZED.
+- **Cross-reference:** `docs/trading/data-acquisition-pilot.md` (full
+  pilot design, exact curl evidence of the network blocker, refined
+  identity model, quality gates, final decision block).
+- **What did NOT change:** the approved free architecture (Stooq
+  primary; SEC EDGAR/Nasdaq Trader/FRED/curated leveraged-list
+  secondary; Yahoo optional) is unchanged in shape — this entry records
+  an execution blocker, not a design or provider revision. No live
+  routine, scheduler, cron, or dependency touched. No numeric parameter
+  approved. No data fabricated. TSLA not used as any calibration
+  baseline or fallback. No attempt made to circumvent the network policy.
+- **Decision required from Controller:** how to obtain an execution
+  environment whose network egress can actually reach the approved data
+  sources — options are the Controller's own machine, a differently-
+  configured session with a broader or explicitly-allowlisted network
+  policy (if available and the Controller chooses to request it), or
+  another execution context the Controller controls. **This pilot cannot
+  be successfully re-run in an identically-configured session** — the
+  design is sound; the environment cannot execute it.
+
 ## D-0026 — Final verification pass: legal-terms block confirmed, Yahoo downgraded
 
 - **Date:** 2026-09-14
