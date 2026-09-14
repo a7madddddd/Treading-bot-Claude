@@ -254,9 +254,12 @@ IDLE. From IDLE, the level requires re-arm before another proposal.
 **Approval expiration (D-0007).** Native.
 
 **D-0007.** Reuses the ±0.5% material-move band as the re-arm
-threshold. If the market never rises 0.5% above the trigger after an
-expiration/price-block outcome, the level does not re-fire — which is
-what we want: the market has not made a material recovery.
+threshold for **`BLOCKED_PRICE` only**. `BLOCKED_EXPIRED` does not
+require re-arm (it is a human-availability event, not a market
+signal — see §3). Under the current hourly cadence, this asymmetry
+preserves responsiveness to a live opportunity while silencing
+oscillation around the trigger. If cadence ever tightens to
+sub-minute intervals, this rule should be revisited.
 
 **Multi-ladder.** Independent per level.
 
@@ -292,26 +295,72 @@ APPROVED calls `submit_or_block` with `client_order_id`.
 
 ## 3. Recommendation
 
-**Recommended: Approach D — state machine + re-arm hysteresis, with
-the re-arm threshold reusing D-0007's approved 0.5% material-move
-band.**
+**Recommended: Approach D — state machine + re-arm hysteresis, applied
+asymmetrically depending on which block occurred, with the re-arm
+threshold reusing D-0007's approved 0.5% material-move band.**
+
+The two block outcomes are semantically different and must be treated
+differently:
+
+- `BLOCKED_EXPIRED` is a **human availability** event — the market did
+  not move; the Controller did not answer within 5 minutes.
+  → State returns to `IDLE` with `armed = True`.
+  → The next scheduled check re-proposes if the trigger still holds.
+- `BLOCKED_PRICE` is a **market** event — at submit time the price was
+  outside D-0007's ±0.5% band.
+  → State returns to `IDLE` with `armed = False`.
+  → Re-arm requires `p_last ≥ trigger × 1.005` (D-0007's band, reused).
 
 Reasons:
 - Aligned with the already-approved strategy ("each Ladder can trigger
   only once per trade" is a state machine).
 - Handles all four duplicate risks (proposal, approval, order, spam).
+- **Responsive to legitimate opportunities.** Under the current hourly
+  cadence (D-0021: 7 checks per session), a proposal that expires
+  because the Controller was briefly unavailable would otherwise be
+  silently swallowed for the rest of the day — even though the
+  strategy engine keeps sampling a valid trigger. Making
+  `BLOCKED_EXPIRED` re-arm immediately closes that gap while capping
+  worst-case notifications at ≤ 7 per level per day (one per hourly
+  check while the trigger still holds — each corresponding to an
+  independent market observation, not oscillation flicker within a
+  burst).
+- **Silent on price oscillation.** `BLOCKED_PRICE` uses the 0.5%
+  hysteresis so a market flicker around the trigger does not produce
+  a second ask until the price meaningfully recovers.
 - No invented constant: the 0.5% comes from D-0007, which is already
   Controller-approved and represents a "material" price move for
   approval purposes; using the same value for "material recovery"
-  after an expired/price-blocked proposal is consistent domain
-  language.
-- Deterministic and replayable — the entire behavior is a function of
-  the ordered tick sequence and the per-level state.
+  after a price-block outcome is consistent domain language.
+- Deterministic and replayable — behavior is a function of the ordered
+  tick sequence and the per-level state.
 - Survives restart via SQLite (D-0018 / D-0024).
 - Integrates cleanly with reconciliation.
 
-The mechanism is: **primarily a state machine**, **augmented by a
-re-arm rule that reuses D-0007's ±0.5% band**, not a time window.
+The mechanism is: **primarily a state machine**, augmented by a
+re-arm rule that reuses D-0007's ±0.5% band **only for the market-based
+block reason**, not for expiration or as a general time window.
+
+### Why asymmetric
+
+`BLOCKED_EXPIRED → armed = True` was reviewed against three
+alternatives:
+
+| Alternative | Notifications / day (worst) | Missed-opportunity risk | Noise risk |
+|---|---|---|---|
+| **A. armed = True** (recommended) | 7 (bounded by hourly cadence) | Zero — any active trigger surfaces on the next check | Low; each notification is an independent market observation |
+| **B. Require p_last > trigger before re-arm** | 0 to 7, depending on tick pattern | Modest — long stays below trigger produce no re-ask | Low |
+| **C. Require full 0.5% recovery (same as BLOCKED_PRICE)** | 0 to 1 | High — Controller can go a full day without another ask on a live trigger | Very low |
+
+Under the hourly cadence B and C save few notifications but cost
+missed opportunities. A is the only option that never suppresses a
+legitimate opportunity because of a temporary Controller absence, and
+the "7 per day worst case" corresponds to a genuine session-long
+trigger — proportionate to the underlying event, not noise.
+
+If cadence ever tightens to sub-minute intervals, the arithmetic
+changes and this rule should be revisited in a follow-up D-0011
+revision.
 
 ## 4. Concrete example — Ladder 1 at $95.00 (initial fill = $100)
 
@@ -340,21 +389,39 @@ Initial state per level: `IDLE`, `armed=True`.
 Duplicates suppressed. Alpaca `client_order_id = proposal.id` gives
 final-mile duplicate defense at the broker.
 
-### 4c. Re-eligible only after material recovery
+### 4c. Two re-eligibility cases
 
-Controller does not answer within 5 min → BLOCKED_EXPIRED → IDLE,
-still `armed=False`.
+**Case (i) — BLOCKED_EXPIRED** (Controller didn't answer within 5 min).
+State returns to `IDLE` with `armed = True` immediately. Re-ask on
+the very next scheduled check if the trigger still holds.
 
-| tick | p_last | state | action |
+| check (hourly) | p_last | state | action |
 |---|---|---|---|
-| N   | 94.90 | IDLE, armed=False | no new proposal (not armed) |
-| N+1 | 95.20 | IDLE, armed=False | 95.20 < 95.475; still not re-armed |
-| N+2 | 95.50 | IDLE, armed=False | 95.50 ≥ 95.475; re-armed → armed=True |
-| N+3 | 95.45 | IDLE, armed=True | above trigger; no action |
-| N+4 | 94.94 | IDLE, armed=True | trigger fires → emit proposal P-2; armed=False |
+| N   | 94.90 | IDLE, armed=True | trigger fires → emit P-1; armed=False |
+| —   | (5 min elapses; no Controller response) | PROPOSAL_PENDING → BLOCKED_EXPIRED → IDLE, armed=True | |
+| N+1 | 94.95 | IDLE, armed=True | ≤ trigger → emit P-2; armed=False |
+| N+2 | 95.10 | PROPOSAL_PENDING (still, if P-2 unresolved) | no new proposal |
 
-Same tick-4 in an oscillating market (never reaches 95.475) would NOT
-have fired a second proposal — that is the desired suppression.
+Worst case on hourly cadence: 7 asks per level per day if the trigger
+holds all session and the Controller is unreachable — bounded and
+proportionate.
+
+**Case (ii) — BLOCKED_PRICE** (Controller approved but the price had
+moved outside ±0.5% by submit time). State returns to `IDLE` with
+`armed = False`. Re-arm requires material recovery.
+
+| check (hourly) | p_last | state | action |
+|---|---|---|---|
+| N   | 94.90 | IDLE, armed=True | trigger fires → emit P-1; armed=False |
+| N+ε | 94.30 | PROPOSAL_PENDING | Controller approves; submit_or_block: age ok, but 94.30 is 0.74% below trigger → BLOCKED_PRICE → IDLE, armed=False |
+| N+1 | 94.70 | IDLE, armed=False | ≤ trigger BUT not armed → no proposal |
+| N+2 | 95.10 | IDLE, armed=False | 95.10 < 95.475 → still not re-armed |
+| N+3 | 95.55 | IDLE, armed=False | 95.55 ≥ 95.475 → armed=True |
+| N+4 | 94.85 | IDLE, armed=True | trigger fires → emit P-2; armed=False |
+
+If the price never rises to 95.475 for the rest of the trade, no
+further proposals fire for this Ladder level. That is the intended
+suppression on market-driven blocks.
 
 ### 4d. REJECT is terminal
 
@@ -385,15 +452,24 @@ Extends `docs/architecture/state-management.md`:
 
 Invariants (extend §2 of state-management.md):
 
-1. A proposal for level L is created only if `state[L] == IDLE AND armed[L] == True`.
+1. A proposal for level L is created only if `state[L] == IDLE AND
+   armed[L] == True AND p_last ≤ trigger[L] AND trigger[L] >
+   active_floor_price`.
 2. `armed[L]` transitions to False when a proposal for L is created.
-3. `armed[L]` transitions to True when `p_last ≥ trigger[L] × 1.005`
-   AND `state[L] == IDLE` AND `terminal[L] == False`.
-4. `state[L] ∈ {EXECUTED, REJECTED, BLOCKED_FLOOR_PRIORITY}` implies
+3. On transition into `BLOCKED_EXPIRED`, the level immediately
+   transitions back to `IDLE` with `armed = True` (expiration is a
+   human-availability event, not a market signal — see §3).
+4. On transition into `BLOCKED_PRICE`, the level immediately transitions
+   back to `IDLE` with `armed = False`; `armed` returns to True when
+   `p_last ≥ trigger[L] × 1.005` AND `state[L] == IDLE` AND
+   `terminal[L] == False`.
+5. `state[L] ∈ {EXECUTED, REJECTED, BLOCKED_FLOOR_PRIORITY}` implies
    `terminal[L] == True`. Once terminal, no state transitions and no
    proposals for the rest of the trade.
-5. On process restart, `armed[L]` is computed from persisted values
-   only; never inferred from a fresh price fetch.
+6. On process restart, `armed[L]` is loaded from persisted values only;
+   never inferred from a fresh price fetch. Any pending proposal older
+   than 5 minutes at restart is immediately transitioned to
+   `BLOCKED_EXPIRED` (and thus to `IDLE` with `armed = True`).
 
 ## 6. Behavior on restart and reconciliation
 
@@ -440,29 +516,55 @@ same level are safe — the loser retries or aborts.
 
 ## 9. Proposed policy wording
 
-> **D-0011 — Ladder trigger debounce: state machine + re-arm.**
+> **D-0011 — Ladder trigger debounce: per-level state machine with
+> post-BLOCKED_PRICE re-arm.**
 >
-> Each Ladder level has a per-trade state machine over
-> `{IDLE, PROPOSAL_PENDING, APPROVED, EXECUTED, REJECTED,
-> BLOCKED_EXPIRED, BLOCKED_PRICE, BLOCKED_FLOOR_PRIORITY}`, plus a
-> boolean `armed` flag.
+> Each Ladder level (Ladder 1, Ladder 2) has, per trade, a state
+> machine over the following states:
+> `IDLE`, `PROPOSAL_PENDING`, `APPROVED`, `EXECUTED`, `REJECTED`,
+> `BLOCKED_EXPIRED`, `BLOCKED_PRICE`, `BLOCKED_FLOOR_PRIORITY`.
 >
-> - `EXECUTED`, `REJECTED`, and `BLOCKED_FLOOR_PRIORITY` are terminal
->   for the trade.
-> - `BLOCKED_EXPIRED` and `BLOCKED_PRICE` return the level to `IDLE`
->   with `armed = False`.
-> - A new proposal is created only when the level is in `IDLE` **and**
->   `armed == True`.
-> - `armed` transitions to `True` when the Alpaca Last Trade price
->   reaches `trigger × 1.005` (the same ±0.5% material-move band
->   already approved in D-0007), and the level is in `IDLE`, and is
->   not terminal.
-> - `armed` transitions to `False` at the moment a proposal for the
->   level is created.
+> Terminal (for the trade):
+> - `EXECUTED`, `REJECTED`, `BLOCKED_FLOOR_PRIORITY` — no further
+>   proposals or transitions on that level.
+>
+> Non-terminal blocks:
+> - `BLOCKED_EXPIRED` (the D-0007 5-minute clock ran out with no
+>   Controller response) returns the level to `IDLE` with
+>   `armed = True`. The next scheduled market check re-asks if the
+>   trigger condition still holds. This is intentional: expiration is
+>   a human availability event, not a market signal, and on the
+>   approved hourly cadence (D-0021) it is bounded to at most one
+>   re-ask per check.
+> - `BLOCKED_PRICE` (D-0007 re-check found `abs(current − trigger)/trigger > 0.005`
+>   at submit time) returns the level to `IDLE` with `armed = False`.
+>   Re-arm requires the Alpaca Last Trade price to reach `trigger × 1.005`
+>   on some subsequent scheduled check.
+>
+> Proposal creation gate:
+> - A new proposal is created only when the level is in `IDLE` AND
+>   `armed == True` AND `p_last ≤ trigger` AND `trigger > active_floor_price`.
+> - `armed` transitions to `False` at the moment a proposal is created.
+>
+> The `0.005` re-arm margin reuses the ±0.5% material-move band
+> already approved in D-0007. It is intentionally not a separately
+> invented constant.
 >
 > Alpaca `client_order_id = proposal.id` (D-0025) provides broker-side
-> idempotency. All debounce state is persisted in SQLite (D-0024) and
-> survives restart and reconciliation.
+> idempotency, so a duplicate submit attempt from any source (retry,
+> race, restart) is refused at Alpaca even before D-0011's state
+> machine catches it.
+>
+> All debounce state (per trade, per level) is persisted in SQLite
+> via the D-0024 repository abstraction and survives process restart
+> and broker reconciliation. On restart, any proposal older than
+> 5 minutes with no recorded approval is transitioned to
+> `BLOCKED_EXPIRED` before the engine acts.
+>
+> Future-work note: the asymmetric treatment of `BLOCKED_EXPIRED` vs
+> `BLOCKED_PRICE` is calibrated to the current hourly scheduler
+> cadence (D-0021). If cadence ever tightens to sub-minute intervals,
+> this rule should be revisited as a follow-up D-0011 revision.
 
 ## 10. Status
 

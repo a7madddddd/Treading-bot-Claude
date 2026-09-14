@@ -128,35 +128,52 @@ Each entry:
 - **Rationale:** Keeps behavior explicit and safe; no invention of
   additional retry/roll policy.
 
-## D-0011 — Ladder trigger debounce — PROPOSED
+## D-0011 — Ladder trigger debounce — PROPOSED (refined)
 
-- **Date:** 2026-09-14 (proposal; trigger-source part superseded by D-0012)
-- **Status:** **PROPOSED** — awaiting Controller approval
+- **Date:** 2026-09-14 (proposal; trigger-source part superseded by
+  D-0012; wording refined this session after Controller review of the
+  BLOCKED_EXPIRED treatment)
+- **Status:** **PROPOSED** — awaiting Controller final approval
 - **Proposed by:** Claude (analysis in `docs/trading/debounce-analysis.md`)
-- **Proposal:** Ladder trigger debounce is a **per-level state machine
-  plus a re-arm hysteresis rule** that reuses the ±0.5%
-  material-move band already approved in D-0007. Full wording is in
-  `debounce-analysis.md §9`. Summary:
+- **Proposal (refined):** Ladder trigger debounce is a **per-level
+  state machine** with **asymmetric re-arm** — hysteresis is applied
+  only to market-driven blocks, not to Controller-availability
+  expirations. Full wording is in `debounce-analysis.md §9`.
+  Summary:
   - States per Ladder level per trade: `IDLE`, `PROPOSAL_PENDING`,
     `APPROVED`, `EXECUTED`, `REJECTED`, `BLOCKED_EXPIRED`,
     `BLOCKED_PRICE`, `BLOCKED_FLOOR_PRIORITY`.
-  - `EXECUTED`, `REJECTED`, `BLOCKED_FLOOR_PRIORITY` are terminal.
-  - A new proposal is created only when `state == IDLE` AND
-    `armed == True`.
-  - `armed` flips to `False` when a proposal is created; flips to
-    `True` again when `p_last ≥ trigger × 1.005` (D-0007's band).
+  - Terminal (no further activity this trade): `EXECUTED`, `REJECTED`,
+    `BLOCKED_FLOOR_PRIORITY`.
+  - `BLOCKED_EXPIRED` → `IDLE` with `armed = True`. Next scheduled
+    check may re-ask if trigger still holds. **Justification:**
+    expiration is a human-availability event, not a market signal;
+    under the hourly cadence (D-0021) this is bounded to ≤ 7 asks per
+    Ladder per day and preserves responsiveness to a live
+    opportunity. If cadence ever tightens to sub-minute intervals,
+    revisit as a follow-up D-0011 revision.
+  - `BLOCKED_PRICE` → `IDLE` with `armed = False`. Re-arm requires
+    `p_last ≥ trigger × 1.005` on a subsequent check (D-0007's ±0.5%
+    band, reused; no invented constant).
+  - Proposal creation gate: `state == IDLE AND armed == True AND
+    p_last ≤ trigger AND trigger > active_floor_price`.
   - Alpaca `client_order_id = proposal.id` provides broker-side
     idempotency (D-0025).
   - All debounce state persisted in SQLite (D-0024); survives
-    restart and reconciliation.
-- **Rationale:** State handles duplicate proposals/orders; re-arm
-  handles oscillation around trigger after expired/blocked-price
-  outcomes; the 0.5% number reuses an already-approved constant.
+    restart and reconciliation. On restart, any pending proposal
+    older than 5 minutes is transitioned to `BLOCKED_EXPIRED`
+    (and thus back to IDLE with armed=True).
+- **Rationale:** state handles duplicate proposals/orders;
+  asymmetric re-arm handles market-driven oscillation
+  (BLOCKED_PRICE) while preserving responsiveness after a temporary
+  Controller absence (BLOCKED_EXPIRED); 0.5% reuses an
+  already-approved constant.
 - **Note:** the trigger-source half of the original D-0011 (trade
   prints vs bars vs quote midpoint) is settled by D-0012 (Alpaca
   Last Trade).
-- **Decision required:** Controller review of `debounce-analysis.md`
-  and explicit APPROVED / REJECTED / MODIFIED response.
+- **Decision required:** Controller review of the refined
+  `debounce-analysis.md` and explicit APPROVED / REJECTED / MODIFIED
+  response.
 
 ## D-0012 — Market data source: Alpaca Last Trade for ladder triggers
 
