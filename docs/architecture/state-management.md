@@ -117,6 +117,19 @@ On routine start:
 3. If broker state contradicts persisted state, prefer broker as source of truth for order and position identity; recompute derived state; log the discrepancy.
 4. Refuse to submit new orders until reconciliation succeeds.
 
+## 3a. Runtime environment guard (cross-reference)
+
+The runtime that hosts this engine must assert, at startup, the
+paper-endpoint guard specified in `docs/trading/execution.md §8`:
+
+- `ALPACA_BASE_URL` points at the paper endpoint.
+- Live-trading URLs are refused.
+- A missing or malformed env fails closed — no orders, no state
+  mutation.
+
+State management does not enforce this itself; it depends on the
+runtime having done so before the first write.
+
 ## 4. What we are NOT deciding here
 
 - Storage medium (SQLite, JSON, DB, broker note, etc.). Deferred to

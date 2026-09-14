@@ -153,8 +153,20 @@ lives in the repo under `docs/`:
 - `docs/trading/experiments.md` — experiment template and log
 - `docs/trading/research-log.md` — research summaries with sources
 - `docs/trading/glossary.md` — key terms
+- `docs/trading/routine-policy-alignment.md` — per-routine status vs approved policy
+- `docs/trading/timezone-audit.md` — approved CT schedule and current UTC-drift audit
+- `docs/trading/credential-migration-plan.md` — rotation and cleanup for leaked keys
+- `docs/trading/verification-plan.md` — pre-APPLY test plan
+- `docs/trading/scheduler-design.md` — TZ-aware scheduling design (DST-safe)
+- `docs/trading/consistency-review-2026-09-14.md` — pre-APPLY cross-doc review
 - `docs/architecture/overview.md` — skills, pipeline, routines, notifications, logging
+- `docs/architecture/state-management.md` — deterministic recoverable state contract (D-0018)
+- `docs/architecture/research-sources.md` — Perplexity + Capitol Trades research architecture (D-0019)
 - `docs/development-workflow.md` — the 7-phase workflow
+- `routines/README.md` — index of live account Routines snapshotted into the repo
+- `routines/<slug>/prompt.md` — redacted snapshot of the live prompt
+- `routines/<slug>/prompt-proposed.md` — draft corrected prompt for Controller review (where applicable)
+- `routines/<slug>/metadata.md` — trigger metadata and policy-alignment notes
 
 When new research materially changes understanding, add a dated entry to
 `research-log.md` with source, conclusion, whether it is approved or

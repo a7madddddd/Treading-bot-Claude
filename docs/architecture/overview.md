@@ -98,24 +98,33 @@ Approved constraints (see `../trading/decisions.md`):
 
 Then wait for Controller approval.
 
-Conceptual routines (times are examples, subject to Controller approval):
+Currently approved schedule (see `../trading/timezone-audit.md §3` and
+D-0021 for the authoritative record):
 
-- **Pre-market (7:00 CT)** — market/news research, watchlist, candidate setups.
-- **Market open (8:30 CT)** — evaluate approved strategy conditions,
-  analyze candidates, prepare or (if approved) execute per policy, record.
-- **Midday (11:00 CT)** — reassess positions, risk, ladder conditions,
-  trailing-floor updates.
-- **End of day** — review positions/risk, run approved exit checks
-  (never auto-close just because it's EOD), update benchmark, journal,
-  report, notify.
+| Routine | Intended CT | Status |
+|---|---|---|
+| `capitol-trades-copy-ro-khanna` (research-only) | 07:00 | approved |
+| `tsla-paper-trading-monitor` | 08:30, then hourly on the half-hour through 14:30 (7 passes) | approved |
+| `tsla-wheel-daily-summary` | 14:55 | approved (read-only) |
+| `tsla-wheel-hourly-monitor` | — | disabled (D-0016) |
+
+No dedicated midday-reassessment routine exists — the monitor's
+11:30 CT pass covers midday. No dedicated end-of-day equity-strategy
+routine exists — reporting will be added when the ladder engine is
+ready.
 
 Constraints:
 
 - Separate routines so they cannot corrupt shared state.
 - Prefer at least 30 minutes between major routines unless technically
-  required otherwise.
+  required otherwise. The monitor cadence (hourly on the half-hour)
+  already respects this.
 - Use the project's chosen scheduling mechanism — do not add a new
   scheduler without cause.
+- Schedules are in America/Chicago (D-0005, D-0020). The trigger
+  runtime currently stores plain UTC crons and does not expose a
+  timezone field; the target runtime must be TZ-aware. See
+  `../trading/timezone-audit.md §4` and `../trading/scheduler-design.md`.
 
 ## 6. Notifications
 

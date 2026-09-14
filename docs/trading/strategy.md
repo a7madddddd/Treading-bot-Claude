@@ -84,9 +84,13 @@ the original Floor **only when it is higher**.
 
 - Activation is based on the **weighted-average filled entry price** of the
   current position.
-- Activates when the market price reaches **+10%** above the weighted-average
-  entry.
-- On activation the trailing floor = **5% below the current market price**.
+- Activates the first time the Last Trade price (D-0012) reaches or exceeds
+  the activation threshold: `activation_threshold = weighted_avg_entry × 1.10`.
+- On activation, the trailing floor is **`activation_threshold × 0.95`**
+  (D-0008 — threshold-based, NOT the current tick price).
+- Any tick print above the threshold at the moment of activation does
+  **not** raise the initial trailing floor above `threshold × 0.95`;
+  further ratcheting only happens on subsequent thresholds per §Ratchet.
 
 ### Ratchet — compounded 5% steps, threshold-based floor (APPROVED)
 

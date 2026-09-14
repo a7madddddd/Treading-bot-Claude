@@ -47,11 +47,19 @@ Expired   → do not submit; require new approval if trigger re-fires
 
 - Symbol
 - Trigger price and rule (e.g. Ladder 1 at −5%)
-- Current market price
+- **Current price** — the latest **Alpaca Last Trade** for the symbol
+  (D-0012); the trigger evaluation and the proposal display both use
+  this source
 - Proposed shares
-- Current position and average entry
+- Current position and weighted-average entry
 - Estimated dollar risk at Floor after this fill
 - Reason / context
+
+This list is the **minimum** shown to the Controller. The full
+persistent proposal + approval record — with every field the engine
+must store and reconcile (proposal_id, approval_state, approval
+timestamps, active_floor snapshot, etc.) — is defined in
+`../architecture/state-management.md §Approval workflow state`.
 
 ### Ladder approval expiration — APPROVED (D-0007)
 
