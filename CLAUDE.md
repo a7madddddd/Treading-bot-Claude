@@ -168,6 +168,7 @@ lives in the repo under `docs/`:
 - `docs/trading/debounce-analysis.md` — D-0011 analysis (APPROVED policy)
 - `docs/trading/universe-selection-analysis.md` — D-0026 mechanism analysis, first pass (PROPOSED / NOT APPROVED)
 - `docs/trading/universe-parameter-validation.md` — D-0026 parameter validation, second pass (PROPOSED / NOT APPROVED; supersedes some first-pass structural choices pending Controller review)
+- `docs/trading/historical-data-calibration-plan.md` — D-0026 historical-data acquisition + calibration/backtesting methodology (PROPOSED / NOT APPROVED; still Phase 1 planning only)
 - `docs/development-workflow.md` — the 7-phase workflow
 - `routines/README.md` — index of live account Routines snapshotted into the repo
 - `routines/<slug>/prompt.md` — redacted snapshot of the live prompt

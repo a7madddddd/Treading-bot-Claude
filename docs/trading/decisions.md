@@ -469,6 +469,70 @@ Controller approval per CLAUDE.md §9.
   underlying engine has no TSLA anywhere in its logic. There is no
   interim "approved universe = ['TSLA']" for production.
 
+## D-0026 mechanism — historical-data & calibration methodology (still PROPOSED)
+
+- **Date:** 2026-09-14
+- **Status:** PROPOSED / NOT APPROVED — Phase 1 (planning) only; no data
+  collected, no code written
+- **Proposed by:** Claude, per Controller direction to design the
+  historical-data acquisition and calibration/backtesting methodology
+  before any D-0026 numeric parameter is approved
+- **Repository check performed first:** confirmed (full file listing) the
+  repo contains 35 files, all documentation/config — zero data files,
+  zero code, zero dependency manifests. Restated as FACT, not assumed.
+- **Data-source research performed:** checked Alpaca's actual documented
+  historical-data capabilities (via Alpaca's own docs and community
+  forum, cited in the plan doc) rather than assuming. Key confirmed
+  findings:
+  - Alpaca provides ~7yr (SIP) / ~5yr (IEX) historical daily bars,
+    historical quotes/trades endpoints, and a Corporate Actions API.
+  - Alpaca does **not** appear to provide point-in-time historical
+    universe/tradability-status history (only a current snapshot) —
+    independently corroborated by multiple community-forum reports of
+    broken/empty historical data for delisted or renamed symbols.
+  - Alpaca does **not** appear to provide sector/GICS classification.
+  - True historical bid/ask quotes may exist (better than the
+    second-pass document assumed, which discussed only a range proxy),
+    but IEX-only coverage is ~2.5% of volume and SIP requires a paid
+    subscription — a real cost decision, not assumed away.
+- **What the new document specifies (Phase 1, design only):** full data
+  requirements per dataset (mandatory/optional, point-in-time and
+  survivorship/look-ahead-bias analysis); an explicit spread-proxy
+  honesty analysis (labeled approximation, never presented as true
+  spread); a walk-forward multi-regime backtest split design (rejecting
+  a fixed "last 3 years" default); a non-circular regime-segmentation
+  validation method; a per-parameter calibration plan (data / hypothesis
+  / candidate forms / metrics / failure mode / approval evidence /
+  rejection evidence) for every §3 parameter, with Top-N explicitly
+  flagged as needing operational (not just market) data; a
+  strategy-mechanics-preservation section restating that the approved
+  Ladder/Floor/D-0007/D-0011 logic is a frozen input, never adjusted to
+  make the universe selector look better; a full metrics catalog split
+  into universe-quality / strategy-outcome / execution-quality / risk
+  categories; a non-TSLA control-experiment design (stage-A/B survivor
+  set and random-N-per-day, explicitly not TSLA); sensitivity-testing
+  design; overfitting/data-snooping safeguards (pre-registered metrics,
+  single untouched holdout, no peeking); an expanded PROPOSED→APPROVED
+  acceptance checklist; an explicit failure/insufficient-data policy
+  table (every branch keeps the system PROPOSED/TBD, never "pick a
+  reasonable number"); and a three-phase implementation boundary
+  (Phase 1 planning — current; Phase 2 data collection + offline
+  calibration engine; Phase 3 live implementation), each transition
+  gated by explicit Controller approval.
+- **What did NOT change:** no numeric parameter approved; D-0026
+  architectural principle and mechanism both remain PROPOSED as
+  previously recorded; TSLA test-only and no-fallback rules restated
+  and honored (TSLA is explicitly excluded even as a calibration
+  baseline).
+- **Cross-reference:** `docs/trading/historical-data-calibration-plan.md`
+  (this entry's subject document).
+- **Decision required:** Controller decides whether to authorize Phase 2
+  (historical-data acquisition + offline calibration engine build) —
+  see the plan document §15/§16 for the specific sub-decisions (external
+  data-source selection for point-in-time universe history and sector
+  classification; whether to authorize a paid SIP data subscription).
+  This document does not authorize Phase 2 on its own.
+
 ## D-0026 mechanism — third-pass configurable redesign (still PROPOSED)
 
 - **Date:** 2026-09-14
