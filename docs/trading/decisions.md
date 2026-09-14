@@ -469,6 +469,75 @@ Controller approval per CLAUDE.md §9.
   underlying engine has no TSLA anywhere in its logic. There is no
   interim "approved universe = ['TSLA']" for production.
 
+## D-0026 — GitHub-native data sources found and empirically verified
+
+- **Date:** 2026-09-14
+- **Status:** Controller redirected away from blocked financial-data
+  domains toward GitHub/public-repository-reachable sources only. This
+  entry records real, verified findings from that redirect. Still Phase
+  2, research/verification scope; full acquisition still NOT authorized;
+  D-0026 mechanism and every numeric parameter remain PROPOSED / NOT
+  APPROVED; Phase 3 remains NOT approved.
+- **Method:** used this environment's sanctioned `add_repo` mechanism
+  (read-only, anonymous git clone of public repos — not a workaround of
+  the blocked network policy) to actually clone and inspect candidate
+  repositories, plus direct `raw.githubusercontent.com` fetches. Real
+  files were fetched and read; nothing in this entry is inferred from
+  search-result summaries alone where a direct check was possible.
+  Cloned repositories were deleted from local disk after inspection; no
+  bulk data was retained or committed to this project.
+- **Market-regime data — SOLVED, improved:** `github.com/datasets/
+  finance-vix` verified directly — 9,272 real rows, daily VIX OHLC from
+  1990-01-02 through **2026-09-11** (current), licensed **PDDL (public
+  domain)** — cleaner than the FRED dependency it replaces and than
+  every option evaluated in prior passes.
+- **Reference/identity data — solved for current-snapshot only:**
+  `datasets/s-and-p-500-companies` (verified: real CSV including CIK
+  directly) and `datasets/nasdaq-listings` (verified reachable), both
+  PDDL-licensed. Does not solve point-in-time historical membership —
+  only a clean, free, current identity layer.
+- **Bulk historical OHLCV — PARTIALLY solved, with a new disclosed
+  tradeoff:** `eliangcs/pystock-data` — cloned and verified directly:
+  517 MB of real committed daily price data, **2009-01-01 through
+  2017-03-31 only** (project frozen since), licensed **CC BY-SA 4.0**
+  (no practical restriction for internal, non-redistributed use).
+  **New gap introduced by this pivot:** no coverage after March 2017 —
+  misses 2018 vol spike, 2020 COVID crash, 2022 bear market, and
+  anything current. This is a real tradeoff versus the originally
+  intended Stooq (which would have offered ongoing coverage, had its
+  terms cleared), disclosed explicitly, not hidden.
+- **Delisted-security test — run empirically, not assumed, on 5 real
+  symbols (not generalized from one case, per standing project
+  discipline):** Family Dollar (FDO, delisted 2015) **confirmed found**
+  — 1,564 real price rows through the archive's cutoff date. RadioShack
+  (RSH), Blockbuster (BBI), Dell (DELL), and Heinz (HNZ) **confirmed
+  absent** — zero rows for all four. Result: **1 of 5 (20%) — a real
+  number from a real small test, explicitly not extrapolated to a
+  dataset-wide rate** without a full-scale run. Plausible (disclosed,
+  not confirmed) explanation: the initial batch's price-bearing universe
+  was 1,980 symbols, growing to 5,981 by March 2017 — suggesting a
+  large/mid-cap-oriented starting universe that broadened over time,
+  rather than full-market coverage from day one.
+- **Cross-reference:** `docs/trading/github-native-data-sources.md`
+  (full findings, licenses, structure, the delisted-security test, and
+  the recommended path forward).
+- **What did NOT change:** the D-0026 architecture, approval workflow,
+  and every prior "still unresolved" item (true point-in-time universe
+  membership, true spread/quote data, full-scale delisted-coverage
+  measurement) remain exactly as before — this entry adds a working,
+  verified data-access path; it does not close those gaps. No numeric
+  parameter approved. No live routine, scheduler, cron, or dependency
+  touched. TSLA not used as any calibration baseline or fallback.
+- **Decision required from Controller:** (1) whether the March-2017
+  coverage ceiling is an acceptable tradeoff versus continuing to seek
+  access to Stooq/SEC/FRED directly (e.g., via the Controller's own
+  machine); (2) whether to authorize extracting and canonicalizing
+  `eliangcs/pystock-data`'s **full** contents (only small samples were
+  inspected in this pass) into the local canonical dataset; (3) whether
+  to independently verify `JerBouma/FinanceDatabase` and
+  `zyhe16/top-us-stock-tickers` (surfaced but not tested this pass) as
+  supplementary identity sources.
+
 ## D-0026 — Data-acquisition pilot: environment cannot reach any data source
 
 - **Date:** 2026-09-14
