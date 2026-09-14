@@ -258,6 +258,24 @@ Each entry:
   RECOMMENDATION. Research never directly changes approved policy and
   never submits trades. See `docs/architecture/research-sources.md`.
 
+## D-0021 — Market-open anchor and pre-market research anchor
+
+- **Date:** 2026-09-14
+- **Status:** APPROVED (schedule anchors)
+- **Approved by:** Controller
+- **Decision:**
+  - `tsla-paper-trading-monitor` first pass at **08:30 America/Chicago**
+    (US regular-session open), then hourly on the half-hour through
+    14:30 CT. Cron under a TZ-aware scheduler: `30 8-14 * * 1-5`.
+  - `capitol-trades-copy-ro-khanna` runs at **07:00 America/Chicago**.
+- **Rationale:** The approved market-open time is 08:30 CT, not
+  09:00. The Controller directed that this must not be silently
+  changed. Pre-market research at 07:00 CT lands findings before the
+  open, before the monitor's first pass.
+- **Enforcement:** every schedule proposal must show cron +
+  intended CT wall-clock + current-DST UTC equivalent. See
+  `timezone-audit.md`.
+
 ## D-0020 — Timezone: America/Chicago, DST-aware, never a fixed-UTC schedule
 
 - **Date:** 2026-09-14

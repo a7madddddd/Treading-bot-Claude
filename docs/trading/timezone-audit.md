@@ -27,28 +27,38 @@ The ✅ rows are close to intent during CDT; every row silently breaks in Novemb
 
 ## 3. Proposed CT wall-clock schedule (D-0020 compliant)
 
+Approved anchor: **US regular session 08:30–15:00 America/Chicago**.
 Each schedule shown as: intended CT time → cron expression to be evaluated **under an America/Chicago TZ-aware scheduler** (not fixed UTC).
 
 | Routine | Intended CT | Cron in `TZ=America/Chicago` | Current-DST UTC equivalent for reference |
 |---|---|---|---|
-| tsla-paper-trading-monitor | Every hour on the hour 09:00–15:00 CT, Mon–Fri | `0 9-15 * * 1-5` | Summer: `0 14-20 * * 1-5` UTC; Winter: `0 15-21 * * 1-5` UTC |
+| tsla-paper-trading-monitor | 08:30 CT (open), then hourly on the half-hour through 14:30 CT (7 passes), Mon–Fri | `30 8-14 * * 1-5` | Summer (CDT, UTC−5): `30 13-19 * * 1-5` UTC; Winter (CST, UTC−6): `30 14-20 * * 1-5` UTC |
 | tsla-wheel-hourly-monitor | *(disabled — D-0016)* | — | — |
 | tsla-wheel-daily-summary | 14:55 CT (5 min before close), Mon–Fri | `55 14 * * 1-5` | Summer: `55 19 * * 1-5` UTC; Winter: `55 20 * * 1-5` UTC |
 | capitol-trades-copy-ro-khanna | 07:00 CT (pre-market research), Mon–Fri | `0 7 * * 1-5` | Summer: `0 12 * * 1-5` UTC; Winter: `0 13 * * 1-5` UTC |
 
 Notes:
-- 09:00 CT is 30 minutes after regular open — matches the current CDT behavior. Confirm this is the intent, or shift to `0 8-15 * * 1-5` to include the open hour.
-- Capitol Trades moved to 07:00 CT (pre-market) so its findings feed the day's research before the open.
+- **08:30 CT** is the approved market-open anchor. The Controller directed that this must not be silently changed. The first monitor pass fires at the bell, then every 60 minutes thereafter, giving 8:30, 9:30, 10:30, 11:30, 12:30, 13:30, 14:30 CT. The final 30 minutes of the session are covered by the 14:30 pass followed by the 14:55 daily-summary run.
+- Capitol Trades runs at 07:00 CT (pre-market) so findings feed the day's research before the open.
 
-## 4. Implementation constraint
+## 4. Scheduler-runtime inspection
 
-The scheduler currently used for these Routines interprets cron as UTC.
-To be D-0020 compliant we must either:
+Findings from inspecting the four live triggers (`list_triggers` response, 2026-09-14):
 
-- **(a)** run the routines under a scheduler that supports a `TZ` field (e.g. host cron with `CRON_TZ=America/Chicago`, or an in-language scheduler like APScheduler with a timezone argument), OR
-- **(b)** re-issue the UTC cron twice a year on DST transitions. Ugly and error-prone.
+- Each trigger stores a plain 5-field `cron_expression` string.
+- There is **no `timezone`/`tz` field** on the trigger record.
+- The runtime evaluates the stored cron against **UTC** — verified by comparing `cron_expression` hours to `next_run_at` values (RFC3339 `Z`).
+- Each trigger carries an `environment_variables: {}` block that is empty on all four routines. Values written there would be delivered to the runtime as env vars, which is the mechanism we should use for credentials.
 
-**Recommendation:** (a). This is one of the reasons the language/runtime + scheduler decision needs to happen before we call `update_trigger`.
+**Implication.** The current runtime does not natively honor `TZ=America/Chicago`. To be D-0020 compliant we have three options:
+
+- **(a) TZ-aware in-language scheduler**, replacing per-routine cron with an APScheduler / cron-with-`CRON_TZ` job that runs a small dispatcher inside a persistent process, and invokes the routine logic directly. Most correct; requires the language/runtime decision.
+- **(b) Two UTC crons per routine** — one for CDT (Mar–Nov) and one for CST (Nov–Mar), each disabled in the other half of the year via `enabled` flag toggled by an external orchestrator on the DST-transition weekends. Ugly, but no runtime change required.
+- **(c) One UTC cron, manually reissued twice per year** at the DST-transition weekends. Ugly and error-prone.
+
+**Recommendation:** **(a)** as the target; **(b)** as an acceptable interim if we must ship on the existing trigger runtime before the language/runtime decision lands. **(c)** is not acceptable — it silently misses the intended CT time whenever the reissue is forgotten.
+
+The Controller has not yet decided (a) vs (b). Do not act on either before that decision AND an explicit APPLY.
 
 ## 5. What we will NOT do
 
