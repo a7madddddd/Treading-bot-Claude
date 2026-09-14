@@ -53,17 +53,16 @@ Expired   → do not submit; require new approval if trigger re-fires
 - Estimated dollar risk at Floor after this fill
 - Reason / context
 
-### Ladder approval expiration — TBD (D-0007)
+### Ladder approval expiration — APPROVED (D-0007)
 
-- Approval authorizes execution **only while the Ladder remains valid**.
-- If price moves materially away from the trigger, the proposal must
-  **expire** and require new Controller approval.
-- Approval at one price never automatically authorizes execution at a
-  materially different price.
-- Exact validity band (percentage move, time window, or both) is
-  **TBD** per D-0007. Do NOT invent numeric defaults. The architecture
-  should support an expiration mechanism; the policy values are set
-  later by the Controller.
+- Approval authorizes execution **only while both conditions hold**:
+  1. **Time:** no more than **5 minutes** since Controller approval, AND
+  2. **Price:** market price is within **±0.5%** of the trigger price.
+- Both conditions must be **re-checked immediately before submitting
+  the paper order**, not only at the moment approval is received.
+- If either condition fails, the proposal expires and a new Controller
+  approval is required. Approval at one price never automatically
+  authorizes execution at a materially different price.
 
 ## 4. Active protective floor priority
 

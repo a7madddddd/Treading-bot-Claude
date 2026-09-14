@@ -68,16 +68,21 @@ Each entry:
 - **Rationale:** No point running strategy routines when the US market
   is closed.
 
-## D-0007 — Ladder-approval expiration remains TBD
+## D-0007 — Ladder-approval expiration: 5 minutes AND within 0.5%
 
 - **Date:** 2026-09-14
-- **Status:** DEFERRED (explicit TBD)
-- **Approved by:** Controller (as a deferral)
-- **Decision:** Do NOT invent a price band or a time window for
-  ladder-approval expiration. The architecture may support expiration
-  later, but the actual policy values remain TBD until the Controller
-  sets them.
-- **Rationale:** Safety — no invented risk-adjacent numbers.
+- **Status:** APPROVED (supersedes the earlier deferral of D-0007)
+- **Approved by:** Controller
+- **Decision:** A Ladder approval is valid for **at most 5 minutes**
+  AND the market price must remain **within ±0.5% of the trigger
+  price** at the moment of order submission. If either condition is
+  violated, the approval expires and a new Controller approval is
+  required.
+- **Rationale:** Prevents an approval at one price from executing at a
+  materially different price during fast-moving conditions.
+- **Enforcement:** the execution engine must re-check both conditions
+  immediately before submitting the paper order, not just at the
+  moment approval is received.
 
 ## D-0008 — Trailing-floor calculation is threshold-based
 
@@ -134,14 +139,43 @@ Each entry:
 - **Rationale:** Trigger definition materially affects both signal
   frequency and safety; must be explicitly defined before code lands.
 
-## D-0012 — Market data provider remains TBD
+## D-0012 — Market data source: Alpaca Last Trade for ladder triggers
 
 - **Date:** 2026-09-14
-- **Status:** DEFERRED (explicit TBD)
-- **Approved by:** Controller (as a deferral)
-- **Decision:** Do NOT assume Alpaca IEX free tier, Alpaca SIP paid
-  tier, or any external provider. Decision awaits further
-  repository/integration inspection and Controller choice.
+- **Status:** APPROVED (supersedes the earlier deferral of D-0012)
+- **Approved by:** Controller
+- **Decision:** Ladder trigger evaluation uses the **latest valid trade
+  price** from Alpaca's Last Trade endpoint
+  (`https://data.alpaca.markets/v2/stocks/{SYMBOL}/trades/latest`).
+  A Ladder trigger fires when this price is **at or below** the
+  configured ladder trigger price.
+- **Rationale:** Uses the same source the venue reports for the
+  symbol; keeps the ladder condition simple and consistent with what
+  is already wired into the live routine.
+- **Open item:** Tier (IEX free vs SIP paid) and debounce policy are
+  still open — see D-0011 for debounce, and the choice between feeds
+  should be revisited if IEX gaps affect trigger reliability on the
+  chosen universe.
+
+## D-0014 — Four live Routines discovered and snapshot into the repo
+
+- **Date:** 2026-09-14
+- **Status:** APPROVED (as a record of state; not a change to policy)
+- **Approved by:** Controller
+- **Decision:** The four live account-level Routines discovered on
+  2026-09-14 have been snapshotted into `routines/` (prompts, with
+  Alpaca keys redacted, plus metadata). See
+  `docs/trading/routine-policy-alignment.md` for how each aligns with
+  the approved policy. The live Routines have NOT been altered.
+- **Open follow-ups:**
+  - Rotate the leaked Alpaca paper API keys and update each live
+    trigger via `update_trigger` to reference env vars.
+  - Reconcile the divergences in `tsla-paper-trading-monitor` (either
+    fix the routine to match approved policy, or supersede the affected
+    decisions to match the routine, or disable the routine).
+  - Decide whether the Wheel strategy and Capitol Trades mirror
+    strategy are (a) new approved policies, (b) experiments, or
+    (c) disabled.
 
 ## D-0013 — Trading universe remains TBD
 
