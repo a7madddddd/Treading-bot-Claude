@@ -1,4 +1,15 @@
-# D-0026 — Root Data Source Recommendation (Phase 2)
+# D-0026 — Root Data Source Recommendation (Phase 2) — REJECTED / SUPERSEDED
+
+**⚠️ REJECTED by the Controller: no paid data provider or subscription of
+any kind will be used.** The Norgate Data recommendation in this document
+is **rejected outright**, along with every other paid option evaluated
+here (Databento, Polygon/Massive, Tiingo). **Superseded by
+`docs/trading/free-root-data-source-recommendation.md`**, which
+recommends a free-only architecture (Stooq + SEC EDGAR + Nasdaq Trader +
+Yahoo Finance + FRED). This document is retained for its provider-
+comparison research value and its still-applicable canonical-dataset and
+symbol-identity design patterns, but its **recommendation (§3, §14, §16
+"Confirm the Norgate choice")** must not be acted on.
 
 **Status: PROPOSED / NOT APPROVED.** Phase 2 (historical data collection +
 offline calibration engine) was approved by the Controller for **research

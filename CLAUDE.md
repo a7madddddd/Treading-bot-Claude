@@ -169,7 +169,8 @@ lives in the repo under `docs/`:
 - `docs/trading/universe-selection-analysis.md` — D-0026 mechanism analysis, first pass (PROPOSED / NOT APPROVED)
 - `docs/trading/universe-parameter-validation.md` — D-0026 parameter validation, second pass (PROPOSED / NOT APPROVED; supersedes some first-pass structural choices pending Controller review)
 - `docs/trading/historical-data-calibration-plan.md` — D-0026 historical-data acquisition + calibration/backtesting methodology (PROPOSED / NOT APPROVED)
-- `docs/trading/root-data-source-recommendation.md` — D-0026 Phase 2 root data source recommendation (Norgate Data), gaps, canonical dataset design, cost, execution plan (PROPOSED / NOT APPROVED; Phase 2 research/design scope)
+- `docs/trading/root-data-source-recommendation.md` — D-0026 Phase 2 root data source research (Norgate Data) — **REJECTED / SUPERSEDED**, no paid provider will be used; retained for its research/design-pattern value only
+- `docs/trading/free-root-data-source-recommendation.md` — D-0026 Phase 2 **free-only** root data source recommendation (Stooq + SEC EDGAR + Nasdaq Trader + Yahoo Finance + FRED), coverage matrix, survivorship-bias honesty analysis, execution plan (PROPOSED / NOT APPROVED; current authoritative Phase 2 data-source recommendation)
 - `docs/development-workflow.md` — the 7-phase workflow
 - `routines/README.md` — index of live account Routines snapshotted into the repo
 - `routines/<slug>/prompt.md` — redacted snapshot of the live prompt

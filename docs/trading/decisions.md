@@ -469,6 +469,84 @@ Controller approval per CLAUDE.md §9.
   underlying engine has no TSLA anywhere in its logic. There is no
   interim "approved universe = ['TSLA']" for production.
 
+## D-0026 — Norgate recommendation REJECTED; free-only architecture recommended
+
+- **Date:** 2026-09-14
+- **Status:** Supersedes the Norgate recommendation below. Phase 2
+  remains APPROVED (research/design scope, unchanged); D-0026 mechanism
+  and every numeric parameter remain PROPOSED / NOT APPROVED; Phase 3
+  remains NOT approved.
+- **Controller instruction:** no paid data provider or subscription of
+  any kind. Norgate Data, Databento, Polygon/Massive, Tiingo, and every
+  other commercial option are **rejected outright** — none will be
+  purchased.
+- **New research performed (evidence-based, not assumed):** compared SEC
+  EDGAR, the Nasdaq Trader Symbol Directory, Stooq, Yahoo Finance
+  (`yfinance`), Alpha Vantage's free tier, FRED, the Kenneth French Data
+  Library, and a community-maintained SEC-EDGAR-derived delisted-stocks
+  GitHub dataset, against the same requirement checklist as the rejected
+  paid-provider comparison.
+- **Recommended free architecture:**
+  - FREE ROOT SOURCE: **Stooq** (bulk historical OHLCV + volume).
+  - FREE SECONDARY SOURCES: SEC EDGAR (CIK identity, SIC sector, former
+    names, delisted-symbol identification via the GitHub dataset),
+    Nasdaq Trader Symbol Directory (current whole-market symbol/ETF
+    reference), Yahoo Finance (cross-validation/gap-fill), FRED (VIXCLS
+    market-regime series), a manually-curated leveraged/inverse ETF
+    exclusion list (zero-cost, unavoidable regardless of provider).
+  - LOCAL DATA STORE: same canonical-dataset design as the rejected
+    Norgate document (Instrument/InstrumentHistory/DailyBar/etc.), now
+    CIK-anchored for identity, plus a new `DataCoverageLog` table that
+    measures and discloses, per delisted symbol, whether pre-delisting
+    price history was actually retrievable.
+- **Central honest finding — the survivorship-bias gap:** free sources
+  can identify *which* securities were delisted and *when*
+  (SEC-EDGAR-derived, reasonably complete, free), but **could not be
+  confirmed** to provide their *pre-delisting price history* in bulk, for
+  free, from any researched source. This is disclosed as the single most
+  consequential limitation of the free architecture, not glossed over.
+  Mitigation: measure and report the actual coverage rate empirically
+  during Phase 2 rather than assume completeness.
+- **Answer to "can we calibrate credibly on free data alone":** **YES,
+  WITH LIMITATIONS.** The core strategy-mechanics calibration and the
+  market-regime data (FRED VIXCLS — arguably stronger than the rejected
+  document's own fallback proposal) are well supported. The
+  survivorship-bias tier is only partially, measurably mitigated — any
+  resulting calibration evidence is capped below the "Tier 1" full
+  point-in-time fidelity the earlier calibration methodology
+  (`historical-data-calibration-plan.md §4`) described, unless the
+  measured coverage rate later proves sufficient.
+- **Other confirmed gaps, unchanged in kind from the rejected document:**
+  no true historical bid-ask spread/quotes from any free source (the
+  labeled range-proxy is now the primary and only spread signal, not a
+  fallback); no true point-in-time index/universe constituency product;
+  no comprehensive free corporate-actions calendar; no leveraged/inverse
+  ETF flag (curated list required regardless of provider).
+- **Licensing caveats disclosed:** Stooq and Yahoo/yfinance both carry
+  "personal/non-commercial use" caveats (Yahoo's explicitly documented;
+  Stooq's inferred from a third-party academic summary, flagged for
+  independent re-verification); SEC EDGAR, Nasdaq Trader, FRED, and the
+  Kenneth French Data Library carry materially lower licensing risk as
+  public government/academic sources.
+- **Cross-reference:** `docs/trading/free-root-data-source-recommendation.md`
+  (full research, coverage matrix against the A-T checklist, 15-step
+  Phase 2 execution plan, 11-point Phase 2 exit criteria, explicit
+  comparison table against the rejected Norgate option).
+- **What did NOT change:** Phase 2's approved scope (research/design
+  only; no live changes; D-0011/D-0012/D-0007/D-0021/D-0022/D-0023/
+  D-0024/D-0025 all unchanged); TSLA remains TEST-ONLY, never used as a
+  calibration baseline or fallback anywhere in the new research; no
+  numeric parameter approved; no data purchased or downloaded; no code
+  written.
+- **Decisions still required from Controller:** confirm or revise the
+  free-architecture recommendation in §20 of the new document;
+  independently re-verify Stooq's and Yahoo's actual terms of use before
+  relying on either; decide, once the delisted-price-history coverage
+  rate is actually measured (not before), whether the resulting
+  confidence level is sufficient or whether the "no paid provider"
+  constraint should be revisited for that narrow purpose — explicitly
+  not decided now.
+
 ## D-0026 — Phase 2 approved (research/data-collection scope only); root data source recommended
 
 - **Date:** 2026-09-14
