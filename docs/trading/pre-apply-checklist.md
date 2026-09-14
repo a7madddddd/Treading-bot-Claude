@@ -60,7 +60,7 @@ written.
 | B12 | Verification-plan §4 (approval-loop dry run) executed | ❌ Requires B3, B6 done | Claude on Controller cue | Approve / Reject / expired / price-drift / floor-priority. |
 | B13 | Verification-plan §6 (timezone tests) executed | ❌ Requires code | Claude on Controller cue | Spring-forward and fall-back scenarios. |
 | B14 | Existing account-level Routines disabled or reduced to no-op before Python engine goes live | ❌ BLOCKER | Controller | Prevents dual-writer conflicts. |
-| B15 | Universe subsystem design + Controller approval | ❌ BLOCKER | Controller + Claude | TSLA is TEST-ONLY (D-0026 §5). No interim `["TSLA"]` fallback. Production engine will not trade until the subsystem can return a valid universe. |
+| B15 | Universe subsystem design + Controller approval | 🟨 IN DESIGN | Controller + Claude | Design proposal drafted in `docs/trading/universe-selection-analysis.md` (PROPOSED / NOT APPROVED). TSLA is TEST-ONLY (D-0026 §5). No interim `["TSLA"]` fallback. Production engine will not trade until the subsystem can return a valid universe. |
 
 ## C. Explicitly deferred (does NOT block APPLY under current scope)
 
