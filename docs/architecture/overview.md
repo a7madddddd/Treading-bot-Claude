@@ -3,9 +3,20 @@
 This file is design guidance. It does not encode any approved trading
 behavior — that lives in `../trading/strategy.md` and `../trading/execution.md`.
 
-The concrete language / framework / package manager for this project is
-**not yet chosen**. Before any implementation begins, Claude must present a
-Master Plan (see `../../CLAUDE.md` §3) and get Controller approval.
+Approved runtime baseline (see `../trading/decisions.md`):
+
+- **Language:** Python (D-0022)
+- **Scheduler:** persistent Python process, TZ-aware, America/Chicago
+  (D-0023); details in `../trading/scheduler-design.md`
+- **State store:** SQLite behind a repository abstraction (D-0024);
+  contract in `state-management.md`
+- **Approval transport:** Telegram bot with inline Approve/Reject
+  buttons (D-0025); details in `telegram-approval.md`
+- **Trading universe:** dynamic, symbol-agnostic engine (D-0026);
+  details in `universe.md`; selection mechanism deferred
+
+No code has been written yet. Pre-APPLY status lives in
+`../trading/pre-apply-checklist.md`.
 
 ---
 

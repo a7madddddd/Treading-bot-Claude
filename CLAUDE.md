@@ -162,6 +162,9 @@ lives in the repo under `docs/`:
 - `docs/architecture/overview.md` — skills, pipeline, routines, notifications, logging
 - `docs/architecture/state-management.md` — deterministic recoverable state contract (D-0018)
 - `docs/architecture/research-sources.md` — Perplexity + Capitol Trades research architecture (D-0019)
+- `docs/architecture/universe.md` — dynamic, symbol-agnostic universe boundary (D-0026)
+- `docs/architecture/telegram-approval.md` — Telegram approval transport (D-0025)
+- `docs/trading/pre-apply-checklist.md` — single source of truth for what must happen before APPLY
 - `docs/development-workflow.md` — the 7-phase workflow
 - `routines/README.md` — index of live account Routines snapshotted into the repo
 - `routines/<slug>/prompt.md` — redacted snapshot of the live prompt

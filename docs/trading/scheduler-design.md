@@ -89,8 +89,25 @@ Disadvantages:
 
 Not recommended.
 
-## 4. Recommendation
+## 4. Recommendation — DECIDED
 
+**Approved: Option A** (D-0023). Concretely:
+- Language **Python** (D-0022).
+- Scheduler primitive `APScheduler` with
+  `AsyncIOScheduler(timezone=ZoneInfo("America/Chicago"))` — swappable
+  if a better fit is found before implementation, but this is the
+  design assumption in every downstream doc.
+- State store SQLite (D-0024), colocated with the process, accessed
+  through the repository abstraction.
+- Approval delivery Telegram bot (D-0025), same process as the engine
+  for MVP simplicity.
+- Deployment host TBD (see pre-apply-checklist.md B5).
+
+Prior text kept below for historical context.
+
+---
+
+Historic wording (pre-decision):
 **Target: Option A** once we decide language + host.
 
 **Acceptable interim (if we must ship before that decision): Option B**, with the DST-toggle job itself codified as an approved routine that:

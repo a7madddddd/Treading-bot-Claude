@@ -258,6 +258,117 @@ Each entry:
   RECOMMENDATION. Research never directly changes approved policy and
   never submits trades. See `docs/architecture/research-sources.md`.
 
+## D-0022 — Language/runtime: Python
+
+- **Date:** 2026-09-14
+- **Status:** APPROVED
+- **Approved by:** Controller
+- **Decision:** Implementation language is **Python** for the trading
+  engine, routines, scheduler, state layer, notifications, Perplexity
+  and Capitol Trades research, backtesting, and verification tools.
+- **Rationale:** Mature Alpaca SDK (`alpaca-py`), broad backtesting
+  ecosystem (`vectorbt`, `backtrader`, `zipline-reloaded`),
+  first-class support for TZ-aware scheduling
+  (`ZoneInfo`, `APScheduler`), simple SQLite integration, easy
+  Telegram bot libraries.
+- **Scope:** Applies to all new code in this repo. Third-party CLIs
+  used from Python (curl, jq) are allowed for ad-hoc scripts but not
+  for production logic.
+
+## D-0023 — Scheduler: persistent TZ-aware process on America/Chicago
+
+- **Date:** 2026-09-14
+- **Status:** APPROVED (Option A per `scheduler-design.md`)
+- **Approved by:** Controller
+- **Decision:** Scheduling runs inside a persistent Python process
+  using an America/Chicago TZ-aware scheduler (concrete choice
+  APScheduler with `ZoneInfo("America/Chicago")` — swappable if a
+  better option is found before implementation). DST is handled
+  automatically. The routine bodies from `routines/*/prompt-proposed.md`
+  become tasks the scheduler invokes.
+- **Rationale:** Eliminates the DST drift of UTC-only crons on the
+  existing trigger runtime. Colocates the scheduler with the ladder
+  engine and the SQLite state store.
+- **Migration:** The existing account-level Routines
+  (trigger runtime) are NOT the target scheduler. On APPLY, they will
+  be disabled (or reduced to no-op) and the Python process takes over.
+  Migration steps are documented in `scheduler-design.md §4`.
+- **Deployment target (host):** TBD — see "Remaining decisions"
+  below. Not blocking design.
+
+## D-0024 — State store: SQLite behind a repository abstraction
+
+- **Date:** 2026-09-14
+- **Status:** APPROVED
+- **Approved by:** Controller
+- **Decision:** MVP state store is a local **SQLite** database file,
+  accessed exclusively through a **repository abstraction** (typed
+  Python interface). Direct SQL from routine or engine code is
+  forbidden — everything goes through the repository.
+- **Rationale:** SQLite gives ACID writes, easy testability, simple
+  backup, and no operational dependency. The repository abstraction
+  keeps swapping to Postgres/KV/etc. cheap if scale requires it later.
+- **Contract:** the fields and invariants listed in
+  `docs/architecture/state-management.md` are the source of truth for
+  what the repository must expose.
+- **Migration policy:** if the store is ever migrated, the new
+  implementation must pass the same repository contract tests before
+  APPLY.
+
+## D-0025 — Approval transport: Telegram bot with inline buttons
+
+- **Date:** 2026-09-14
+- **Status:** APPROVED
+- **Approved by:** Controller
+- **Decision:** Ladder proposals are delivered to the Controller by a
+  **Telegram bot** message that carries an inline keyboard with
+  `Approve` and `Reject` buttons. The bot writes the answer, its
+  timestamp, and the Controller's Telegram user id to the state
+  store; the trading engine reads it from there.
+- **D-0007 enforcement:** the engine, not the bot, is the authority.
+  Regardless of when the Approve button is pressed, the engine re-checks
+  immediately before order submission that (a) `now − approval_received_at ≤ 5 minutes` AND (b) `abs(current_last_trade − trigger)/trigger ≤ 0.005` AND (c) the trigger price still exceeds the active protective floor. If any fails, the proposal is marked
+  `blocked_price` / `blocked_expired` / `blocked_floor_priority` and
+  no order is submitted; a new approval is required.
+- **Authorization:** the bot must accept approvals only from
+  Controller-authorized Telegram user id(s). Any Approve/Reject press
+  from another user id is discarded and logged.
+- **Failure semantics:** a Telegram send failure never triggers an
+  order retry (CLAUDE.md §6). If the message can't be delivered, the
+  proposal is marked `notification_failed` and a CRITICAL log entry
+  is emitted; the Controller receives no order until re-notification
+  succeeds.
+- **Rationale:** Fastest, simplest mobile approval loop that satisfies
+  D-0003 and D-0007 without building a web UI.
+
+## D-0026 — Trading universe: dynamic / market-adaptive, symbol-agnostic engine
+
+- **Date:** 2026-09-14
+- **Status:** APPROVED (architectural principle)
+- **Approved by:** Controller
+- **Decision:** The trading universe is NOT hardcoded to TSLA or any
+  fixed list. The system supports a **dynamically generated universe**
+  that can change over time as market conditions change.
+  - The strategy engine is **symbol-agnostic** and consumes the
+    current approved universe as an input.
+  - Universe **discovery/selection** is a separate subsystem from
+    strategy execution.
+  - The universe-generation mechanism, screening criteria, ranking
+    rules, refresh frequency, and approval process are **NOT** defined
+    yet and **must not be invented** — deferred as universe TBD.
+  - The architecture must therefore support future dynamic selection
+    **without** changing the strategy engine.
+- **Guardrail:** Dynamic selection does NOT grant permission for
+  autonomous trading in newly discovered symbols. All existing
+  approval (D-0003, D-0007), execution (D-0001, D-0004, D-0008), and
+  risk controls (§Risk) remain authoritative. A new symbol entering
+  the universe is a **candidate**, not an authorized trade.
+- **Supersedes:** D-0013's "TBD" gets converted to "architectural
+  principle approved; concrete mechanism still TBD."
+- **Application:** existing TSLA-specific routine `tsla-paper-trading-monitor`
+  remains TSLA-scoped by configuration until the dynamic universe
+  subsystem is designed; the underlying engine has no TSLA constants.
+
 ## D-0021 — Market-open anchor and pre-market research anchor
 
 - **Date:** 2026-09-14
