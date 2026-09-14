@@ -469,6 +469,65 @@ Controller approval per CLAUDE.md §9.
   underlying engine has no TSLA anywhere in its logic. There is no
   interim "approved universe = ['TSLA']" for production.
 
+## D-0026 — Phase 2 approved (research/data-collection scope only); root data source recommended
+
+- **Date:** 2026-09-14
+- **Status:** Phase 2 **APPROVED** (scope: historical data collection +
+  offline calibration engine, research/design only). D-0026's mechanism
+  and every numeric parameter remain **PROPOSED / NOT APPROVED**. Phase 3
+  (live implementation) remains explicitly **NOT approved**.
+- **Approved by:** Controller
+- **Scope of the Phase 2 approval, explicitly bounded by the Controller:**
+  does NOT authorize live Dynamic Universe implementation, changes to the
+  live trading strategy, scheduler changes, cron changes, live routine
+  changes, production universe changes, order execution, broker trading
+  changes, automatic trading based on calibration results, or moving any
+  D-0026 numeric parameter from PROPOSED/TBD to APPROVED. D-0011, D-0012,
+  D-0007, D-0021, D-0022, D-0023, D-0024, D-0025 unchanged. TSLA remains
+  TEST-ONLY, never a production or calibration-baseline fallback.
+- **New requirement from Controller:** a durable root data resource /
+  primary data provider covering the whole relevant US equity/ETF
+  universe in bulk, so new symbols never require a fresh source search.
+- **Research performed (evidence-based, official docs + independent
+  reviews, not assumed):** compared Alpaca, Polygon/Massive, Tiingo,
+  Norgate Data, Databento, Nasdaq Data Link, and Alpha Vantage against the
+  full requirement list (delisted coverage, sector/GICS, point-in-time
+  universe history, bulk access, cost, licensing).
+  - **Confirmed disqualifying gap in every broker-style API** (Alpaca,
+    Polygon, Alpha Vantage): no or weak delisted-symbol coverage —
+    Polygon independently reported as "spotty at best" for delisted
+    tickers by a third-party review; Alpha Vantage explicitly documented
+    as having no delisted coverage at all.
+  - **Recommended root source: Norgate Data** (US equities Platinum
+    package, $630/year) — the only researched provider whose core stated
+    purpose is survivorship-bias-free systematic-trading data, and the
+    only one confirmed to include delisted securities, sector
+    classification, AND point-in-time index/universe membership together,
+    with 30+ years of history and genuinely bulk (whole-market, not
+    per-symbol) access via Python.
+  - **Confirmed gaps in Norgate:** no tick-level quotes/spread (daily-bar
+    product); no confirmed leveraged/inverse-ETF-specific flag; Windows-
+    native local-database access model (operational, not data, gap);
+    exact stable-identifier mechanism unconfirmed. Addressed via a small
+    curated leveraged/inverse exclusion list (needed regardless of root
+    provider) and an optional secondary tick-quote source (Databento
+    preferred, or Alpaca SIP), cost-gated pending Controller decision.
+  - **Alpaca's role going forward:** remains the live execution venue and
+    the source for D-0012's live Last Trade trigger price — both
+    unchanged by this document — but is disqualified as the historical
+    calibration root source.
+- **Cross-reference:** `docs/trading/root-data-source-recommendation.md`
+  (full comparison, canonical dataset design, symbol-identity design,
+  bulk-ingestion realism check, refresh strategy, cost analysis, 13-step
+  Phase 2 execution plan, 11-point Phase 2 exit criteria).
+- **Decisions still required from Controller:** confirm or revise the
+  Norgate recommendation; authorize the $630/yr subscription cost; decide
+  the tick-quote secondary source (and its cost) or defer to the labeled
+  range-proxy fallback; confirm provisioning a Windows environment for
+  the Norgate Updater sync step; review Norgate's actual licensing terms
+  once obtained. No data has been purchased or downloaded; no code has
+  been written; nothing live has been touched.
+
 ## D-0026 mechanism — historical-data & calibration methodology (still PROPOSED)
 
 - **Date:** 2026-09-14
