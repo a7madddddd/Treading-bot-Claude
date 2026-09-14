@@ -78,6 +78,15 @@ conventions once chosen.
 
 ## 5. Routines (planning only — no cron yet)
 
+Approved constraints (see `../trading/decisions.md`):
+
+- **Timezone:** America/Chicago (D-0005). Scheduler must be TZ-aware
+  so CST ↔ CDT DST transitions are handled without manual edits.
+- **Calendar:** US market workdays only (D-0006). Weekends and US
+  market holidays / early-close days are skipped.
+
+
+
 **Do not create or modify cron/schedules yet.** Claude must first propose:
 
 - routine-to-cron mapping

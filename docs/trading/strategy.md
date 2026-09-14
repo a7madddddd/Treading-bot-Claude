@@ -25,7 +25,11 @@ PRICE**.
 
 - The reference is the weighted-average fill price of the **initial entry
   order only**.
-- It is frozen after the initial entry order is fully reconciled.
+- It is frozen only after the initial entry order is fully reconciled —
+  filled, cancelled, or expired (D-0009).
+- If the initial entry is partially filled and then cancelled/expired,
+  the reference is the weighted-average of the actual filled shares only;
+  unfilled shares are NOT part of the position (D-0010).
 - Subsequent Ladder fills do **not** modify this reference.
 - Levels are **not** recalculated from current market price, later fills,
   weighted-average entry, or the previous ladder price.
@@ -84,7 +88,7 @@ the original Floor **only when it is higher**.
   entry.
 - On activation the trailing floor = **5% below the current market price**.
 
-### Ratchet — compounded 5% steps (APPROVED)
+### Ratchet — compounded 5% steps, threshold-based floor (APPROVED)
 
 Trailing thresholds are **compounded 5% increments from the previous
 trailing threshold**, not linear 5% steps from the weighted-average
@@ -92,8 +96,9 @@ entry. See `decisions.md` D-0004.
 
 - The activation threshold is the weighted-average entry × 1.10.
 - Each next threshold = previous threshold × 1.05.
-- At each threshold the trailing floor = current market price × 0.95
-  (i.e. 5% below the price that triggered the threshold).
+- At each threshold the trailing floor = **threshold_price × 0.95**
+  (D-0008, threshold-based, NOT the actual tick price). Deterministic
+  and reproducible under any tick stream.
 - The trailing floor **can only move up**. It never moves down.
 - A temporary dip below a trailing threshold does not lower or reset it.
 - The trailing floor never overrides the original Floor downward.

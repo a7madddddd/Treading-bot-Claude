@@ -53,18 +53,17 @@ Expired   → do not submit; require new approval if trigger re-fires
 - Estimated dollar risk at Floor after this fill
 - Reason / context
 
-### Ladder approval expiration
+### Ladder approval expiration — TBD (D-0007)
 
 - Approval authorizes execution **only while the Ladder remains valid**.
 - If price moves materially away from the trigger, the proposal must
   **expire** and require new Controller approval.
 - Approval at one price never automatically authorizes execution at a
   materially different price.
-- Exact validity band (percentage, time window, or both) will be defined
-  by an approved execution policy; until then, the safe default is to
-  expire on any adverse move greater than ~0.5% from the trigger or after
-  15 minutes without fill. **This default is a PLACEHOLDER awaiting
-  Controller decision** — do not treat it as approved.
+- Exact validity band (percentage move, time window, or both) is
+  **TBD** per D-0007. Do NOT invent numeric defaults. The architecture
+  should support an expiration mechanism; the policy values are set
+  later by the Controller.
 
 ## 4. Active protective floor priority
 
