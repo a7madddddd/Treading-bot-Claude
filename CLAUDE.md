@@ -166,7 +166,8 @@ lives in the repo under `docs/`:
 - `docs/architecture/telegram-approval.md` — Telegram approval transport (D-0025)
 - `docs/trading/pre-apply-checklist.md` — single source of truth for what must happen before APPLY
 - `docs/trading/debounce-analysis.md` — D-0011 analysis (APPROVED policy)
-- `docs/trading/universe-selection-analysis.md` — D-0026 mechanism analysis (PROPOSED / NOT APPROVED)
+- `docs/trading/universe-selection-analysis.md` — D-0026 mechanism analysis, first pass (PROPOSED / NOT APPROVED)
+- `docs/trading/universe-parameter-validation.md` — D-0026 parameter validation, second pass (PROPOSED / NOT APPROVED; supersedes some first-pass structural choices pending Controller review)
 - `docs/development-workflow.md` — the 7-phase workflow
 - `routines/README.md` — index of live account Routines snapshotted into the repo
 - `routines/<slug>/prompt.md` — redacted snapshot of the live prompt
