@@ -274,8 +274,211 @@ this project's repository.
 
 ---
 
+## 5. Final GitHub-native research pass (2026-09-14) — recency search
+
+The Controller explicitly rejected `eliangcs/pystock-data` as the sole
+ROOT source because its 2009–2017 ceiling is too old for modern-regime
+calibration, and requested **one final pass** focused specifically on
+recency (2018–2026, ideally 2010–2026+), with every candidate verified
+against actual files — not search-result descriptions — including a
+multi-symbol delisted test where applicable.
+
+### 5.1 Candidates evaluated and eliminated on fit (description-level check, no clone needed)
+
+- **`PCnslt/stock-market-data`** — a pre-market/news snapshot pipeline,
+  not multi-year per-symbol OHLCV. Wrong shape for calibration. Rejected.
+- **`SteelCerberus/us-market-data`** — a single aggregate S&P/SPY-proxy
+  index series, and the repository's own README states "do not trust the
+  data in this repo." Not per-symbol, and self-disclosed as low
+  confidence. Rejected.
+
+### 5.2 `irachex/open-stock-data` — verified via `add_repo` clone + empirical reachability test
+
+This was the most promising candidate on paper: MIT license, an active
+GitHub Actions pipeline (`update-symbols`, `update-bars-us` — daily,
+UTC 22:00 Mon–Fri), symbols from the NASDAQ Screener API, bars from
+AKShare, and a README describing US equity daily bars published as
+Parquet assets attached to GitHub Releases (`data-us-bars` tag →
+`us_bars.parquet`).
+
+**Empirical findings, not assumed:**
+
+- Cloned read-only via the sanctioned `add_repo` mechanism. The git tree
+  itself is only 1.6 MB and contains no committed price data — only
+  `symbols/*.csv` reference snapshots and Python scripts. This is
+  consistent with the README's claim that bars are distributed via
+  Releases, not the git tree.
+- **Direct test of the documented Release-asset URL**
+  (`github.com/irachex/open-stock-data/releases/download/data-us-bars/us_bars.parquet`)
+  returned **HTTP 404 ("Not Found")** — a genuine GitHub response, not
+  this environment's access-gate message (that gate returns a distinct
+  JSON 403 body, seen separately below).
+- **Direct test via `git ls-remote --tags origin` and `git ls-remote
+  origin`** (both run against the already-cloned, already-authorized
+  repository, so this is not a network-policy artifact): the repository
+  has **zero tags** — `ls-remote` returns only `HEAD` and
+  `refs/heads/main`. GitHub Releases are always backed by a tag ref. **No
+  tag means no Release has ever actually been published for this
+  repository**, regardless of what the README describes as the intended
+  pipeline.
+- The repository is otherwise genuinely active (latest commit
+  2026-09-11, "data: update symbols 2026-09-11," three days before this
+  research pass), and the `update-bars-us.yml` workflow file exists in
+  `.github/workflows/`. So the *symbols* pipeline appears to run; there
+  is no direct evidence the *bars* pipeline has ever successfully
+  produced and published a retrievable artifact.
+- **Conclusion for this candidate: DISQUALIFIED — not on license or data-
+  quality grounds, but on data-existence grounds.** This is exactly the
+  "do not overvalue GitHub hosting" risk the Controller warned against: a
+  well-documented pipeline design with an MIT license is not the same
+  thing as retrievable data. No delisted test was run because there is no
+  reachable price data to test.
+- Clone removed from local disk after inspection (`rm -rf
+  /home/user/irachex`, confirmed).
+
+### 5.3 `hanurd25/stock-data-collector` — verified via direct file fetch
+
+- README describes a GitHub Actions job using `yfinance` to fetch
+  **minute-level** prices for a small, manually-configured ticker
+  dictionary (a handful of European tickers plus `AAPL`; `TSLA` appears
+  only as a "how to add a ticker" example, not a confirmed-present
+  symbol).
+- **Direct fetch of `data/AAPL.csv`** (HTTP 200, 20.6 MB) confirms real
+  data exists for at least that one symbol. Inspecting the file directly:
+  columns are `Price, Close, High, Low, Open, Volume, ticker, company,
+  exchange, currency, fetched_at_utc`; **earliest row is 2026-07-02
+  09:30:00-04:00, latest row is 2026-09-14 14:46:00-04:00** — roughly
+  **10 weeks of 1-minute bars**, starting from whenever the workflow
+  first began running, not backfilled.
+  - `data/TSLA.csv` returned HTTP 404 — confirms TSLA is not actually
+    in the collected set, consistent with it being a documentation
+    example only. (Noted only to confirm the README's own list, not
+    used as a calibration input — TSLA remains test-only per D-0026 §5.)
+- **Conclusion: DISQUALIFIED.** No historical depth at all (~10 weeks,
+  entirely inside 2026), and only a small, ad hoc, non-broad-market
+  ticker list. Cannot support any modern-regime requirement, let alone
+  2018–2026. No delisted test is meaningful against a 10-week window.
+
+### 5.4 `blumenty/stock-data-automation` — verified via README, no clone needed
+
+- README states explicitly: generated files hold **"last 50 days"** of
+  data (`data/Shazam-Stock-Info-SP500.csv` — "S&P 500 stock data
+  (Polygon.io, last 50 days)"). This is an explicit **rolling 50-day
+  window**, not an accumulating historical archive — each run's output
+  overwrites/rolls forward, it does not build depth over time the way
+  `hanurd25`'s does.
+- S&P 500 data is sourced from **Polygon.io**, a paid provider — with a
+  live-looking API key hardcoded in the README itself (redacted here
+  deliberately; not reproduced in this document). This is a third
+  party's exposed credential, not ours; it is not used, tested, or acted
+  on here — noted only because a paid-provider dependency is itself
+  disqualifying per the Controller's standing "no paid data provider"
+  instruction (`docs/trading/free-root-data-source-recommendation.md`),
+  independent of the credential-hygiene problem.
+- **Conclusion: DISQUALIFIED** — not historical (50-day rolling window
+  only) and dependent on a paid provider. No clone or delisted test
+  warranted.
+
+### 5.5 Comparison table
+
+| | pystock-data | irachex/open-stock-data | hanurd25/stock-data-collector | blumenty/stock-data-automation |
+|---|---|---|---|---|
+| Coverage start | 2009-01-01 | N/A (no data retrievable) | 2026-07-02 | N/A (rolling 50-day window) |
+| Coverage end | 2017-03-31 (frozen) | N/A | 2026-09-14 (current) | N/A |
+| Modern-regime coverage (2018–2026) | **None** | None (no data) | None (only 10 weeks, all 2026) | None (50-day rolling) |
+| Symbol count | 1,980 (2009) → 5,981 (2017), priced | 0 retrievable | ~6 tickers, ad hoc | ~500 (S&P 500) but not retained historically |
+| ETF coverage | Not verified this pass | N/A | No (equities only, per config) | No |
+| Delisted coverage | 1 of 5 tested (FDO found; RSH/BBI/DELL/HNZ absent) | Not testable (no data) | Not testable (10-week window) | Not testable (rolling window) |
+| OHLCV | Yes, daily | Designed for, not delivered | Yes, 1-minute intraday | Yes, daily, but not retained |
+| License | CC BY-SA 4.0 | MIT (moot — no data to license) | Not stated | Not stated; Polygon.io ToS applies to the S&P 500 half |
+| Bulk availability | Yes, git-tracked, verified | No — Release pipeline undocumented as non-functional (0 tags) | Yes, git-tracked, but shallow | Yes, git-tracked, but rolling/shallow |
+| Update frequency | None (frozen 2017) | Designed daily, unproven | Actually running, ~daily accumulation | Actually running, but window-limited |
+| Data quality | Verified real; partial delisted coverage; universe grew 3x over life | Unknown — no data to assess | Real but trivial depth | Real but non-cumulative |
+| Survivorship concerns | Partial (some delisted names present) | N/A | Cannot assess (too short) | Cannot assess (rolling) |
+| Suitability for D-0026 | Historical-control only, pre-2018 | **Disqualified** — no retrievable data | **Disqualified** — no historical depth | **Disqualified** — not historical, paid-provider dependency |
+
+### 5.6 Conclusion
+
+**C. NO FREE GITHUB DATASET IS GOOD ENOUGH.**
+
+None of the four new candidates investigated in this pass — the two
+description-level rejects (§5.1) and the two empirically-tested
+candidates that looked most promising on paper (§5.2–5.4) — provide
+genuinely free, GitHub-hosted, bulk US equity/ETF OHLCV data reaching
+into 2018–2026 at broad-market scale. The single candidate with an
+actual designed pipeline for exactly this (`irachex/open-stock-data`)
+turns out, on direct empirical test, to have never actually published
+the data its README describes (zero Release tags). The two "currently
+running" candidates are real but structurally unable to provide
+historical depth: one only started accumulating ~10 weeks ago
+(`hanurd25`), and the other explicitly discards everything older than 50
+days by design (`blumenty`). `pystock-data` remains the only candidate
+across all research passes in this thread with **verified, real, bulk,
+multi-year, git-tracked, cleanly-licensed** US equity OHLCV — but its
+2009–2017 ceiling is exactly the limitation the Controller correctly
+identified as disqualifying it as a **sole** ROOT for modern-regime
+calibration. It is not superseded by anything found in this pass; it
+remains valid only as a **pre-2018 historical control**, not as evidence
+covering the COVID crash, the 2022 bear market, or any current regime.
+
+**The exact missing capability:** a free, GitHub-hosted, broad-market
+(hundreds to thousands of symbols), multi-year (ideally 2018 or earlier
+through today), point-in-time-complete (including delisted names)
+US equity/ETF daily-OHLCV archive that is **both actually populated and
+currently maintained**. Every candidate found either has the "actually
+populated" property (pystock-data) without recency, or is actively
+running without depth (hanurd25, blumenty), or has neither in practice
+despite documentation implying otherwise (irachex). No candidate found
+in any research pass in this thread has both properties at once, free of
+charge, within this environment's reachable surface (`raw.githubusercontent.com`
++ anonymous git clone).
+
+### 5.7 Required final output block
+
+```
+BEST FREE ROOT: eliangcs/pystock-data (unchanged from prior pass — no
+  better candidate found; retained only as a pre-2018 historical control,
+  NOT as a modern-regime-capable sole root)
+DATE RANGE: 2009-01-01 to 2017-03-31 (frozen)
+MODERN REGIME COVERAGE: NONE — no candidate found in this pass or any
+  prior pass provides free, GitHub-hosted, broad-market OHLCV for
+  2018-2026
+SYMBOL COVERAGE: 1,980 (2009) growing to 5,981 (2017) priced symbols in
+  pystock-data; no viable alternative candidate has broad-market symbol
+  coverage at all
+DELISTED COVERAGE: 1 of 5 tested in pystock-data (20%, small-sample, not
+  extrapolated); not testable for any other candidate (no usable data)
+LICENSE: CC BY-SA 4.0 (pystock-data) — fine for internal, non-redistributed
+  use
+MAJOR LIMITATION: no free, GitHub-hosted dataset found anywhere in this
+  thread combines real historical depth with 2018-2026 recency; the
+  recency gap is not solved
+D-0026 CALIBRATION SUITABILITY: pystock-data can support a pre-2018
+  historical-control analysis only; it cannot alone support calibration
+  across pre-COVID, COVID-crash, post-COVID, and 2022-bear-market regimes,
+  because it does not cover any of those periods except a partial
+  pre-2018 slice
+
+Can this dataset reasonably support our historical calibration through
+modern market regimes? NO — not on its own. pystock-data can serve only
+as a disclosed pre-2018 historical control alongside whatever the
+Controller decides to pursue next for 2018-2026 coverage (e.g. direct
+Stooq/SEC/FRED access from a non-blocked network, a paid provider under
+a future explicit Controller decision, or continued search for a
+GitHub-native source not yet found). This document does not recommend
+either of those paths — it only reports that the free-GitHub-only search
+space has been exhausted against the candidates found, without success,
+for the recency requirement specifically.
+```
+
 No production code, dependency, scheduler change, live routine change,
 live universe selection, or order was created while producing this
 document. No strategy mechanics were changed. TSLA was not used,
-referenced, or implied as any calibration baseline or fallback. D-0026
-remains PROPOSED / NOT APPROVED. Phase 3 remains NOT approved.
+referenced, or implied as any calibration baseline or fallback, except to
+note (§5.3) that a candidate's own README example ticker was confirmed
+absent from its actual collected data — not used as a data point.
+D-0026 remains PROPOSED / NOT APPROVED. Phase 3 remains NOT approved. The
+`irachex/open-stock-data` clone was removed from local disk after
+inspection (`rm -rf /home/user/irachex`, confirmed). No full acquisition,
+canonical dataset construction, calibration code, or numeric D-0026
+parameter was authorized or created by this pass.

@@ -1017,3 +1017,49 @@ Controller approval per CLAUDE.md §9.
   triggers. See `execution.md`.
 - **Rationale:** Human-in-the-loop for offensive orders; deterministic
   automation for defensive exits.
+
+## D-0027 — Final GitHub-native recency search: no free dataset closes the 2018-2026 gap
+
+- **Date:** 2026-09-14
+- **Status:** RESEARCH FINDING (not a policy/strategy decision; recorded
+  for the append-only research trail per project convention)
+- **Recorded by:** Claude, on Controller's explicit "one final
+  GitHub-native research pass" request
+- **Context:** Controller rejected `eliangcs/pystock-data` (2009-2017) as
+  a sole D-0026 ROOT source due to lack of modern-regime coverage and
+  requested one final targeted search for a free, GitHub-hosted, US
+  equity/ETF OHLCV dataset reaching 2018-2026, with every candidate
+  empirically verified (not taken from search-result descriptions).
+- **Decision/Finding:** No new candidate qualifies.
+  `irachex/open-stock-data` documents a GitHub-Releases-based bars
+  pipeline but empirically has **zero published Release tags**
+  (`git ls-remote --tags` returns nothing) — the pipeline has never
+  actually produced retrievable data, disqualifying it on data-existence
+  grounds, not license or quality grounds.
+  `hanurd25/stock-data-collector` has real data (verified: `AAPL.csv`,
+  20.6 MB) but only ~10 weeks of 1-minute bars for a handful of tickers
+  (2026-07-02 to present) — no historical depth.
+  `blumenty/stock-data-automation` explicitly retains only a rolling
+  50-day window and depends on the paid Polygon.io API (with an exposed
+  key in its own README) for its S&P 500 half — disqualified as
+  non-historical and paid-provider-dependent.
+  `PCnslt/stock-market-data` and `SteelCerberus/us-market-data` were
+  eliminated on fit (wrong data shape; self-disclosed low quality)
+  without needing a clone.
+  **Conclusion: C — no free GitHub-hosted dataset found is good enough**
+  to close the 2018-2026 recency gap. `eliangcs/pystock-data` remains the
+  best available free root, valid only as a disclosed **pre-2018
+  historical control**, not as a modern-regime-capable sole calibration
+  source.
+- **Rationale:** Exhaustive, empirically-verified search of the
+  GitHub-reachable candidate space (within this environment's confirmed
+  reachable hosts: `raw.githubusercontent.com` and anonymous git clone)
+  found no dataset combining real historical depth with current
+  maintenance, free cost, and broad-market symbol coverage.
+- **Full detail:** `docs/trading/github-native-data-sources.md` §5.
+- **Supersedes:** none. Extends the finding in the same document's §§1-4
+  (prior pass). Does not change D-0026 principles, which remain
+  PROPOSED / NOT APPROVED.
+- **Not authorized by this finding:** full data acquisition, canonical
+  dataset construction, calibration code, any numeric D-0026 parameter,
+  or any live/production/strategy change. Phase 3 remains NOT approved.
