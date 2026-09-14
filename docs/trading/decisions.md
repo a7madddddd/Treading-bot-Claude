@@ -186,6 +186,94 @@ Each entry:
   dynamic watchlist) remains TBD until the architecture inspection is
   complete and the Controller decides.
 
+## D-0015 — Routine 1 (`tsla-paper-trading-monitor`) will be fixed to match approved policy
+
+- **Date:** 2026-09-14
+- **Status:** APPROVED (directive, pending APPLY)
+- **Approved by:** Controller
+- **Decision:** The live TSLA Paper Trading Monitor will be rewritten so
+  it conforms to the approved Ladder Strategy. The approved policy
+  remains the source of truth; the routine is corrected, not the
+  policy. Specifically: original references frozen from initial fill
+  (D-0001, D-0009); original Floor is not cancelled/re-placed on
+  ladder fill; trailing math is compounded thresholds × 0.95
+  (D-0004, D-0008); Ladder 1 and Ladder 2 require Controller
+  approval per trigger with 5-min / ±0.5% expiration (D-0003, D-0007).
+- **Enforcement rule:** approval age ≤ 5 minutes AND `abs(current − trigger)/trigger ≤ 0.005` must both re-pass immediately before order submission.
+- **Application:** proposed prompt lives at
+  `routines/tsla-paper-trading-monitor/prompt-proposed.md`. Requires
+  Controller "APPLY THE CHANGES" before `update_trigger` is called.
+
+## D-0016 — Routine 2 (`tsla-wheel-hourly-monitor`) will be disabled
+
+- **Date:** 2026-09-14
+- **Status:** APPROVED (directive, pending APPLY)
+- **Approved by:** Controller
+- **Decision:** The TSLA Wheel Hourly Monitor will be disabled on the
+  live trigger. Its prompt and metadata remain in the repo for future
+  research reference. `tsla-wheel-daily-summary` is untouched (read-only).
+- **Rationale:** Options wheel is not the approved strategy and
+  auto-executes without approval. May be revisited later as a separate
+  experiment.
+
+## D-0017 — Routine 3 (`capitol-trades-copy-ro-khanna`) becomes research-only
+
+- **Date:** 2026-09-14
+- **Status:** APPROVED (directive, pending APPLY)
+- **Approved by:** Controller
+- **Decision:** Refactor from an auto-executing trade-copier to an
+  **independent research/signal-collection source**. It must not place
+  Alpaca orders. It must not buy or sell. It emits structured findings
+  (politician, security, ticker, transaction type, disclosed date,
+  publication date, size range, source URL, extraction timestamp,
+  confidence/validation status) into the research pipeline alongside
+  Perplexity, for Controller review.
+- **Rationale:** Preserves the research value of congressional
+  disclosures without violating the approved-approval and
+  approved-strategy rules. The Controller remains the decision maker.
+- **Application:** proposed prompt lives at
+  `routines/capitol-trades-copy-ro-khanna/prompt-proposed.md`.
+
+## D-0018 — State management: deterministic and recoverable
+
+- **Date:** 2026-09-14
+- **Status:** APPROVED (directive)
+- **Approved by:** Controller
+- **Decision:** The trading engine must maintain deterministic,
+  recoverable state for at least the fields listed in
+  `docs/architecture/state-management.md`. State must survive a
+  routine restart. No exclusive reliance on in-memory variables.
+  The concrete store (file, DB, broker-note, etc.) is TBD pending
+  language/runtime choice; the design principle is fixed here.
+
+## D-0019 — Research architecture: Perplexity and Capitol Trades are independent sources
+
+- **Date:** 2026-09-14
+- **Status:** APPROVED (directive)
+- **Approved by:** Controller
+- **Decision:** Perplexity research and Capitol Trades research
+  operate side-by-side as independent evidence sources. The research
+  synthesis layer may compare them but must not blindly merge.
+  Findings are typed as FACT / SOURCE / INFERENCE / HYPOTHESIS /
+  RECOMMENDATION. Research never directly changes approved policy and
+  never submits trades. See `docs/architecture/research-sources.md`.
+
+## D-0020 — Timezone: America/Chicago, DST-aware, never a fixed-UTC schedule
+
+- **Date:** 2026-09-14
+- **Status:** APPROVED (clarification of D-0005)
+- **Approved by:** Controller
+- **Decision:** All routine schedules are expressed in America/Chicago
+  and must be run under a TZ-aware scheduler. The current live
+  triggers store fixed UTC cron expressions, which drift by an hour
+  across DST transitions. See
+  `docs/trading/timezone-audit.md` for the audit and the
+  intended CT wall-clock times each schedule should produce.
+- **Enforcement:** whenever a schedule is proposed, reviewed, or
+  changed, present the cron expression together with (a) the intended
+  America/Chicago wall-clock time and (b) the current-DST equivalent
+  UTC time. Do not silently convert.
+
 ## D-0004 — Trailing-floor thresholds are compounded 5% steps
 
 - **Date:** 2026-09-13

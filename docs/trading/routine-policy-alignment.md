@@ -8,6 +8,18 @@ Status codes:
 - **DIVERGES** — does something the approved policy does not permit.
 - **NEW STRATEGY** — implements a strategy that is not the approved policy at all.
 - **READ-ONLY** — no orders placed; safe to run as-is.
+- **PENDING FIX** — Controller has directed a fix (D-0015..D-0017); proposed prompt drafted; awaiting APPLY.
+- **PENDING DISABLE** — Controller has directed disable (D-0016); awaiting APPLY.
+- **PENDING REFACTOR** — Controller has directed refactor to research-only (D-0017); proposed prompt drafted; awaiting APPLY.
+
+## Current status snapshot
+
+| Routine | Status | Controller directive |
+|---|---|---|
+| `tsla-paper-trading-monitor` | DIVERGES → PENDING FIX | D-0015 — fix to match approved policy |
+| `tsla-wheel-hourly-monitor` | NEW STRATEGY → PENDING DISABLE | D-0016 — disable |
+| `tsla-wheel-daily-summary` | READ-ONLY | keep as-is |
+| `capitol-trades-copy-ro-khanna` | NEW STRATEGY → PENDING REFACTOR | D-0017 — refactor to research-only |
 
 ---
 
