@@ -1063,3 +1063,75 @@ Controller approval per CLAUDE.md §9.
 - **Not authorized by this finding:** full data acquisition, canonical
   dataset construction, calibration code, any numeric D-0026 parameter,
   or any live/production/strategy change. Phase 3 remains NOT approved.
+
+## D-0028 — Composite free-data architecture research: still blocked, two layers materially improved
+
+- **Date:** 2026-09-14
+- **Status:** RESEARCH FINDING (not a policy/strategy decision; recorded
+  for the append-only research trail per project convention)
+- **Recorded by:** Claude, on Controller's explicit request to
+  investigate whether multiple free sources can be COMBINED into a
+  defensible D-0026 calibration dataset, after D-0027 established no
+  single free source is sufficient
+- **Context:** Controller asked for a layer-by-layer investigation
+  (identity, point-in-time universe, OHLCV, delisted securities, regime,
+  corporate actions) of whether a composite of several free sources can
+  close the gaps D-0027 identified, with every candidate empirically
+  verified.
+- **Decision/Finding:** Verdict **C — no free composite solution**, with
+  two layers materially improved over the prior state of this thread:
+  - **New, verified, real point-in-time universe-membership source:**
+    `fja05680/sp500` — daily S&P 500 constituent lists from 1996-01-02
+    through 2026-08-18, MIT licensed, actively maintained (last commit
+    2026-09-07), with embedded delisting-timing markers verified against
+    three known real-world events (Family Dollar, H.J. Heinz,
+    RadioShack) that all matched the historically correct period. This
+    is the first genuine point-in-time universe data this entire
+    research thread has produced — but it is scoped to the S&P 500 only,
+    not the full US equity/ETF market.
+  - **Improved identity layer:** `jadchaar/sec-cik-mapper` (CIK↔ticker,
+    ~9,700 tickers, MIT, though stale since Feb 2025) and
+    `JerBouma/FinanceDatabase` (112,690 equities across 84 exchanges,
+    reference/categorization only) add breadth, but remain
+    current-snapshot only — no ticker-history-over-time source was
+    found anywhere.
+  - **Layer D (bulk delisted-securities dataset) disqualified:** both
+    `EpicSaber/delisted-stocks-list` and
+    `BlackFalconData-org/delisted-stocks-list` were cloned and found to
+    contain only a `README.md` each — both are marketing fronts for the
+    same paid/metered Apify actor, not free static datasets.
+  - **Layer C (bulk modern OHLCV) remains unresolved** — `piekstra/market-data`
+    has no committed data (requires a paid/user-supplied API), and
+    `vijinho/sp500` is index-level only and frozen at 2018-12-21. Three
+    Hugging Face-hosted candidates found by search
+    (`elkassabgi/hfdatalibrary`, `mito0o852/OHLCV-1m`,
+    `paperswithbacktest/Stocks-Daily-Price`) look potentially promising
+    by description but **could not be verified**: `huggingface.co`
+    returns the same `CONNECT tunnel failed, response 403` this
+    environment already returns for Stooq/SEC/Yahoo/FRED. This is
+    reported as an environment-access gap, not a disqualification on
+    merits — it is the single most useful thing to verify next if the
+    Controller can reach it from an unblocked network.
+  - A new, previously undocumented finding for `pystock-data`: its
+    `prices.csv` carries both raw (`close`) and split/dividend-adjusted
+    (`adj_close`) prices as separate, clearly labeled columns, resolving
+    part of the corporate-actions question for its own 2009-2017 window.
+- **Rationale:** Even with the composite, the layer that gates
+  defensible calibration — broad-market OHLCV reaching into 2018-2026 —
+  has no free, verified, reachable source. The one real universe-membership
+  improvement found is scoped to large-caps only; using it as a stand-in
+  for the full tradable universe would violate the Controller's standing
+  instruction against treating a fixed symbol list as equivalent to
+  Dynamic Universe Selection.
+- **Full detail:** `docs/trading/github-native-data-sources.md` §6
+  (composite data model, join-feasibility table, point-in-time test,
+  survivorship-bias test, quality ranking, three composite candidate
+  designs, and the required final output block).
+- **Supersedes:** none. Extends D-0027 and the prior-pass findings in
+  the same document's §§1-5. Does not change D-0026 principles, which
+  remain PROPOSED / NOT APPROVED.
+- **Not authorized by this finding:** full data acquisition, canonical
+  dataset construction, calibration code, any numeric D-0026 parameter,
+  or any live/production/strategy change. D-0011, D-0012, D-0021 through
+  D-0025, and the D-0026 architecture itself are unchanged. Phase 3
+  remains NOT approved.

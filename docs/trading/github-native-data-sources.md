@@ -482,3 +482,484 @@ D-0026 remains PROPOSED / NOT APPROVED. Phase 3 remains NOT approved. The
 inspection (`rm -rf /home/user/irachex`, confirmed). No full acquisition,
 canonical dataset construction, calibration code, or numeric D-0026
 parameter was authorized or created by this pass.
+
+---
+
+## 6. Composite free-data architecture research (2026-09-14, D-0028)
+
+§§1–5 answered "is there one free dataset good enough to be the ROOT?"
+with **no**. This section answers a different question, per the
+Controller's explicit redirect: **can several free sources be combined**
+into a defensible historical dataset for D-0026 calibration? Each layer
+below (identity, point-in-time universe, OHLCV, delisted securities,
+regime, corporate actions) was investigated and empirically verified
+separately — new sources were cloned and inspected directly, not taken
+from README claims.
+
+### 6.1 Layer A — security/company identity
+
+- **`jadchaar/sec-cik-mapper`** — verified directly (cloned):
+  `mappings/stocks/ticker_to_company_name.json` (9,713 tickers) and
+  `mappings/stocks/cik_to_tickers.json` (7,605 CIKs) are real, populated
+  JSON files, MIT licensed. **Limitation, verified from the shallow
+  clone's own commit date:** the automated CRON job that is supposed to
+  refresh this daily last actually ran **2025-02-28** — over a year
+  stale as of this research (2026-09-14). It is a **current-snapshot**
+  CIK↔ticker mapping, not a ticker-history-over-time dataset — it cannot
+  tell you what a symbol's CIK mapping was in, say, 2015.
+- **`JerBouma/FinanceDatabase`** — verified directly (README, not yet
+  cloned in full): genuinely large, 112,690 equities across 84
+  exchanges, plus ETFs/funds/indices, free. **Confirmed limitation, by
+  the maintainer's own description:** explicitly *not* a price-data or
+  fundamentals source — it is categorization/reference metadata only
+  (sector, industry, country, exchange). No CIK field confirmed present.
+  No point-in-time history — current snapshot only.
+- **`zyhe16/top-us-stock-tickers`** — verified directly (README):
+  current-snapshot Nasdaq screener ticker list with S&P 500 flags from
+  Wikipedia, daily-refreshed. Same category as the above: identity
+  reference, not price data, not historical.
+- **`datasets/s-and-p-500-companies`** (verified in §1.2, prior pass):
+  CIK included, PDDL, but S&P 500-scoped and current-snapshot only.
+
+**Conclusion for Layer A:** a usable, free, **current-snapshot** identity
+layer exists (ticker ↔ CIK ↔ company name ↔ sector/exchange), assembled
+from `sec-cik-mapper` + `FinanceDatabase` + `s-and-p-500-companies`. **No
+free source found anywhere in this thread provides ticker-history or
+company-identity-over-time** (e.g., "what CIK did ticker X map to on
+date Y, before a later reassignment"). Company → Security → Ticker
+history → Listing history, as specified in the Controller's request, is
+**not reconstructable** from anything found — only the "Company" and
+current "Ticker" nodes exist; "Security" as a concept distinct from
+"Company" (e.g., multiple share classes, CUSIP-level identity) and any
+time dimension are absent from every free source checked.
+
+### 6.2 Layer B — historical universe membership (the most significant finding of this pass)
+
+- **`fja05680/sp500`** — verified directly (cloned, inspected in full,
+  not sampled): `S&P 500 Historical Components & Changes (Updated).csv`
+  contains **one row per calendar day from 1996-01-02 through
+  2026-08-18** (2,721 rows), each listing that day's full S&P 500
+  ticker membership as a comma-delimited string. **This is genuine,
+  dated, point-in-time constituent membership, not a current list
+  presented as if historical.** MIT licensed. Latest commit
+  **2026-09-07** — seven days before this research pass, i.e. actively
+  maintained, not stale.
+  - **Delisted-security cross-check, run directly against this file
+    (not assumed):** tickers that left the index carry an embedded
+    `TICKER-YYYYMM` suffix recording departure timing. Checked against
+    three of the same known real-world events used in §2 and elsewhere
+    in this thread: `FDO-201507` (Family Dollar; actual Dollar Tree
+    merger closed July 2015 — **matches**), `HNZ-201306` (H.J. Heinz;
+    actual 3G/Berkshire acquisition closed June 2013 — **matches**),
+    `RSHCQ-201510` (RadioShack's post-bankruptcy OTC ticker; actual
+    final liquidation was October 2015 — **matches**). All three
+    real-world checks landed on the historically correct month. This is
+    genuine, verified evidence of point-in-time accuracy, not a
+    README claim.
+  - **`hanshof/sp500_constituents`** — a second, independent
+    implementation of the same idea (verified directly, cloned),
+    MIT licensed, same 1996-start date, but its last commit is
+    **2025-08-24** — over a year stale relative to `fja05680/sp500`.
+    Useful only as a cross-check source, not as primary.
+- **Hard limitation, stated plainly:** both sources are **S&P 500-scoped
+  only**. Neither provides point-in-time membership for the broader US
+  equity/ETF market (mid-caps, small-caps, micro-caps, non-index OTC
+  names) that D-0026's symbol-agnostic, dynamic universe design is meant
+  to cover. Using only this layer as "the historical universe" would
+  silently narrow D-0026 to a large-cap-only backtest — which the
+  Controller's standing instruction explicitly prohibits treating as
+  equivalent to Dynamic Universe Selection.
+- Exchange-level historical listing/delisting records (Form 25/Form 15
+  filing-level detail, beyond index membership) were investigated
+  separately — see §6.4. No broader-than-S&P-500 point-in-time
+  membership source was found anywhere in this pass.
+
+**Conclusion for Layer B:** **materially improved but still partial.**
+Prior to this pass, this thread had **no** verified point-in-time
+universe source at all. This pass found one that is real, dated,
+MIT-licensed, and empirically verified against three known delistings —
+but it only covers the S&P 500's ~500 large-cap names, not the full
+tradable US equity/ETF universe D-0026 is designed to select from.
+
+### 6.3 Layer C — bulk historical OHLCV (still the critical, unresolved layer)
+
+- **`piekstra/market-data`** — verified directly (README + direct file
+  probes): despite a README describing a Parquet-per-symbol-per-day
+  store, **no `data/` directory exists in the repository at all** —
+  confirmed via direct HTTP 404s against the documented path pattern.
+  This is a downloader tool, not a populated dataset: it requires either
+  a user-supplied Alpaca account (not free/anonymous) or Yahoo Finance
+  (explicitly capped at ~60 days of 5-minute bars per its own README) to
+  produce any data at all. **Disqualified — no committed data exists.**
+- **`vijinho/sp500`** — verified directly (cloned, inspected): contains
+  real daily OHLCV data from 1950-01-03 to 2018-12-21, MIT licensed —
+  but it is the **S&P 500 index level only** (a single `^GSPC` time
+  series, not per-symbol constituent prices), and it is frozen at
+  **2018-12-21**, over 7 years stale. **Disqualified** — wrong shape
+  (index, not constituents) and no recency.
+- **HuggingFace-hosted candidates surfaced by search but NOT
+  independently verifiable from this environment:**
+  `elkassabgi/hfdatalibrary` (described as 1,391 US equities/ETFs,
+  Dec 2002–present, daily automated updates), `mito0o852/OHLCV-1m`
+  (described as minute-level, 1992–2026, "thousands" of symbols),
+  `paperswithbacktest/Stocks-Daily-Price` (a commercial vendor's
+  dataset mirrored to Hugging Face — third-party discussion describes
+  real delisted-symbol cross-checks against it, suggesting real
+  substance, but also a **disclosed 44% gap** of historically-traded US
+  common stocks missing from it). **Direct empirical test result:**
+  `https://huggingface.co` returned `CONNECT tunnel failed, response
+  403` — the same network-policy signature already confirmed for
+  `stooq.com`, `sec.gov`, `data.sec.gov`, `nasdaqtrader.com`, and
+  `finance.yahoo.com` in `data-acquisition-pilot.md`. **This is an
+  environment-access limitation, not a data-quality or existence
+  finding — it must not be reported as "disqualified," only as
+  UNVERIFIED FROM THIS ENVIRONMENT.** If the Controller can reach
+  `huggingface.co` from an unblocked network, these three candidates
+  warrant the same direct-file-inspection rigor applied to every other
+  source in this document before being trusted.
+- **`eliangcs/pystock-data`** (§1.3, prior pass) remains the only
+  **verified-reachable-from-here** bulk multi-symbol OHLCV source, still
+  capped at 2009-01-01 through 2017-03-31.
+  - **New finding this pass, from re-reading the README closely:** each
+    `prices.csv` row carries **both** `close` (raw) **and** `adj_close`
+    (split/dividend-adjusted, Yahoo-Finance convention) as separate
+    columns — the two are not mixed or ambiguous. The README explains
+    the adjustment mechanism explicitly: comparing `close` to
+    `adj_close` across the two trading days each daily archive contains
+    is how the original crawler detected splits. This resolves part of
+    Layer F (see §6.6) for this specific source — it was not previously
+    documented in this thread.
+
+**Conclusion for Layer C: still the critical, unresolved layer.** No
+broad-market, free, GitHub-reachable, 2018–2026 bulk OHLCV source was
+found or verified in this pass, matching §5's conclusion. The one
+plausible path to closing this gap (Hugging Face-hosted datasets) is
+**blocked at the network level from this environment**, not evaluated
+and rejected on merits — a materially different, and more hopeful,
+status than "searched and found nothing," but it does not change what
+can be verified or used today.
+
+### 6.4 Layer D — delisted securities (SEC Form 25/15-derived datasets)
+
+- **`EpicSaber/delisted-stocks-list`** — verified directly (cloned):
+  the entire repository contains **one file, `README.md`, and nothing
+  else.** The README is a marketing page for
+  `apify.com/blackfalcondata/delisted-stocks-list` — an **Apify actor**
+  (a metered, on-demand scraping/query service), not a static dataset.
+  No CSV, JSON, or any data file is committed to the repository.
+- **`BlackFalconData-org/delisted-stocks-list`** — verified directly
+  (cloned): **identical situation** — one `README.md`, zero data files,
+  same underlying Apify actor. This confirms the two repositories are
+  effectively duplicate promotional fronts for one paid/metered service,
+  not two independent datasets.
+- Both READMEs describe genuinely valuable-sounding content (36,000+
+  Form 25/15 filings since 2002, with CIK, exchange, filing dates) —
+  but **none of it is retrievable for free as a static file**. Using it
+  would require calling the Apify platform (usage-metered; free-tier
+  credits are limited and not a substitute for a bulk, one-time,
+  reusable free dataset) and separately confirming Apify's terms permit
+  the intended reuse — neither of which this document authorizes or
+  attempts.
+
+**Conclusion for Layer D: DISQUALIFIED.** Both candidates found are
+non-functional as free datasets — they are unpopulated GitHub
+repositories that exist only to advertise a paid/metered third-party
+service. This is exactly the "repository is merely code/marketing while
+the actual data comes from another (non-free) provider" failure mode the
+Controller's instructions warned about. No free, bulk, SEC-derived
+delisting dataset was found anywhere in this pass. The `fja05680/sp500`
+delisting-suffix data (§6.2) is the only real, verified, free
+delisting-timing signal found — but only for former S&P 500 members.
+
+### 6.5 Layer E — regime data
+
+No change from §1.1. `datasets/finance-vix` remains verified, current,
+PDDL-licensed, and is not superseded by anything found in this pass, per
+the Controller's explicit instruction not to re-research a source that
+already works.
+
+### 6.6 Layer F — corporate actions / adjustment status
+
+- **`pystock-data`:** raw (`close`) and adjusted (`adj_close`) prices
+  are both present, explicitly labeled, not mixed — see §6.3. This is a
+  genuine, positive, newly-documented finding for this source.
+- **`fja05680/sp500` / `hanshof/sp500_constituents`:** membership data
+  only, no prices, so adjustment status is not applicable to this layer
+  for these sources.
+- **No free source found anywhere in this thread provides an explicit,
+  bulk, machine-readable corporate-actions feed** (split ratios,
+  dividend amounts/dates, merger/ticker-change events as discrete
+  records) independent of what can be inferred by diffing
+  `close`/`adj_close` in `pystock-data` or by watching ticker changes in
+  `fja05680/sp500`'s suffix notation. Both are usable proxies, neither
+  is a purpose-built corporate-actions dataset.
+
+**Conclusion for Layer F: partial.** `pystock-data`'s own raw/adjusted
+pair is a genuine, disclosed, non-ambiguous signal for its own 2009–2017
+window. Nothing free was found to extend this past March 2017.
+
+### 6.7 Composite data model (conceptual only — not implemented)
+
+```
+Company (sec-cik-mapper / FinanceDatabase, current-snapshot)
+  ↓ (join key: ticker — WEAK; CIK bridge available only where both
+     sides carry CIK, i.e. sec-cik-mapper ↔ s-and-p-500-companies)
+Security  — NOT MATERIALLY DISTINCT FROM "Company" IN ANY FREE SOURCE
+  FOUND; no free source separates share-class/CUSIP-level identity
+  from company-level identity
+  ↓
+Listing / TickerHistory — NOT AVAILABLE as a time-series anywhere free;
+  only current mappings exist, except:
+  ↓
+UniverseMembership (fja05680/sp500, S&P 500 ONLY, 1996-2026, daily,
+  point-in-time, verified)
+  ↓ (join key: ticker, date-scoped — MODERATE for S&P 500 names in the
+     1996-2026 window; NOT APPLICABLE outside that index)
+DailyOHLCV (pystock-data, 2009-2017 ONLY; no free source for 2018-2026
+  broad-market OHLCV verified reachable from this environment)
+  ↓
+CorporateActions — only pystock-data's own raw/adj_close pair,
+  2009-2017 only
+
+Separately:
+RegimeDate → VIX (datasets/finance-vix, 1990-2026, SOLVED)
+```
+
+This architecture is **not implementable as a coherent whole today**:
+the UniverseMembership node (S&P 500 only, 1996-2026) and the
+DailyOHLCV node (all symbols the crawler covered, 2009-2017 only) only
+overlap cleanly in the 2009-2017 window, and even there, UniverseMembership
+covers roughly 500 of the ~2,000-6,000 symbols DailyOHLCV actually
+prices. Outside 2009-2017, DailyOHLCV has nothing to join against at all.
+
+### 6.8 Join feasibility
+
+| Join | Method | Feasibility | Notes |
+|---|---|---|---|
+| AAPL → CIK → identity | ticker → `sec-cik-mapper`/`s-and-p-500-companies` | **MODERATE** | Works for current, actively-traded large/mid-caps; `sec-cik-mapper` is 18+ months stale, so a ticker reassigned since Feb 2025 would resolve incorrectly |
+| AAPL → point-in-time S&P 500 membership | ticker, date → `fja05680/sp500` | **STRONG, for S&P 500 names, 1996-2026** | Verified against real delistings (§6.2) |
+| AAPL → OHLCV | ticker → `pystock-data` | **MODERATE, 2009-2017 only** | No modern-regime OHLCV to join to at all |
+| FDO (delisted) → CIK → listing → delisting date → OHLCV | ticker, date-suffix → `fja05680/sp500` for delisting timing; ticker → `pystock-data` for price history if within 2009-2017 | **PARTIAL** | Delisting date is now available and verified (new this pass); OHLCV is only available if the delisting fell inside 2009-2017 — FDO does (2015), so this specific chain **works end-to-end** for FDO. A 2020+ delisting would have a verified date (if it happened to also be an S&P 500 member) but **no** free OHLCV to join to. |
+| Any non-S&P-500 delisted name (e.g. a small/mid-cap) → delisting date | none | **NOT AVAILABLE** | `fja05680/sp500` only covers names that were ever S&P 500 constituents; Layer D (Form 25/15 bulk data) is disqualified (§6.4) |
+
+**If the join depends on ticker alone, mark it WEAK** — per the
+Controller's own framing, every join above ultimately bottoms out on
+ticker-string matching, sometimes date-scoped (strong), sometimes not
+(weak). No free source provides a stable, non-ticker security identifier
+usable as the join key across sources.
+
+### 6.9 Point-in-time test
+
+| Date | Which securities existed? | Which listed? | Which tradable? | Historical OHLCV available? | Delisted names represented? | Survivors-only risk? |
+|---|---|---|---|---|---|---|
+| 2010 | UNKNOWN (full market) | PARTIAL (S&P 500 only, via fja05680) | UNKNOWN | YES (pystock-data) | PARTIAL (S&P 500 delistings only) | YES outside S&P 500 — pystock-data's own universe (1,980→5,981 symbols) is not independently datable to a specific membership list |
+| 2015 | UNKNOWN (full market) | PARTIAL (S&P 500) | UNKNOWN | YES (pystock-data) | PARTIAL — verified (FDO, HNZ found) | Same as above |
+| 2018 | UNKNOWN | PARTIAL (S&P 500) | UNKNOWN | **NO** | NO | Total — no OHLCV at all past March 2017 |
+| 2020 | UNKNOWN | PARTIAL (S&P 500) | UNKNOWN | **NO** | NO | Total |
+| 2022 | UNKNOWN | PARTIAL (S&P 500) | UNKNOWN | **NO** | NO | Total |
+| 2024 | UNKNOWN | PARTIAL (S&P 500) | UNKNOWN | **NO** | NO | Total |
+| 2026 | UNKNOWN | PARTIAL (S&P 500, current through 2026-08-18) | UNKNOWN | **NO** | NO | Total |
+
+No date in the required test set gets a full "YES" across all six
+capabilities. 2010 and 2015 are the strongest (partial-to-good on four
+of six); 2018 onward has no usable OHLCV at all regardless of
+everything else being available.
+
+### 6.10 Survivorship-bias test
+
+| Symbol | Identity available? | Delisting date available? | Historical OHLCV available? | Pre-delisting OHLCV available? | Ticker changes handled? | Join reliable? | Classification |
+|---|---|---|---|---|---|---|---|
+| FDO | Yes (was S&P 500) | Yes, verified (`FDO-201507`) | Yes (pystock-data, found, 1,564 rows) | Yes | N/A (no rename before delisting) | Yes | **FULL** |
+| RSH | Partial (was S&P 500 at some point; `RSHCQ-201510` present) | Yes, verified | No — zero rows in pystock-data | No | Yes — ticker changed to RSHCQ post-bankruptcy, and `fja05680/sp500` captures this rename | Partial (identity/date yes, price no) | **PARTIAL** |
+| DELL | Unconfirmed as former S&P 500 member in the sampled data | Not verified this pass | No — zero rows in pystock-data (per §2, prior pass) | No | Unknown | No | **FAILED** |
+| HNZ | Yes (was S&P 500) | Yes, verified (`HNZ-201306`) | No — zero rows in pystock-data (per §2, prior pass) | No | N/A | Partial (identity/date yes, price no) | **PARTIAL** |
+| BBI | Not confirmed as S&P 500 member | Not verified this pass | No — zero rows in pystock-data (per §2, prior pass) | No | Unknown | No | **FAILED** |
+
+**Conclusion:** the composite **does** measurably reduce survivorship
+bias relative to any single source alone — for names that were S&P 500
+members, we now have a verified delisting date even when OHLCV is
+missing, which is strictly more than either source alone provided. But
+it does not eliminate the bias: 3 of 5 tested names remain **FAILED or
+PARTIAL** on the OHLCV dimension specifically, and the technique only
+extends to former S&P 500 constituents — the vast majority of historical
+delistings (small-caps, OTC names, non-index companies) have **no** free
+identity, date, or price signal found anywhere in this thread.
+
+### 6.11 Liquidity / execution-quality data
+
+Unchanged from the standing position in this thread: daily OHLCV (where
+available, i.e. only 2009-2017) can support volume-based and
+range-based liquidity/volatility proxies (ATR, average daily volume).
+**No free source anywhere in this thread — GitHub or otherwise —
+provides true historical bid-ask spread or quote-depth data.** This
+limitation is unchanged and is not solved by anything in this pass. The
+frozen D-0026 execution-quality architecture is not touched by this
+finding.
+
+### 6.12 License / legal check summary
+
+| Source | License | Commercial/redistribution restriction | Notes |
+|---|---|---|---|
+| `jadchaar/sec-cik-mapper` | MIT | None | Stale (Feb 2025) |
+| `JerBouma/FinanceDatabase` | Not yet directly verified this pass (community-maintained; described as free) | UNKNOWN | Flagged, not approved as ROOT per Controller's standing rule for unclear licenses |
+| `fja05680/sp500` | MIT | None | Verified directly from LICENSE file |
+| `hanshof/sp500_constituents` | MIT | None | Verified directly from LICENSE file |
+| `eliangcs/pystock-data` | CC BY-SA 4.0 | Share-alike only matters on redistribution; fine for internal use | Verified prior pass |
+| `datasets/finance-vix` | PDDL | None | Verified prior pass |
+| `EpicSaber` / `BlackFalconData-org` delisted-stocks-list | N/A — no data to license | N/A | Disqualified; Apify actor's own terms not evaluated since nothing was retrieved |
+| Hugging Face candidates (§6.3) | UNKNOWN (not independently verified) | UNKNOWN | Blocked at network level from this environment; cannot be approved or rejected on license grounds without direct verification |
+| `piekstra/market-data`, `vijinho/sp500` | N/A / MIT | N/A | Disqualified on data-existence/shape grounds regardless of license |
+
+### 6.13 Quality ranking
+
+| Source | Layer | Date range | Current through 2026? | US equity coverage | ETF coverage | Delisted coverage | OHLCV | Corp. actions | Identity | Point-in-time universe | License | Actual data verified? | Join method | Major limitation | D-0026 value | Grade |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `eliangcs/pystock-data` | C, F | 2009-01-01 to 2017-03-31 | No | 1,980→5,981 symbols | Not verified | Partial, unquantified at scale | Yes | Partial (raw+adj) | No | No | CC BY-SA 4.0 | Yes | Ticker | Frozen 2017 | Historical control only | B |
+| `fja05680/sp500` | B, D (partial) | 1996-01-02 to 2026-08-18 | Yes | S&P 500 only (~500) | No | Verified for S&P 500 departures | No | No | No | **Yes** | MIT | Yes | Ticker, date-scoped | S&P-500-scoped only | Strong for universe-membership layer | A (within its scope) |
+| `hanshof/sp500_constituents` | B | 1996-01-02 to 2025-08-24 | No (stale ~1yr) | S&P 500 only | No | Same as fja05680, less current | No | No | No | Yes | MIT | Yes | Ticker, date-scoped | Stale, redundant with fja05680 | Cross-check only | B |
+| `jadchaar/sec-cik-mapper` | A | Current snapshot only | No (stale, Feb 2025) | ~9,700 tickers | Some | No | No | No | Yes (CIK) | No | MIT | Yes | Ticker/CIK | Stale, no time dimension | Identity layer | B |
+| `JerBouma/FinanceDatabase` | A | Current snapshot only | Presumed yes (not directly verified) | 112,690 | 36,481 ETFs | No | No | No | Partial (no CIK confirmed) | No | Unverified | Partial (README only) | Ticker | License unverified; no CIK; no history | Broad reference layer | C |
+| `datasets/finance-vix` | E | 1990-01-02 to 2026-09-11 | Yes | N/A (index) | N/A | N/A | N/A (VIX, not equities) | N/A | N/A | N/A | PDDL | Yes | N/A | None material | Fully solves regime layer | A |
+| `EpicSaber`/`BlackFalconData-org` delisted-stocks-list | D | N/A | N/A | N/A | N/A | N/A — no data | No | No | Partial (README claims CIK) | No | N/A | **No — repo is empty of data** | N/A | Apify-actor front, not a dataset | None | D |
+| `piekstra/market-data` | C | N/A | N/A | N/A | N/A | N/A | No committed data | N/A | N/A | N/A | N/A | **No** | N/A | No data committed; requires paid/limited API | None | D |
+| `vijinho/sp500` | C | 1950-01-03 to 2018-12-21 | No | Index-level only | No | N/A | Yes (index, not constituents) | Unknown | No | No | MIT | Yes | N/A | Wrong shape (index, not per-symbol); stale | None for D-0026 (wrong granularity) | D |
+| HF: `elkassabgi/hfdatalibrary`, `mito0o852/OHLCV-1m`, `paperswithbacktest/Stocks-Daily-Price` | C | Described as reaching into 2024-2026 | Described as yes | Described as broad | Described as yes | Described, with a disclosed 44% gap for one | Described as yes | Unknown | N/A | N/A | Unverified | **No — network-blocked from this environment** | N/A | Cannot be verified or approved from here | Potentially high if later verified | UNRATED |
+
+### 6.14 Composite candidate designs (not implemented)
+
+**COMPOSITE A — Identity + S&P 500 point-in-time + pystock-data + VIX**
+`sec-cik-mapper` + `FinanceDatabase` (identity) + `fja05680/sp500`
+(point-in-time membership) + `pystock-data` (OHLCV) + `finance-vix`
+(regime). Covers 2009-2017 fully for S&P-500-scoped names with the
+strongest verified point-in-time membership and delisting-timing data
+found in this thread. **Survivorship problem:** solved only for S&P 500
+names; small/mid-cap universe still fully survivorship-biased.
+**Identity problem:** ticker-only join, current-snapshot identity data
+laid against a historical price series (a 2026 CIK mapping applied to
+2010 prices) — a real but bounded risk given both are US large-caps with
+low reassignment rates. **Corporate-action problem:** solved for this
+window via `pystock-data`'s raw/adj_close pair. **Modern-regime
+problem:** NOT solved — ends 2017. **Can it support D-0026 calibration?**
+Only as a bounded, disclosed, pre-2018, large-cap-biased historical
+control — not as primary evidence.
+
+**COMPOSITE B — Same as A, extended with Hugging Face OHLCV IF verified**
+Identical to Composite A, but with a second OHLCV source
+(`elkassabgi/hfdatalibrary` or similar) added for 2018-2026, **contingent
+on the Controller independently verifying it from an unblocked
+network** using the same direct-file-inspection rigor applied to every
+source in this document (actual date range, actual symbol count,
+multi-symbol delisted test). **This is the only composite design in
+this document with a plausible path to closing the modern-regime gap**
+— but it is unverified and therefore cannot be recommended today.
+
+**COMPOSITE C — S&P-500-only, fully modern, fully point-in-time**
+`fja05680/sp500` alone, used as both the universe AND a proxy for
+"large-cap US equities are broadly investable across this whole window."
+This would give clean 1996-2026 point-in-time membership with no
+OHLCV at all (membership only). **Explicitly rejected as a basis for
+D-0026 calibration**, not merely deprioritized: it has no price data
+whatsoever, and using S&P 500 membership as a stand-in for the tradable
+universe is exactly the "fixed symbol list masquerading as Dynamic
+Universe Selection" the Controller's standing instructions prohibit.
+Listed here only to show it was considered and explicitly rejected, not
+because it is viable.
+
+### 6.15 Final output block
+
+```
+COMPOSITE FREE-DATA VERDICT: C — NO FREE COMPOSITE SOLUTION
+  (with a disclosed, material improvement to the identity and
+  point-in-time-universe layers, and one unresolved access gap —
+  Hugging Face — that could change this verdict if the Controller
+  verifies it from an unblocked network)
+
+HISTORICAL COVERAGE: 1996-01-02 -> 2026-08-18 for point-in-time S&P 500
+  MEMBERSHIP ONLY (fja05680/sp500); 2009-01-01 -> 2017-03-31 for OHLCV
+  (pystock-data). These two windows only overlap for 2009-2017, and only
+  for the ~500 S&P 500 names, not the ~2,000-6,000 priced symbols
+  pystock-data actually covers.
+
+MODERN REGIMES (2018 / 2020 / 2022 / 2026): NOT COVERED. No free,
+  GitHub-reachable, verified OHLCV source spans any of these periods at
+  broad-market scale. Universe MEMBERSHIP is current through 2026-08-18
+  (S&P 500 only) but has no prices to pair with it after March 2017.
+
+POINT-IN-TIME UNIVERSE: PARTIAL — solved for S&P 500 constituents only
+  (1996-2026, verified); NOT AVAILABLE for the broader US equity/ETF
+  market D-0026's dynamic, symbol-agnostic design requires.
+
+DELISTED SECURITIES: PARTIAL — identity + delisting date now available
+  and verified for FORMER S&P 500 MEMBERS ONLY (via fja05680/sp500);
+  price history for those names is only available if the delisting fell
+  within 2009-2017; a dedicated bulk delisting dataset (Layer D) was
+  searched for and DISQUALIFIED (Apify-actor fronts, no free data).
+
+OHLCV: PARTIAL — solved 2009-2017 only, unchanged from §5.
+
+CORPORATE ACTIONS: PARTIAL — pystock-data discloses raw and
+  split/dividend-adjusted prices side by side (new finding this pass),
+  but only within its 2009-2017 window; no free bulk corporate-actions
+  event feed found anywhere.
+
+TRUE SPREAD/QUOTE DATA: NO — unchanged; no free source, GitHub or
+  otherwise, provides this anywhere in this thread.
+
+LICENSE: MIXED — every source actually used and verified is MIT, PDDL,
+  or CC BY-SA 4.0 (all clear, all free); the Apify-actor candidates are
+  N/A (no data retrieved); the Hugging Face candidates are UNKNOWN
+  (unverified).
+
+SURVIVORSHIP-BIAS CONTROL: PARTIAL — materially better than any single
+  source alone (§6.10: FDO is now FULL, RSH/HNZ improved from FAILED to
+  PARTIAL by gaining a verified delisting date even without price data)
+  but still FAILED for 2 of 5 tested names overall, and structurally
+  limited to former S&P 500 members.
+
+D-0026 CALIBRATION: NO — not on the evidence verified today. The
+  identity and point-in-time-universe layers are meaningfully stronger
+  than before this pass, but the calibration-critical OHLCV layer still
+  has no free, verified coverage past March 2017, and the point-in-time
+  universe that does exist is scoped to large-caps only, not the
+  dynamic, symbol-agnostic universe D-0026 requires.
+
+BEST COMPOSITE: Composite A (§6.14) — usable only as a disclosed,
+  bounded, pre-2018, S&P-500-biased historical control, not as primary
+  D-0026 calibration evidence. Composite B is the only design with a
+  plausible path to a materially different verdict, contingent on
+  Controller-side verification of Hugging Face-hosted candidates from a
+  network this environment cannot reach.
+```
+
+**Plain-English final answer:** We are still blocked. Combining several
+free GitHub sources has genuinely improved two of six required data
+layers — we now have a real, verified, dated identity/reference layer
+and, more importantly, a real, verified, point-in-time historical
+universe-membership series with embedded delisting timing (something
+this entire research thread lacked until this pass) — but only for
+former and current S&P 500 constituents. The layer that actually gates
+defensible calibration, broad-market historical OHLCV reaching into
+2018-2026, remains unsolved by anything verifiable from this
+environment. The one lead that could change this (Hugging
+Face-hosted OHLCV datasets, described as reaching 2024-2026 with delisted
+coverage) is blocked at the network level here in the same way
+Stooq/SEC/Yahoo/FRED have been throughout this thread — it is an access
+gap, not a confirmed non-existence, and is the single most useful thing
+for the Controller to verify next from an unblocked network, using the
+same direct-file rigor (actual date range, actual symbol count, a
+multi-symbol delisted test) applied to every source in this document.
+
+No production code, dependency, scheduler change, live routine change,
+live universe selection, or order was created while producing this
+section. No strategy mechanics were changed. No frozen decision
+(D-0011, D-0012, D-0021 through D-0025, or the D-0026 architecture
+itself) was modified. TSLA was not used as any calibration baseline,
+fallback, or production universe substitute. D-0026 numeric parameters
+remain NOT approved; D-0026 itself remains PROPOSED / NOT APPROVED
+even for its architecture, unaffected by this document. All repositories
+cloned for this section (`jadchaar/sec-cik-mapper`, `fja05680/sp500`,
+`hanshof/sp500_constituents`, `vijinho/sp500`,
+`EpicSaber/delisted-stocks-list`,
+`BlackFalconData-org/delisted-stocks-list`) were removed from local disk
+after inspection (`rm -rf`, confirmed). No bulk dataset was retained,
+downloaded in full, or committed to this repository.

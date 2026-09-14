@@ -66,3 +66,65 @@ FACT / ASSUMPTION / HYPOTHESIS / RECOMMENDATION / EXPERIMENTAL IDEA.
   reported.
 - **What changed as a result:** `docs/trading/decisions.md` D-0027;
   `docs/trading/pre-apply-checklist.md` B16 updated.
+
+## 2026-09-14 — Can multiple free sources be combined into a defensible D-0026 composite dataset?
+
+- **Question:** After D-0027 found no single free GitHub-hosted dataset
+  sufficient as a D-0026 ROOT, can several free sources be combined
+  (identity, point-in-time universe, OHLCV, delisted securities, regime,
+  corporate actions) into a composite that is?
+- **Summary:** Investigated each required layer separately, empirically
+  verifying every serious candidate (cloned repositories and inspected
+  actual files, not README claims). Found a genuinely new, valuable
+  point-in-time universe-membership source and an improved identity
+  layer, but the OHLCV recency gap remains unresolved and one dedicated
+  delisted-securities candidate was disqualified outright.
+- **Key findings:**
+  - `fja05680/sp500` (cloned, inspected in full): real daily S&P 500
+    point-in-time constituent membership, 1996-01-02 to 2026-08-18, MIT,
+    actively maintained. Verified against three known delistings (Family
+    Dollar, H.J. Heinz, RadioShack) — all matched the historically
+    correct period via embedded ticker-departure suffixes. Scoped to
+    S&P 500 only.
+  - `jadchaar/sec-cik-mapper` and `JerBouma/FinanceDatabase`: real,
+    free, current-snapshot identity/reference data, but no source found
+    anywhere provides ticker-history-over-time.
+  - `EpicSaber/delisted-stocks-list` and
+    `BlackFalconData-org/delisted-stocks-list` (both cloned): each
+    contains only a README — both are fronts for the same paid/metered
+    Apify actor, not free datasets. Disqualified.
+  - `piekstra/market-data` (README + direct file probes): no data
+    committed at all — a downloader tool requiring a paid/user-supplied
+    API. `vijinho/sp500` (cloned): real but index-level only, frozen at
+    2018-12-21. Both disqualified for Layer C.
+  - Three Hugging Face-hosted OHLCV candidates surfaced by search
+    (`elkassabgi/hfdatalibrary`, `mito0o852/OHLCV-1m`,
+    `paperswithbacktest/Stocks-Daily-Price`) look potentially promising
+    by description (2018-2026 coverage, delisted names) but
+    `huggingface.co` is blocked from this environment with the same
+    network-policy signature as Stooq/SEC/Yahoo/FRED — genuinely
+    unverified, not disqualified on merits.
+  - New finding for `eliangcs/pystock-data`: raw and split/dividend-
+    adjusted prices are both present as separate, labeled columns,
+    resolving part of the corporate-actions question for its 2009-2017
+    window.
+- **Evidence / sources:** Direct `git clone` + file inspection of six
+  repositories; full detail, comparison tables, and the required
+  point-in-time and survivorship-bias test tables in
+  `docs/trading/github-native-data-sources.md` §6.
+- **Risks / limitations:** The Hugging Face access gap means this
+  verdict could change if the Controller verifies those candidates from
+  an unblocked network — this is explicitly flagged as the most useful
+  next step, not a closed question.
+- **Confidence:** HIGH for every candidate actually tested; MEDIUM for
+  the overall "no composite solution" verdict, specifically because of
+  the unverified Hugging Face candidates.
+- **Status:** INPUT-TO-DECISION
+- **Recommendation:** Treat the point-in-time S&P 500 membership and
+  improved identity data as real, usable additions to the eventual
+  identity/universe design — but do not treat S&P 500 membership as a
+  stand-in for D-0026's full dynamic universe. The OHLCV recency gap is
+  still the blocking issue; verifying the Hugging Face candidates from a
+  network this environment cannot reach is the highest-value next step.
+- **What changed as a result:** `docs/trading/decisions.md` D-0028;
+  `docs/trading/pre-apply-checklist.md` B16 updated.
