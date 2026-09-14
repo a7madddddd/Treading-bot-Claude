@@ -1137,6 +1137,31 @@ Controller approval per CLAUDE.md §9.
   §7. Per the Controller's own instruction not to search indefinitely,
   this concludes the free GitHub/Hugging-Face-hosted OHLCV search for
   D-0026.
+- **Second addendum (2026-09-14, same-day, calibration-data
+  validation):** the Controller stopped the data search and asked
+  whether the components gathered (pystock-data, `fja05680/sp500`,
+  `finance-vix`, plus Candidates A/B from the Hugging Face pass) can
+  actually be combined into a defensible D-0026 calibration dataset —
+  not merely whether each source individually "looks good." Full
+  analysis in `docs/trading/github-native-data-sources.md` §8. Verdict:
+  **C — data is not sufficient**, unchanged from this decision's base
+  verdict. Key findings: the DELL ticker has referred to two unrelated
+  companies (Dell Inc., private 2013; Dell Technologies, relisted 2018)
+  and neither Hugging Face candidate's per-ticker inception date has
+  been verified — an unresolved identity risk, not a design question.
+  Candidate B's own metadata (`metadata.json` quintile breakdown,
+  previously unexamined) shows a 51.8% average gap rate in its bottom
+  liquidity quintile — disclosed evidence of uneven, not broad,
+  coverage. Zero actual price rows have ever been inspected from either
+  Hugging Face candidate anywhere in this thread — only metadata,
+  documentation, and a ticker list for Candidate B, and Controller-
+  supplied summary facts for Candidate A. Joining `fja05680/sp500`'s
+  real point-in-time S&P 500 membership to either OHLCV candidate does
+  **not** materially reduce survivorship bias — it creates historical
+  membership paired with a current/limited OHLCV universe, which
+  silently drops most pre-2021 delistings while looking
+  survivorship-corrected. Per the Controller's explicit instruction, no
+  further dataset search was performed or is recommended.
 - **Rationale:** Even with the composite, the layer that gates
   defensible calibration — broad-market OHLCV reaching into 2018-2026 —
   has no free, verified, reachable source. The one real universe-membership

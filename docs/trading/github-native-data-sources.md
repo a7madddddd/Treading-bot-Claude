@@ -1140,3 +1140,165 @@ from local disk after inspection (`rm -rf`, confirmed, three times
 across this pass as re-inspection required re-cloning the small repo).
 No bulk dataset was retained, downloaded, or committed to this
 repository.
+
+---
+
+## 8. D-0026 calibration-data validation (2026-09-14, no new search)
+
+Per the Controller's explicit instruction, this section performs **no
+new dataset search**. It validates whether the composite of Candidate A
+(`mito0o852/OHLCV-1m`, described by the Controller as: actual Parquet
+files present, ~87.7 GB, claimed 1992-2026, claimed Finnhub.io source —
+none of this independently re-verified here, since `huggingface.co`
+remains blocked and no further search was performed), Candidate B
+(`elkassabgi/hfdatalibrary`, verified in §7), `fja05680/sp500`, and
+`pystock-data` can actually support D-0026 calibration — not merely
+whether the individual sources "look good."
+
+### 8.1 Identity join
+
+Ticker-only join for both OHLCV candidates; no CIK, no ticker-history-
+over-time, no stable security-level identifier in either. AAPL/MSFT are
+low-risk (long-lived, never reassigned). **DELL is an unresolved
+identity risk, not a design question:** the ticker has referred to two
+different legal entities (Dell Inc., private 2013; Dell Technologies,
+relisted under DELL in Dec 2018) and neither candidate's per-ticker
+inception date has been inspected — it cannot be established from
+available evidence whether Candidate B's "DELL" series (confirmed
+present in its ticker list, §7.1) starts at 2018 or incorrectly splices
+in the earlier company's 2002-2013 history. FDO/RSH/HNZ/BBI: confirmed
+absent from Candidate B (§7.1, direct test); UNKNOWN for Candidate A (no
+independent test performed).
+
+### 8.2 Point-in-time test (2010/2015/2018/2020/2022/2024/2026)
+
+For every date tested, "belonged to the S&P 500 that day" (from
+`fja05680/sp500`, real) and "has OHLCV that day in Candidate A/B"
+(never verified at the row level for either candidate) are **two
+separate, unjoined facts**. No date in the required set achieves a
+verified YES across existence + listing + universe membership + OHLCV +
+delisted-retention simultaneously for either OHLCV candidate. Full table
+in the chat-format response delivered this pass; not duplicated here to
+avoid redundant restatement of the same UNKNOWN/PARTIAL cells layer by
+layer.
+
+### 8.3 Delisted test (FDO/RSH/HNZ/BBI) — final classification
+
+| Name | Identity+date (via fja05680/sp500) | Pre-delisting OHLCV | Overall |
+|---|---|---|---|
+| FDO | Yes, verified | Yes (pystock-data only; absent from Candidate B, unverified in A) | **PARTIAL** |
+| RSH | Yes, verified (ticker rename to RSHCQ captured) | No (absent everywhere verified) | **PARTIAL** |
+| HNZ | Yes, verified | No (absent everywhere verified) | **PARTIAL** |
+| BBI | **Not established** — never confirmed as an S&P 500 constituent in this thread | No (absent everywhere verified) | **FAILED** |
+
+Adding Candidates A/B does not improve any of these four outcomes versus
+the D-0028 baseline.
+
+### 8.4 Modern regime breadth (not just date-range existence)
+
+Candidate A: breadth per period entirely unverified — an 87.7 GB total
+size says nothing about symbol-level distribution. Candidate B: real,
+previously-unreported evidence from its own `metadata.json`
+(`quintiles`, verified in §7.1's source material) shows a **51.8%
+average gap rate in its bottom liquidity quintile** (278 of 1,391
+tickers) — direct, disclosed evidence of **uneven**, not broad, coverage
+even within the one candidate with genuine operational metadata.
+
+### 8.5 Daily-data feasibility (1-minute → daily, conceptual only)
+
+Conceptually straightforward (open/high/low/close/volume aggregation)
+but every real risk — session boundary, timezone, missing bars,
+zero-volume bars, duplicate timestamps, corporate-action boundaries — is
+**unverified against actual rows from either candidate**, because no
+actual rows have been retrieved from either. Candidate B's own
+`UNAPPLIED_SPLITS_20260905.md` (§7.1) is direct, non-hypothetical proof
+that the corporate-action risk specifically is real: 23 splits served on
+the wrong price basis for 4+ months before detection.
+
+### 8.6 Does 1-minute granularity add value for D-0026?
+
+No. D-0026's daily-frequency requirements (price, volume, ATR, liquidity
+approximation, regime classification) gain nothing from 1-minute source
+granularity that pystock-data's native daily format doesn't already
+provide for its own window, while minute-to-daily aggregation adds every
+risk in §8.5. Neither candidate provides true bid/ask spread data —
+1-minute trade-print OHLCV is not spread data, and this document makes
+no claim that it is.
+
+### 8.7 Source provenance
+
+Candidate A: **UNKNOWN** — "sourced from Finnhub.io" has never been
+independently verified (no license or ToS text seen anywhere in this
+thread). Per the Controller's own standing rule, UNKNOWN provenance
+disqualifies a candidate as ROOT regardless of any other factor.
+Candidate B: **disclosed, not fully verified** — three overlapping
+regimes (CC BY 4.0 wrapper, verified directly from `LICENSE-DATA`; IEX
+Historical Data Terms of Use for 2022-03-07-onward bars, page itself
+blocked, never read in full; PiTrading terms for pre-2022-03 data, not
+stated anywhere in the repository at all).
+
+### 8.8 Corporate actions
+
+pystock-data: raw + adjusted, both present, disclosed (§6.3, prior
+pass). Candidate A: unknown. Candidate B: a real split-detection/repair
+pipeline exists but has a documented recent failure window (§7.1); which
+convention is served, and whether it is currently correct, is
+unverified.
+
+### 8.9 Survivorship analysis — precise answer
+
+**The composite does NOT materially reduce survivorship bias.** It
+produces exactly the failure mode the Controller described:
+`fja05680/sp500` correctly shows a name belonged to the S&P 500 on a
+given historical date; Candidate B's OHLCV silently has no row for most
+pre-2021 delistings on that date, not because a join failed but because
+the roster never included the name. This is **historical membership
+paired with a current/limited OHLCV universe** — a subtler and more
+dangerous failure mode than having no membership data at all, because
+the membership table looks correct while the price layer beneath it
+silently drops exactly the observations that were supposed to be added
+back.
+
+### 8.10 D-0026 scope
+
+Unchanged from every prior document in this thread: `fja05680/sp500` is
+validation/control/historical-benchmark only. S&P 500 membership history
+is not, and is not proposed here as, a substitute for D-0026's dynamic,
+symbol-agnostic universe.
+
+### 8.11 Final verdict
+
+**FINAL = C — DATA IS NOT SUFFICIENT for D-0026 calibration.**
+
+Neither Candidate A nor B adds a verified new capability over the
+D-0028 baseline. Candidate A fails on provenance alone (UNKNOWN,
+disqualifying by the Controller's own rule) independent of every other
+factor. Candidate B has real, verified metadata and an unusually
+transparent operator, but **zero actual price rows have ever been
+inspected from it in this entire thread**, its own liquidity-gap
+statistic argues against broad coverage, its corporate-action pipeline
+has a recent documented failure, and two of its three license layers
+have never been read in full. Stacking either candidate onto
+`fja05680/sp500` does not close the survivorship gap identified across
+this whole research thread — it creates a version of the gap that is
+harder to notice. The only calibration-grade resource with actual,
+row-level-verified data anywhere in this thread remains `pystock-data`
+(2009-2017) + `fja05680/sp500` (S&P 500 point-in-time membership),
+unchanged from the D-0028 conclusion. Remaining limitations are listed
+in full in the D-0028 addendum and research-log entry for this date;
+they are not repeated verbatim here.
+
+Per the Controller's explicit instruction, **no further dataset search
+was performed or is recommended following this pass.** This closes out
+B16's data-*sourcing* phase; any further progress requires either (a)
+Controller-side verification of actual rows from Candidate A/B from an
+unblocked network, or (b) a decision to proceed to designing the D-0026
+calibration strategy bounded by the documented limitations, without
+further search.
+
+No production code, dependency, scheduler change, live routine change,
+live universe selection, or order was created while producing this
+section. No strategy mechanics were changed. No frozen decision (D-0011,
+D-0012, D-0021 through D-0025, or the D-0026 architecture itself) was
+modified. No dataset — full or partial — was downloaded. No calibration
+code was written. No D-0026 numeric parameter was selected or approved.

@@ -178,3 +178,61 @@ FACT / ASSUMPTION / HYPOTHESIS / RECOMMENDATION / EXPERIMENTAL IDEA.
   finding (no new decision number — the overall verdict, "no free
   composite solution," is unchanged); `docs/trading/pre-apply-checklist.md`
   B16 updated.
+
+## 2026-09-14 — Can the gathered components support defensible D-0026 calibration?
+
+- **Question:** With data-sourcing stopped by explicit Controller
+  instruction, can pystock-data + `fja05680/sp500` + `finance-vix` +
+  Hugging Face Candidates A (`mito0o852/OHLCV-1m`) and B
+  (`elkassabgi/hfdatalibrary`) actually be combined into a defensible
+  D-0026 calibration dataset?
+- **Summary:** Synthesis/gap-analysis only, no new dataset search
+  performed. Ran the identity-join, point-in-time, delisted, modern-
+  regime-breadth, daily-feasibility, provenance, corporate-action, and
+  survivorship tests the Controller specified against evidence already
+  on hand from D-0027/D-0028 and the Hugging Face verification pass.
+- **Key findings:**
+  - DELL is an unresolved ticker-identity risk: the symbol has referred
+    to two unrelated companies (Dell Inc., private 2013; Dell
+    Technologies, relisted 2018) and neither Hugging Face candidate's
+    per-ticker inception date has been checked.
+  - Re-examining Candidate B's own `metadata.json` (previously fetched
+    but not fully analyzed) surfaced a quintile liquidity breakdown
+    showing a **51.8% average gap rate** in its bottom quintile (278 of
+    1,391 tickers) — real, disclosed evidence of uneven coverage.
+  - **Zero actual price rows have ever been inspected from either
+    Hugging Face candidate in this entire research thread** — only
+    metadata, pipeline documentation, and a ticker list (Candidate B),
+    and Controller-supplied summary facts (Candidate A).
+  - Joining `fja05680/sp500`'s real point-in-time S&P 500 membership to
+    either OHLCV candidate does not reduce survivorship bias — it
+    produces historical membership paired with a current/limited OHLCV
+    universe, silently dropping most pre-2021 delistings while
+    appearing survivorship-corrected.
+  - Delisted test (FDO/RSH/HNZ/BBI): 3 of 4 remain PARTIAL (identity/
+    date known via fja05680/sp500, no verified price anywhere); BBI
+    remains FAILED (never even confirmed as a former S&P 500 member).
+- **Evidence / sources:** Re-analysis of previously-gathered evidence
+  (D-0027, D-0028, and this thread's Hugging Face verification pass);
+  full detail in `docs/trading/github-native-data-sources.md` §8.
+- **Risks / limitations:** This is a synthesis pass, not new empirical
+  verification — its conclusions are only as strong as the underlying
+  D-0027/D-0028 evidence, which itself has the access-gap limitations
+  already documented (Hugging Face domains blocked).
+- **Confidence:** HIGH — this is analysis of already-verified facts
+  plus explicit identification of what remains unverified, not a new
+  empirical claim.
+- **Status:** INPUT-TO-DECISION
+- **Recommendation:** Accept verdict C (data not sufficient for D-0026
+  calibration) rather than overstate a partial composite as adequate.
+  The only calibration-grade resource with actual verified data remains
+  pystock-data (2009-2017) + fja05680/sp500 (S&P 500 point-in-time
+  membership) — unchanged from D-0028. Per the Controller's explicit
+  instruction, no further dataset search was performed or is
+  recommended; next steps are Controller-side row-level verification of
+  the Hugging Face candidates from an unblocked network, or proceeding
+  to design the D-0026 calibration strategy bounded by these documented
+  limitations.
+- **What changed as a result:** second addendum to D-0028 in
+  `docs/trading/decisions.md` (no new decision number — verdict
+  unchanged); `docs/trading/pre-apply-checklist.md` B16 updated.
