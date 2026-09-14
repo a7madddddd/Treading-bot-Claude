@@ -128,52 +128,96 @@ Each entry:
 - **Rationale:** Keeps behavior explicit and safe; no invention of
   additional retry/roll policy.
 
-## D-0011 — Ladder trigger debounce — PROPOSED (refined)
+## D-0011 — Ladder trigger debounce — APPROVED
 
-- **Date:** 2026-09-14 (proposal; trigger-source part superseded by
-  D-0012; wording refined this session after Controller review of the
-  BLOCKED_EXPIRED treatment)
-- **Status:** **PROPOSED** — awaiting Controller final approval
-- **Proposed by:** Claude (analysis in `docs/trading/debounce-analysis.md`)
-- **Proposal (refined):** Ladder trigger debounce is a **per-level
-  state machine** with **asymmetric re-arm** — hysteresis is applied
-  only to market-driven blocks, not to Controller-availability
-  expirations. Full wording is in `debounce-analysis.md §9`.
-  Summary:
-  - States per Ladder level per trade: `IDLE`, `PROPOSAL_PENDING`,
-    `APPROVED`, `EXECUTED`, `REJECTED`, `BLOCKED_EXPIRED`,
-    `BLOCKED_PRICE`, `BLOCKED_FLOOR_PRIORITY`.
-  - Terminal (no further activity this trade): `EXECUTED`, `REJECTED`,
-    `BLOCKED_FLOOR_PRIORITY`.
-  - `BLOCKED_EXPIRED` → `IDLE` with `armed = True`. Next scheduled
-    check may re-ask if trigger still holds. **Justification:**
-    expiration is a human-availability event, not a market signal;
-    under the hourly cadence (D-0021) this is bounded to ≤ 7 asks per
-    Ladder per day and preserves responsiveness to a live
-    opportunity. If cadence ever tightens to sub-minute intervals,
-    revisit as a follow-up D-0011 revision.
-  - `BLOCKED_PRICE` → `IDLE` with `armed = False`. Re-arm requires
-    `p_last ≥ trigger × 1.005` on a subsequent check (D-0007's ±0.5%
-    band, reused; no invented constant).
-  - Proposal creation gate: `state == IDLE AND armed == True AND
-    p_last ≤ trigger AND trigger > active_floor_price`.
-  - Alpaca `client_order_id = proposal.id` provides broker-side
-    idempotency (D-0025).
-  - All debounce state persisted in SQLite (D-0024); survives
-    restart and reconciliation. On restart, any pending proposal
-    older than 5 minutes is transitioned to `BLOCKED_EXPIRED`
-    (and thus back to IDLE with armed=True).
-- **Rationale:** state handles duplicate proposals/orders;
+- **Proposed:** 2026-09-14 (analysis in `docs/trading/debounce-analysis.md`)
+- **Refined:** 2026-09-14 (asymmetric re-arm added after Controller review)
+- **Approved on:** 2026-09-14
+- **Approved by:** Controller
+- **Status:** **APPROVED**
+- **Trigger-source half:** the trigger-source part of the original
+  D-0011 (trade prints vs bars vs quote midpoint) is settled by
+  D-0012 (Alpaca Last Trade).
+
+### Approved policy wording
+
+> Each Ladder level (Ladder 1, Ladder 2) has, per trade, a state
+> machine over the following states:
+> `IDLE`, `PROPOSAL_PENDING`, `APPROVED`, `EXECUTED`, `REJECTED`,
+> `BLOCKED_EXPIRED`, `BLOCKED_PRICE`, `BLOCKED_FLOOR_PRIORITY`.
+>
+> **Terminal states (no further activity on this level for the trade):**
+> `EXECUTED`, `REJECTED`, `BLOCKED_FLOOR_PRIORITY`.
+>
+> **Non-terminal block outcomes:**
+> - `BLOCKED_EXPIRED` (the D-0007 5-minute clock ran out with no
+>   Controller response) → returns the level to `IDLE` with
+>   `armed = True`. The next scheduled market check may create a new
+>   proposal if the trigger condition still holds. Expiration is a
+>   human-availability event, not a market signal; on the approved
+>   hourly cadence (D-0021) this bounds notifications to at most one
+>   per hourly check while the trigger holds.
+> - `BLOCKED_PRICE` (D-0007 re-check found
+>   `abs(current − trigger)/trigger > 0.005` at submit time) → returns
+>   the level to `IDLE` with `armed = False`. Re-arm requires the
+>   Alpaca Last Trade price to reach `trigger × 1.005` on some
+>   subsequent scheduled check. The 0.005 re-arm margin reuses the
+>   ±0.5% material-move band already approved in D-0007. No new
+>   debounce/re-arm numeric value is introduced.
+>
+> **Proposal creation gate:**
+> A new proposal is created only when the level is in `IDLE` AND
+> `armed == True` AND `p_last ≤ trigger` AND
+> `trigger > active_floor_price`.
+> `armed` transitions to `False` at the moment a proposal is created.
+>
+> **Idempotency:**
+> Alpaca `client_order_id = proposal.id` (D-0025) provides
+> broker-side idempotency, so a duplicate submit attempt from any
+> source (retry, race, restart) is refused at Alpaca even before the
+> state machine catches it.
+>
+> **Persistence:**
+> All debounce state (per trade, per level) is persisted in SQLite
+> via the D-0024 repository abstraction and survives process restart
+> and broker reconciliation. On restart, any proposal older than
+> 5 minutes with no recorded approval is transitioned to
+> `BLOCKED_EXPIRED` (and thus back to IDLE with `armed = True`)
+> before the engine acts.
+>
+> **Future-work note:** the asymmetric treatment of `BLOCKED_EXPIRED`
+> vs `BLOCKED_PRICE` is calibrated to the current hourly scheduler
+> cadence (D-0021). If cadence ever tightens to sub-minute intervals,
+> this rule should be revisited as a follow-up D-0011 revision.
+
+### Rationale (preserved)
+
+- Aligned with the already-approved strategy (`strategy.md §3` —
+  "each Ladder can trigger only once per trade" is a state machine).
+- State handles duplicate proposals, approvals, and orders;
   asymmetric re-arm handles market-driven oscillation
-  (BLOCKED_PRICE) while preserving responsiveness after a temporary
-  Controller absence (BLOCKED_EXPIRED); 0.5% reuses an
-  already-approved constant.
-- **Note:** the trigger-source half of the original D-0011 (trade
-  prints vs bars vs quote midpoint) is settled by D-0012 (Alpaca
-  Last Trade).
-- **Decision required:** Controller review of the refined
-  `debounce-analysis.md` and explicit APPROVED / REJECTED / MODIFIED
-  response.
+  (`BLOCKED_PRICE`) while preserving responsiveness after a temporary
+  Controller absence (`BLOCKED_EXPIRED`).
+- Reuses D-0007's approved ±0.5% material-move band as the re-arm
+  threshold; no invented constants.
+- Deterministic and replayable — behavior is a function of the ordered
+  tick sequence and the per-level state.
+- Survives restart via SQLite (D-0018 / D-0024) and integrates
+  cleanly with reconciliation.
+
+### Cross-references
+
+- Full analysis and worked examples: `docs/trading/debounce-analysis.md`.
+- State fields: `docs/architecture/state-management.md` §Approval
+  workflow state and §Ladder trigger/execution state.
+- Approval loop: `docs/architecture/telegram-approval.md`.
+
+### Change control
+
+Any modification to this rule (including additional states, different
+re-arm treatment for `BLOCKED_EXPIRED`, or a different numeric re-arm
+threshold) requires a new dated entry in this decision log and
+Controller approval per CLAUDE.md §9.
 
 ## D-0012 — Market data source: Alpaca Last Trade for ladder triggers
 

@@ -568,6 +568,9 @@ same level are safe — the loser retries or aborts.
 
 ## 10. Status
 
-**D-0011 — PROPOSED — awaiting Controller approval.**
+**D-0011 — APPROVED on 2026-09-14.**
 
-Do not mark APPROVED until the Controller explicitly says so.
+The approved policy wording is the version in §9 above; the
+authoritative record is `docs/trading/decisions.md` D-0011.
+Any change to this rule requires a new dated entry in `decisions.md`
+and Controller approval per CLAUDE.md §9.

@@ -39,7 +39,7 @@ written.
 | Approval transport: Telegram bot with inline buttons | ✅ | D-0025 |
 | Trading universe: dynamic, symbol-agnostic engine | ✅ (principle) | D-0026 |
 | Universe **selection mechanism** | 🕓 TBD | D-0013 / D-0026 |
-| Ladder trigger **debounce** | 🕓 TBD | D-0011 |
+| Ladder trigger **debounce** | ✅ | D-0011 (state machine + asymmetric re-arm; approved 2026-09-14) |
 | Portfolio-level hard risk limits | 🕓 TBD | risk-management.md §5 |
 
 ## B. Implementation prerequisites (before APPLY)
@@ -66,8 +66,6 @@ written.
 
 - Universe **generation mechanism** (D-0026): principle approved; concrete
   design later. Engine will accept any list via the repository abstraction.
-- Ladder debounce (D-0011): engine designed so a debounce policy can slot
-  in later without rewrites.
 - Portfolio-level hard risk limits: engine will treat them as data;
   concrete values later.
 - Second-provider notification transport (email, push): Telegram is the
