@@ -469,6 +469,89 @@ Controller approval per CLAUDE.md §9.
   underlying engine has no TSLA anywhere in its logic. There is no
   interim "approved universe = ['TSLA']" for production.
 
+## D-0026 — Final verification pass: legal-terms block confirmed, Yahoo downgraded
+
+- **Date:** 2026-09-14
+- **Status:** Controller approved the free-only architecture
+  **directionally**; explicitly withheld authorization to begin data
+  acquisition pending one final verification pass. This entry records
+  that pass's findings. Phase 2 remains APPROVED (research/design scope,
+  unchanged); D-0026 mechanism and every numeric parameter remain
+  PROPOSED / NOT APPROVED; Phase 3 remains NOT approved. Data acquisition
+  is **still not authorized to begin**.
+- **Environment constraint disclosed:** attempted to fetch Stooq's and
+  Yahoo's primary terms-of-use pages directly via both `WebFetch` and raw
+  `curl` (6 distinct URLs across stooq.com, stooq.pl, legal.yahoo.com,
+  guce.yahoo.com, policies.yahoo.com, web.archive.org). **All blocked by
+  this session's network egress proxy** (confirmed via
+  `curl → CONNECT tunnel failed, response 403`), not a content or
+  refusal issue. Classified honestly as unverified rather than inferred
+  from secondary sources.
+- **Stooq:** every legal/licensing item (automated retrieval, bulk
+  retrieval, local storage, research use, commercial-use restriction,
+  redistribution, derived-metric retention) remains **UNCLEAR — VERIFY
+  DIRECTLY**; no search-indexed quotation of Stooq's actual terms text
+  was found in either research pass. Only technical facts (CSV download
+  mechanism, an observed but undocumented daily rate-limit message)
+  remain confirmed, unchanged from before.
+- **Yahoo — two new findings that downgrade its role:**
+  1. A search-surfaced (not self-fetched) quotation of Yahoo's actual
+     ToS bars commercial exploitation without written permission and
+     grants only a "personal... non-exclusive license" — consistent
+     with internal research use, but not independently confirmed by
+     Claude.
+  2. **New: a March 2025 report (via `yfinance` GitHub issue tracking)
+     indicates Yahoo may now gate historical data retrieval behind a
+     paid plan**, with only current prices remaining free — a capability
+     risk not known at the time of the prior document, separate from the
+     legal-terms question.
+  3. **Confirmed (previously only "unconfirmed"): Yahoo does not provide
+     data for delisted firms at all** — a direct third-party statement,
+     closing an open item from the prior document in the negative.
+  4. Multiple 2025 GitHub issues show `yfinance` throwing
+     "possibly delisted" errors for clearly-listed major symbols
+     (AAPL, TSLA, ^GSPC), corroborating general endpoint instability with
+     fresh, dated evidence.
+- **Survivorship-bias four-part decomposition performed, as requested:**
+  (A) historical identity coverage — solvable free, unchanged; (B)
+  point-in-time universe membership on a specific date — **not solvable
+  free**, confirmed unchanged; (C) price coverage for currently-known
+  names — solvable, Yahoo's specific role now more uncertain; (D) price
+  coverage specifically for delisted names **after** identifying them —
+  **still not confirmed solvable free**, and Yahoo is now a **confirmed
+  no** for this specific item rather than an open question.
+- **Bias-control design (Controls A-D) specified:** Control A
+  (current-survivor baseline, explicit bias label), Control B (expanded
+  identity universe with measured partial delisted-price coverage),
+  Control C (compare conclusions with vs. without the retrievable
+  delisted subset), Control D (mandatory `DataCoverageLog` disclosure —
+  total candidates / % with full history / % delisted-with-history / %
+  delisted-without — attached to every future evidence package).
+- **Strategy mechanics reconfirmed unchanged:** D-0011, D-0012, D-0007,
+  ladder 5/8/10 spacing, D-0026 architecture, CRASH-tightens (not
+  EMPTY), EMPTY-on-failure handling — all explicitly checked and
+  untouched.
+- **Cross-reference:** `docs/trading/free-data-verification-pass.md`
+  (full analysis; final decision block; expanded evidence checklist —
+  adds two new items to `historical-data-calibration-plan.md §13`:
+  independent confirmation of Stooq's terms, and re-verification of
+  Yahoo's current free-tier capability — both required before any
+  Stooq/Yahoo-sourced evidence supports a numeric parameter approval).
+- **What did NOT change:** Norgate remains rejected/superseded; the
+  directionally-approved architecture (Stooq root; SEC EDGAR, Nasdaq
+  Trader, FRED, curated leveraged/inverse list as secondary) is
+  unchanged in shape — only Yahoo's scope within it is narrowed pending
+  re-verification. No data purchased or downloaded. No code written. No
+  live system touched. TSLA not used as any form of fallback or
+  calibration shortcut.
+- **Decision required from Controller:** how to resolve the two UNCLEAR
+  legal-terms items given this environment cannot reach the primary
+  sources — options include manual verification by the Controller
+  directly, or deferring the check to a future session/tool with
+  unrestricted web access. **Data acquisition remains not authorized
+  until this is resolved**, per the Controller's own explicit condition
+  for this verification pass.
+
 ## D-0026 — Norgate recommendation REJECTED; free-only architecture recommended
 
 - **Date:** 2026-09-14
