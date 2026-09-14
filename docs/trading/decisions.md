@@ -1116,6 +1116,27 @@ Controller approval per CLAUDE.md §9.
     `prices.csv` carries both raw (`close`) and split/dividend-adjusted
     (`adj_close`) prices as separate, clearly labeled columns, resolving
     part of the corporate-actions question for its own 2009-2017 window.
+- **Addendum (2026-09-14, same-day follow-up):** the Controller
+  requested one final targeted pass to resolve the three Hugging Face
+  candidates specifically. `huggingface.co` and all its subdomains
+  (`hf.co`, `cdn-lfs*`, `datasets-server`) are confirmed blocked with
+  the same policy signature as every other blocked financial domain,
+  verified via both `curl` and `WebFetch` independently.
+  `elkassabgi/hfdatalibrary` has a public GitHub mirror of its pipeline
+  and metadata (not price data) that this environment could reach — a
+  real, active, 1,391-ticker pipeline, but its own documentation, cross-
+  checked with a direct ticker-list test (FDO/RSH/HNZ/BBI all absent;
+  AAPL/MSFT/TSLA/DELL present), confirms it excludes delisted names from
+  before ~2021, and its actual bars require registration at a blocked
+  domain — **CONDITIONAL, not approvable as ROOT**.
+  `paperswithbacktest/Stocks-Daily-Price` is confirmed **paid** (its own
+  client library requires a paid API key or subscription-linked HF
+  token) — **REJECTED** outright. `mito0o852/OHLCV-1m` has no reachable
+  mirror and remains **UNVERIFIED**. This does not change the verdict
+  below — full detail in `docs/trading/github-native-data-sources.md`
+  §7. Per the Controller's own instruction not to search indefinitely,
+  this concludes the free GitHub/Hugging-Face-hosted OHLCV search for
+  D-0026.
 - **Rationale:** Even with the composite, the layer that gates
   defensible calibration — broad-market OHLCV reaching into 2018-2026 —
   has no free, verified, reachable source. The one real universe-membership

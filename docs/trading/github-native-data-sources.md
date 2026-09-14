@@ -963,3 +963,180 @@ cloned for this section (`jadchaar/sec-cik-mapper`, `fja05680/sp500`,
 `BlackFalconData-org/delisted-stocks-list`) were removed from local disk
 after inspection (`rm -rf`, confirmed). No bulk dataset was retained,
 downloaded in full, or committed to this repository.
+
+---
+
+## 7. Hugging Face candidate verification (2026-09-14, targeted final pass)
+
+§6.3 flagged three Hugging Face-hosted OHLCV candidates as promising by
+description but unverifiable because `huggingface.co` returned the same
+network-policy 403 as every other blocked financial-data domain. The
+Controller asked for one final, targeted pass to determine — empirically,
+not from README claims — whether any of the three actually closes the
+2018-2026 OHLCV gap.
+
+**Result: `huggingface.co`, `hf.co`, `datasets-server.huggingface.co`,
+`cdn-lfs.huggingface.co`, and `cdn-lfs-us-1.huggingface.co` are all
+confirmed blocked** — verified independently via both direct `curl`
+through the agent proxy and the `WebFetch` tool (`EGRESS_BLOCKED`), and
+logged in the proxy's own status endpoint as `connect_rejected` /
+`policy denial`. This is the same organizational-policy signature
+already confirmed for `stooq.com`, `sec.gov`, `data.sec.gov`,
+`nasdaqtrader.com`, and `finance.yahoo.com`.
+
+One candidate (`elkassabgi/hfdatalibrary`) turned out to have a public
+**GitHub mirror** of its pipeline, API source, and metadata (not its
+price data) at `github.com/elkassabgi/hfdatalibrary`, which this
+environment can reach. That allowed real, direct verification of
+metadata, license text, and ticker-list membership — without touching
+any blocked domain or registering for anything. The other two
+candidates have no such mirror and remain entirely unverified.
+
+### 7.1 Candidate 1 — `elkassabgi/hfdatalibrary`
+
+- **Verified directly (cloned `github.com/elkassabgi/hfdatalibrary`,
+  3.4 MB):** this is the **website, API, and data-pipeline source code**
+  (Cloudflare R2 client, split-detection scripts, auth/SSO) plus small
+  **metadata** files — `data/tickers.json`, `data/ticker_meta.json`,
+  `data/metadata.json`. **No OHLCV bars are committed to this repo or
+  the Hugging Face repo it mirrors.** Real bars are served only via
+  `hfdatalibrary.com`'s API, gated behind free registration (email,
+  ORCID, or Google) plus an API key — and `hfdatalibrary.com`,
+  `api.hfdatalibrary.com` are themselves confirmed **blocked** from this
+  environment (same policy signature). No registration was attempted.
+- **`data/metadata.json` (real, committed file — verified directly):**
+  1,391 tickers, 1,655,086,226 raw bars / 1,601,226,623 clean bars,
+  `start_date: 2002-12-30`, `end_date: 2026-09-11`,
+  `earliest_date: 1991-01-02` (45 tickers), `data_updated:
+  2026-09-12T12:04:25Z`, `next_update: 2026-09-15T11:00:00Z` — a
+  genuinely active, near-daily-updated pipeline, not stale, not
+  vaporware.
+- **`data/tickers.json` (real, committed, 1,391-entry list) — direct
+  ticker-presence test against the Controller's required symbol set:**
+
+  | Symbol | Found in current ticker list? |
+  |---|---|
+  | AAPL | YES |
+  | MSFT | YES |
+  | TSLA | YES |
+  | DELL | YES (the post-2016 relisted Dell Technologies ticker — a different security from the 2013-delisted original Dell Inc.) |
+  | FDO | **NO** |
+  | RSH | **NO** |
+  | HNZ | **NO** |
+  | BBI | **NO** |
+
+  **0 of 4 pre-2021 delisted test names are present.**
+- **`pages/docs.html` (real, committed file) — self-disclosed
+  limitation, verified directly, not inferred:** *"constituents were
+  fixed circa 2023, companies that delisted, were acquired, or went
+  bankrupt before ~2021 are **absent**"* — while 2021+ delistings that
+  were still active when the roster was fixed (the maintainer's own
+  examples: SVB Financial, First Republic) are retained. This **exactly
+  matches** the direct ticker-list test above and is the maintainer's
+  own, unprompted disclosure — an unusually transparent admission for a
+  dataset of this kind.
+- **`LICENSE-DATA` (real, committed file — verified directly):** CC BY
+  4.0 for the work as a whole, **plus a mandatory carve-out**: bars
+  dated 2022-03-07 onward are IEX-derived and require a specific
+  attribution clause tied to IEX's own Historical Data Terms of Use
+  (`iex.io/legal/hist-data-terms` — itself confirmed blocked from this
+  environment, so its full text could not be independently read).
+  Pre-2022-03 data is sourced from "PiTrading" under terms not stated in
+  this repository. **License = clear but mixed, not a single grant.**
+- **`docs/UNAPPLIED_SPLITS_20260905.md` (real, committed incident
+  report):** documents 23 real stock splits (BKNG, KLAC, CVNA, CRWD,
+  MNST, DD, BYND, and others) that went **unapplied** in served 1-minute
+  data for up to 4+ months (April-August 2026) before detection and
+  repair. Genuine evidence of active operation and monitoring — and
+  equally genuine evidence that corporate-action handling has had real,
+  disclosed defects.
+- **Verdict: CONDITIONAL.** Real, active, unusually transparent
+  pipeline with a plausible date range and 1,391-ticker breadth — but
+  the bars themselves are unreachable from this environment
+  (registration-gated, and the registration domain is itself
+  policy-blocked), and the delisted-coverage gap for anything before
+  ~2021 is now empirically confirmed, not merely suspected. Cannot be
+  approved as ROOT on the evidence available today.
+
+### 7.2 Candidate 2 — `mito0o852/OHLCV-1m`
+
+- **No GitHub mirror found:**
+  `raw.githubusercontent.com/mito0o852/OHLCV-1m/main/README.md` returns
+  HTTP 404; no other reachable presence located.
+- **Everything about this candidate — file list, actual date range,
+  symbol count, license, provenance, delisted coverage — remains
+  entirely unverified from this environment.** Search-indexed snippets
+  (a sibling `OHLCV-1m-Forex` repo's file naming pattern, a claimed
+  1992-01 to 2025-05 range, an earlier pass's Finnhub.io provenance
+  mention) are **not treated as established fact** per the no-guess
+  rule — they are listed only as what would need checking if
+  `huggingface.co` becomes reachable.
+- **Verdict: UNVERIFIED.** What must be externally verified: the file
+  listing and sizes at
+  `https://huggingface.co/datasets/mito0o852/OHLCV-1m/tree/main`, its
+  dataset card for license and provenance, and a direct multi-symbol
+  test (AAPL/MSFT/TSLA/FDO/RSH/DELL/HNZ/BBI) against the actual files.
+
+### 7.3 Candidate 3 — `paperswithbacktest/Stocks-Daily-Price`
+
+- **GitHub presence found and verified:**
+  `github.com/paperswithbacktest/pwb-toolbox` — a Python **client
+  library**, not the dataset itself. Its own `README.md` (real,
+  committed file, fetched directly) states: *"To use PWB datasets, you
+  can supply a Papers With Backtest API key via the `PWB_API_KEY`
+  environment variable... If no API key is available, you can instead
+  login to the Huggingface Hub... with an access token."*
+- **There is no anonymous access path.** Combined with search-indexed
+  text describing the dataset's HF page as "cards and schemas open to
+  read, downloads gated... requires the Backtester plan, $50/month," this
+  is confirmed as a **paid-access-gated** dataset regardless of its
+  public metadata visibility.
+- **Verdict: REJECT.** This is paid data by the Controller's own
+  standing rule, independent of any data-quality assessment. No further
+  verification is warranted or was attempted.
+
+### 7.4 Answers to the Controller's required questions
+
+- **MODERN OHLCV GAP:** NOT SOLVED. Candidate 1 has plausible metadata
+  shape but unreachable bars; Candidate 2 is unverified; Candidate 3 is
+  disqualified as paid.
+- **DELISTED OHLCV:** NOT SOLVED. Candidate 1's own documentation plus a
+  direct ticker-list test confirm pre-2021 delisted names are absent.
+- **POINT-IN-TIME UNIVERSE:** NOT SOLVED. None of the three provides a
+  dated membership series; Candidate 1's ticker list is a fixed,
+  current-ish roster (circa 2023), not a point-in-time series, and does
+  not extend `fja05680/sp500`'s S&P-500-only membership series (§6.2)
+  to a broader universe or to non-S&P-500 delisted names.
+- **D-0026 CALIBRATION:** NO.
+- **FINAL DECISION: D — VERIFICATION BLOCKED**, with Candidate 3
+  independently confirmed **REJECT** (paid access) and Candidate 1
+  downgraded from "promising, unverified" to **CONDITIONAL** (real
+  pipeline and metadata verified; bars unreachable; delisted-coverage
+  gap now empirically confirmed rather than merely suspected). Candidate
+  2 remains the only fully open question in this thread.
+
+**This does not change the D-0028 verdict.** D-0028 (§6.15) already
+concluded "no free composite solution" while flagging Hugging Face as an
+open access question. This pass closes most of that question — two of
+three candidates are now resolved (one CONDITIONAL-at-best, one
+REJECTED) rather than simply "unverified" — without finding a candidate
+that changes the overall outcome. Per the Controller's standing
+instruction not to search indefinitely: **this concludes the free
+GitHub/Hugging-Face-hosted OHLCV search for D-0026.** Any further
+progress on the 2018-2026 OHLCV gap requires either Controller-side
+verification of `mito0o852/OHLCV-1m` from a network that can reach
+`huggingface.co`, or a decision to proceed with D-0026 calibration
+design bounded by the documented limitations (pre-2018 historical
+control only, S&P-500-biased point-in-time universe, no free modern
+broad-market OHLCV).
+
+No production code, dependency, scheduler change, live routine change,
+live universe selection, or order was created while producing this
+section. No strategy mechanics were changed. No frozen decision was
+modified. No registration was created with any external service; no
+API key was requested or used. D-0026 numeric parameters remain NOT
+approved. The `elkassabgi/hfdatalibrary` GitHub mirror clone was removed
+from local disk after inspection (`rm -rf`, confirmed, three times
+across this pass as re-inspection required re-cloning the small repo).
+No bulk dataset was retained, downloaded, or committed to this
+repository.

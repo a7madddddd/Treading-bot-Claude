@@ -128,3 +128,53 @@ FACT / ASSUMPTION / HYPOTHESIS / RECOMMENDATION / EXPERIMENTAL IDEA.
   network this environment cannot reach is the highest-value next step.
 - **What changed as a result:** `docs/trading/decisions.md` D-0028;
   `docs/trading/pre-apply-checklist.md` B16 updated.
+
+## 2026-09-14 — Do any of the three Hugging Face OHLCV candidates actually close the D-0026 gap?
+
+- **Question:** D-0028 flagged three Hugging Face-hosted OHLCV datasets
+  as promising by description but unverifiable (`huggingface.co`
+  blocked). Do any of them, empirically, close the 2018-2026 OHLCV gap?
+- **Summary:** Re-confirmed `huggingface.co` and every HF subdomain
+  tested (`hf.co`, `datasets-server`, `cdn-lfs`, `cdn-lfs-us-1`) are
+  blocked with the same policy signature as Stooq/SEC/Yahoo/FRED,
+  verified via both `curl` and `WebFetch` independently. One candidate,
+  `elkassabgi/hfdatalibrary`, had a public GitHub mirror of its pipeline
+  and metadata (not its price data) that this environment could reach —
+  used to verify real metadata, license text, and ticker-list membership
+  without registering for anything.
+- **Key findings:**
+  - `elkassabgi/hfdatalibrary`: real, active pipeline (1,391 tickers,
+    daily-updated through 2026-09-11, per its own committed
+    `metadata.json`), but actual bars require registration at a blocked
+    domain, and its own documentation — confirmed by a direct
+    ticker-list test (0 of 4 pre-2021 delisted names present:
+    FDO/RSH/HNZ/BBI all absent; AAPL/MSFT/TSLA/DELL present) — discloses
+    that pre-~2021 delistings are excluded. License is CC BY 4.0 plus a
+    mandatory IEX-terms carve-out for 2022+ data. **Verdict: CONDITIONAL.**
+  - `mito0o852/OHLCV-1m`: no GitHub mirror exists; entirely unverified.
+    **Verdict: UNVERIFIED.**
+  - `paperswithbacktest/Stocks-Daily-Price`: its own client library
+    (`pwb-toolbox`, verified directly) requires either a paid API key or
+    an authenticated HF token — no anonymous access exists. **Verdict:
+    REJECT — paid data.**
+- **Evidence / sources:** Direct proxy-status log entries; `WebFetch`
+  `EGRESS_BLOCKED` results; direct clone and file inspection of
+  `github.com/elkassabgi/hfdatalibrary` and
+  `github.com/paperswithbacktest/pwb-toolbox`. Full detail in
+  `docs/trading/github-native-data-sources.md` §7.
+- **Risks / limitations:** `mito0o852/OHLCV-1m` remains a genuine open
+  question — it could not be ruled in or out.
+- **Confidence:** HIGH for Candidates 1 and 3 (direct evidence);
+  Candidate 2 has no evidence either way.
+- **Status:** INPUT-TO-DECISION
+- **Recommendation:** Treat the free-GitHub/Hugging-Face-hosted search
+  for D-0026 OHLCV as concluded per the Controller's own instruction not
+  to search indefinitely. The 2018-2026 OHLCV gap remains open; next
+  steps are Controller-side verification of `mito0o852/OHLCV-1m` from an
+  unblocked network, or proceeding to design D-0026 calibration bounded
+  by the documented limitations.
+- **What changed as a result:** `docs/trading/github-native-data-sources.md`
+  §7 added; D-0028 in `docs/trading/decisions.md` annotated with this
+  finding (no new decision number — the overall verdict, "no free
+  composite solution," is unchanged); `docs/trading/pre-apply-checklist.md`
+  B16 updated.
