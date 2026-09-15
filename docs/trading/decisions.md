@@ -1181,3 +1181,74 @@ Controller approval per CLAUDE.md §9.
   or any live/production/strategy change. D-0011, D-0012, D-0021 through
   D-0025, and the D-0026 architecture itself are unchanged. Phase 3
   remains NOT approved.
+
+## D-0029 — D-0026 Stage F (Ranking) boundary architecture — APPROVED (no metrics, no numeric parameters)
+
+- **Date:** 2026-09-15
+- **Status:** APPROVED (boundary/shape decisions only, enumerated
+  below); all ranking metrics, weights, and numeric parameters remain
+  PROPOSED / NOT APPROVED or BLOCKED BY CALIBRATION. No implementation
+  exists or is authorized by this decision.
+- **Approved by:** Controller, following a multi-round design proposal,
+  adversarial red-team review, and consistency-correction pass
+  conducted entirely in conversation (no interim documents were
+  created until this documentation-only authorization).
+- **Context:** Stage F is the "Ranking" stage of the already-approved
+  9-stage D-0026 pipeline (`docs/architecture/universe.md`,
+  `docs/trading/universe-selection-analysis.md §1.F`). Phase 1 of its
+  dormant code scaffolding (`src/d0026/ranking.py`:
+  `RankingMetricDefinition`, `RankingMetricId`,
+  `RANKING_METRIC_DEFINITION_VERSION`, empty
+  `RANKING_METRIC_DEFINITIONS`, `compute_ranking_score_summary()`,
+  `build_selected_candidate_entries()`) was implemented and committed
+  in a prior step of this same thread, with zero call sites from
+  `pipeline.py` and `NotCalibratedStageEvaluator` unchanged as the sole
+  evaluator for `PipelineStage.RANKING`. This decision records the
+  Controller-approved architectural *boundary* for that stage — what
+  Stage F may and may never do, its mathematical representation, its
+  stage-boundary ownership, and its planned (not executed) calibration
+  sequence — without approving any metric, weight, or threshold.
+- **Decision:** Approved as documented in full in
+  `docs/trading/stage-f-ranking-architecture.md`. Summary of what is
+  APPROVED NOW / ARCHITECTURAL DIRECTION: Stage F is an ordering-only
+  mechanism making no return/risk/success-probability claim; a
+  permanent exclusion list (Evidence/Confidence/Risk, Telegram/
+  Controller approval state, trading outcomes, portfolio performance,
+  prior ranking history, Stage G/H outputs, strategy parameters); the
+  `INV-F-REGIME-BLIND` invariant (Stage F receives but never uses
+  `regime_state`); no minimum survivor-pool-size threshold; plain
+  ordinal ranking (no CDF/percentile/z-score); the existing
+  `score_summary: Tuple[Tuple[str, float], ...]` contract preserved
+  unmodified; `security_id` as the deterministic tie-break and as the
+  mandatory calibration null baseline; a conservative missing-metric
+  rule (incomplete candidates ordered after fully-scored ones, never
+  renormalized upward, never imputed); fractional rank for per-metric
+  ties; rank-based aggregation as the aggregation *direction*.
+  Explicitly still PROPOSED / NOT APPROVED: RVOL inclusion, momentum
+  inclusion, RVOL+momentum as a final metric set, equal-weighting as a
+  validated (not merely default) choice. Explicitly EXCLUDED FROM
+  STAGE F: absolute liquidity, standalone volatility/ATR, drawdown/
+  path-quality, concentration/sector logic, ML/learning-to-rank.
+  Benchmark-relative and volatility-scaled ("risk-adjusted") momentum
+  are explicitly excluded from the base design and reserved as future,
+  separately-gated calibration experiments only.
+- **Rationale:** Full reasoning, alternatives considered, and
+  literature citations (general research, not project-specific
+  validation) are preserved in this conversation's record, not
+  duplicated into a file per project convention (CLAUDE.md preamble).
+  `docs/trading/stage-f-ranking-architecture.md` is the durable,
+  file-based record of the resulting decisions.
+- **Full detail:** `docs/trading/stage-f-ranking-architecture.md`.
+- **Supersedes:** none. Narrows (does not contradict) the still-PROPOSED
+  third-pass mechanism in `docs/trading/universe-selection-analysis.md`
+  §1.F and §3.5, and the pipeline shape in `docs/architecture/universe.md`
+  §1/§4, by fixing Stage F's boundary/shape ahead of its still-open
+  metric content.
+- **Not authorized by this decision:** any ranking metric, weight,
+  lookback, or numeric threshold; population of
+  `RANKING_METRIC_DEFINITIONS`; wiring `ranking.py` into `pipeline.py`;
+  any change to `NotCalibratedStageEvaluator`, Stage G, Stage H, or the
+  Evidence/Confidence Layer; historical-data acquisition or
+  calibration execution; any change to frozen strategy mechanics. D-0026
+  overall calibration status (`historical-data-calibration-plan.md
+  §22`) remains BLOCKED, unchanged. Phase 3 remains NOT approved.

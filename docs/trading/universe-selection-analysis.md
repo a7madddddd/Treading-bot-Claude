@@ -160,6 +160,17 @@ per-regime adjustment magnitudes are calibratable parameters — see §3.
 
 ### F. Opportunity ranking
 
+**Architectural boundary approved (2026-09-15):** Stage F's shape —
+objective (ordering only, no return/risk/success-probability claim),
+permanent exclusions, `INV-F-REGIME-BLIND`, ordinal-only
+representation, `security_id` tie-break/null-baseline, the unmodified
+`score_summary` contract, and the missing-metric/per-metric-tie
+treatment — is Controller-approved. See
+`docs/trading/stage-f-ranking-architecture.md` for the full,
+Controller-approved detail; this section's content below (which
+metrics, what weights) remains the still-PROPOSED / NOT APPROVED
+mechanism discussion it always was.
+
 **What it does:** among symbols that survived stages A–E, produces an
 ordering — NOT via a single weighted composite score (rejected in the
 second-pass analysis, Task 5), but via secondary signals (liquidity beyond

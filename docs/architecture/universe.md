@@ -96,7 +96,12 @@ A concrete mechanism **shape** has been proposed (not approved) in
 - **Selection pipeline:** the 9-stage A→I pipeline in §1 above.
 - **Ranking approach:** multi-stage (hard filters on load-bearing
   dimensions — spread, ATR% — then ranking among survivors), not a
-  single weighted composite score.
+  single weighted composite score. Stage F's architectural *boundary*
+  (objective, exclusions, `INV-F-REGIME-BLIND`, ordinal-only
+  representation, tie-break, null baseline, `score_summary` contract)
+  is Controller-approved — see `../trading/stage-f-ranking-architecture.md`.
+  No ranking metric, weight, or numeric parameter is approved; Stage F
+  is not implemented or wired into the pipeline.
 - **Refresh cadence:** primary daily refresh aligned with the existing
   07:00 CT pre-market slot; a midday refresh is not recommended pending
   evidence.
