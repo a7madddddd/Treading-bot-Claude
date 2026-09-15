@@ -24,6 +24,23 @@ they contain are source-agnostic and still apply regardless of which
 data source eventually supplies the bars. Nothing in this update
 authorizes data acquisition, code, or numeric approval.
 
+**Further updated 2026-09-14 (same day)** with §0.4 and status revisions
+throughout §0.2, §22, and §25, following a final, focused free-data
+feasibility pass (full detail in `github-native-data-sources.md` §9):
+the point-in-time universe/identity layer improved materially (new,
+MIT-licensed S&P 400/600/1500-composite coverage; the DELL ticker's
+identity ambiguity resolved to verified boundary dates and a current
+CIK) — but the OHLCV/survivorship gate that actually blocks calibration
+is **completely unchanged**. This pass also establishes the project's
+**permanent $0 data policy**: no paid data source will be used,
+recommended, trialed, or designed around, now or at any future point,
+unless the Controller explicitly changes this rule in a recorded
+decision — this permanently removes the Alpaca SIP-subscription branch
+from §1.7/§2's original analysis (see §25). **D-0026 CALIBRATION STATUS
+= BLOCKED**, unchanged. Per explicit Controller instruction, this closes
+the free-data-sourcing research thread for D-0026 — no further dataset
+search should be performed.
+
 ---
 
 ## 0. Reconciling this document with D-0027/D-0028 and the accepted data sources (2026-09-14)
@@ -81,22 +98,41 @@ D-0028):
   disclosed uneven coverage (a 51.8% average gap rate in its bottom
   liquidity quintile) and a documented corporate-action defect history.
 - **Modern broad-market OHLCV for 2018–2026:** **NOT solved**, by any
-  free source found.
+  free source found. **Unchanged as of the 2026-09-14 final feasibility
+  pass (§0.4)** — this remains the single gate blocking calibration,
+  regardless of how much the universe/identity layer below has improved.
 - **Broad point-in-time dynamic universe** (beyond the S&P 500):
-  **NOT solved.**
+  **NOT solved.** **Partially strengthened as of §0.4**: free, verified,
+  MIT-licensed PIT coverage now also reaches the S&P 400 (mid-cap,
+  2011+), S&P 600 (small-cap, 2021+), and a virtual S&P 1500 composite
+  (2021+) via `arielNacamulli/pitindex` — genuinely broader than
+  large-cap-only, but **still a fixed, rules-based index family, not
+  D-0026's dynamic, symbol-agnostic universe requirement.** Not proposed
+  as a substitute.
 - **Delisted-security OHLCV coverage:** **NOT solved** — of the
   Controller's five standing test names (FDO, RSH, DELL, HNZ, BBI),
   only FDO has verified pre-delisting price history anywhere in this
-  research (via pystock-data, within its 2009-2017 window).
-- **DELL identity:** **unresolved** — the ticker has referred to two
-  unrelated companies (Dell Inc., private 2013; Dell Technologies,
-  relisted 2018) and no source checked distinguishes them by inception
-  date.
+  research (via pystock-data, within its 2009-2017 window). **Unchanged
+  by §0.4** — the new PIT sources add identity/delisting-*date* evidence
+  for FDO/HNZ/RSH (see §0.4) but zero additional price rows for any of
+  the four.
+- **DELL identity:** **partially resolved as of §0.4.** Two independent
+  free sources (`joeyfife/point-in-time-sp500`,
+  `arielNacamulli/pitindex`) agree DELL left the S&P 500 on 2013-10-29
+  and re-entered on 2024-09-23 as Dell Technologies (CIK 0001571996) —
+  the boundary dates and current-entity identity are now verified facts.
+  **What remains unresolved:** the join to any actual OHLCV source,
+  since no free OHLCV source verified in this thread carries a CIK or
+  comparable per-ticker inception marker — and that question is moot
+  regardless, since no free OHLCV source covering the relevant dates has
+  been verified to exist at all.
 
 **Therefore: D-0026 numeric calibration MUST remain BLOCKED**, per §21
 below, regardless of which data-sourcing path (Alpaca or free/
-GitHub-native) is eventually pursued — neither has, on its own or
-combined, produced calibration-grade data yet.
+GitHub-native) is eventually pursued, and regardless of the identity/
+universe-layer improvements in §0.4 — neither path has, on its own or
+combined, produced calibration-grade OHLCV data yet, and OHLCV is the
+gate that governs this status, not the identity/universe layer alone.
 
 ### 0.3 What this means for §§1–16 below
 
@@ -111,6 +147,62 @@ sources is eventually authorized. Nothing about the free/GitHub-native
 findings changes *how* calibration should be done — only that *no data
 source currently on the table (Alpaca-unauthorized, or the three
 free/GitHub-native candidates) currently clears the bar to begin.*
+
+### 0.4 Final focused feasibility pass (2026-09-14) — PIT/identity layer strengthened, OHLCV gate unchanged
+
+A final, targeted pass (not a new broad search) validated the strongest
+already-known OHLCV candidates plus three closely-related PIT
+universe/identity candidates. Full detail, verified directly against
+real, cloned repository contents, is in `github-native-data-sources.md`
+§9. Summary, restated here as the single reference point this document
+designs around going forward:
+
+- **Permanent $0 data policy, reaffirmed:** no paid data source was
+  evaluated, used, recommended, trialed, or designed around in this
+  pass, and none will be, now or in the future, unless the Controller
+  explicitly changes this rule in a recorded decision.
+- **`huggingface.co` re-tested — still blocked.** Hugging Face
+  Candidates A and B remain UNVERIFIED at the row level, unchanged from
+  §0.2.
+- **New, verified, MIT-licensed PIT universe/identity sources:**
+  `arielNacamulli/pitindex` (S&P 500 from 2005, S&P 400 from 2011,
+  S&P 600 from 2021, a virtual S&P 1500 composite from 2021, CIK and
+  GICS fields, an explicit reconciliation gate) and
+  `joeyfife/point-in-time-sp500` (S&P 500 PIT to 1976, validated
+  2016-2026, both CC BY 4.0/MIT). `thuningxu/sp500nq100` adds Nasdaq-100
+  breadth but has **no stated license — not approved.**
+- **DELL identity partially resolved:** two independent sources agree on
+  verified boundary dates (exit 2013-10-29, re-entry 2024-09-23 as Dell
+  Technologies, CIK 0001571996) — the "is this two companies" question
+  is settled; the OHLCV-side join is not, and remains moot pending any
+  verified free OHLCV source for the relevant dates.
+- **FDO/HNZ delisting timing cross-verified** across three independent
+  sources. **RSH shows a genuine, disclosed discrepancy** (S&P 500
+  index-removal date, mid-2011, vs. final-delisting/bankruptcy date,
+  October 2015, per `fja05680`'s suffix) — an open semantics question
+  about what different sources' "removal" dates actually represent, not
+  resolved here. **BBI remains entirely unestablished** — no source
+  anywhere in this thread confirms it as ever having been an S&P 500
+  constituent.
+- **Zero new OHLCV rows were found or added by this pass**, for any
+  symbol, any period. This was not the pass's purpose (it validated
+  identity/universe candidates only), but it means the gate that
+  actually blocks calibration is completely unchanged.
+
+**Final verdict of this pass: B — a free partial solution exists (the
+identity/universe/validation layer, genuinely and materially improved),
+but D-0026 remains BLOCKED.** Not A: no calibration-ready OHLCV exists.
+Not C: real, usable, well-licensed components were found and should not
+be understated. **This closes the free GitHub-hosted data-sourcing
+research thread for D-0026 per explicit Controller instruction — no
+further dataset search is recommended or should be performed.**
+Explicitly restated, because it is easy to lose in a long document: an
+improved S&P 500/400/600/1500 PIT universe layer, however well-verified
+and cleanly licensed, **is not, and must never be presented as,** a
+substitute for D-0026's dynamic, symbol-agnostic universe requirement,
+and **does not, by itself or combined with anything else verified in
+this thread, authorize any numeric D-0026 parameter to move past
+PROPOSED.**
 
 ## Repository inspection performed before writing this document
 
@@ -1826,7 +1918,7 @@ BLOCKED  →  CALIBRATION READY  →  CALIBRATED  →  VALIDATED  →  APPROVED
 
 | Gate | Definition | Objective, testable entry criteria |
 |---|---|---|
-| **BLOCKED** (current state) | No calibration-grade dataset exists yet. | True today because: no verified broad-market OHLCV exists for 2018-2026 (§0.2); point-in-time universe membership exists only for the S&P 500 (§0.2); delisted-security coverage is verified for only 1 of 5 standing test names (§0.2); DELL's ticker identity is unresolved (§0.2); neither Hugging Face candidate is approved as ROOT (§0.2). |
+| **BLOCKED** (current state) | No calibration-grade dataset exists yet. | True today because: no verified broad-market OHLCV exists for 2018-2026 (§0.2, unchanged by §0.4); point-in-time universe membership, even after §0.4's improvements (S&P 500/400/600/1500 composite), remains index-scoped, not D-0026's dynamic universe; delisted-security **price** coverage is verified for only 1 of 5 standing test names (§0.2, §0.4 — DELL's identity boundary dates are now resolved, but this does not add a single OHLCV row for any of the five); neither Hugging Face candidate is approved as ROOT (§0.2, re-confirmed blocked in §0.4). |
 | **CALIBRATION READY** | A specific, named dataset (or combination) actually satisfies §4's **Tier 1** fidelity requirement (point-in-time tradable-universe history + corporate-action adjustment) for at least the regime span identified in §18, AND the DELL-class identity-ambiguity problem has an explicit, disclosed resolution (either solved, or the affected tickers explicitly excluded) for every symbol in scope. **A Controller decision to pursue a given data path (§0.1's Path 1/Path 2/a new path) is a planning/authorization decision only — it opens the door to doing the acquisition and verification work, but does NOT by itself satisfy this gate.** The gate requires the actual data prerequisites and evidence below to be demonstrated, empirically, after that authorization — never inferred from the authorization decision alone. | (1) Named dataset(s) documented with the same empirical rigor as `github-native-data-sources.md`. (2) Tier 1 fidelity demonstrated, not assumed — with real evidence, not a plan to obtain it. (3) Identity-ambiguity policy stated in writing. (4) Controller has explicitly authorized Phase 2 (§15) for this specific dataset — a **necessary precondition to begin the verification work, not evidence that the work is done.** |
 | **CALIBRATED** | The offline calibration engine (Phase 2, §15) has been built and run through the full walk-forward process (§5) across every regime bucket in §18 that the data actually covers, producing the full §9 metric set, with the negative/failure tests in §21 passing. | (1) Engine built, offline-only, per §15's Phase 2 boundary. (2) Walk-forward run completed and reported per-regime, not aggregate-only (§6). (3) §21's negative tests demonstrably pass against the actual data used. (4) Sensitivity testing (§11) completed for every parameter in scope. |
 | **VALIDATED** | The single reserved holdout block (§5, §12) has been evaluated **exactly once**, after parameter selection was locked in from walk-forward results alone, and the result — favorable or not — has been reported to the Controller without alteration. | (1) Holdout evaluated exactly once, never before parameter lock-in (§12's central rule). (2) Result reported as-is, including if unfavorable (§14). (3) Control-experiment comparison (§10) included. |
@@ -1933,12 +2025,26 @@ remain blocked" column.
 
 ---
 
-## 25. Final recommendation — updated status (2026-09-14)
+## 25. Final recommendation — updated status (2026-09-14, re-affirmed 2026-09-14 after the final feasibility pass)
 
 Supersedes only the *status framing* of the original §16 (its
 substantive answers to "is the architecture ready," "are any parameters
 ready," and "what evidence is needed" remain valid and unchanged); this
 section restates the outcome in the Controller's requested format.
+
+**Permanent $0 data policy (established 2026-09-14, applies from this
+point forward without exception):** this project will **never** use a
+paid data source — not now, not later, not as a trial, not as a
+"temporary" bridge, unless the Controller explicitly changes this rule
+in a future recorded decision. This **permanently removes the Alpaca
+SIP-subscription option** from item 4 below and from Path 1 as
+described in §0.1/§1.7/§2 — those sections are retained for their
+factual research value (what Alpaca's API documents) but the paid-SIP
+branch of that analysis is no longer an available path for this
+project. Alpaca's **free** IEX-feed bars remain a theoretically
+available, not-yet-authorized option under Path 1, subject to the same
+gaps already identified there (no point-in-time universe, no sector
+classification, IEX-only ~2.5% market coverage for spread).
 
 ```
 D-0026 CALIBRATION STATUS = BLOCKED
@@ -1951,27 +2057,40 @@ particular, item 1 below is a planning/authorization decision, not
 evidence, and does not by itself advance this status past BLOCKED):
 
 1. A Controller decision on which data-sourcing path to pursue —
-   Alpaca's own historical APIs (§1-§2's original analysis, not yet
-   authorized), the free/GitHub-native sources at their current,
-   accepted-but-insufficient state (§0.2), a new source not yet
-   identified, or some explicit combination. **This decision only
-   authorizes the work in items 2-4 below to begin — it does not
+   Alpaca's own **free-tier** historical APIs only (§1-§2's original
+   analysis, not yet authorized, paid SIP now permanently excluded per
+   the policy above), the free/GitHub-native sources at their current,
+   accepted-but-insufficient state (§0.2, §0.4), a new **free** source
+   not yet identified, or some explicit combination. **This decision
+   only authorizes the work in items 2-4 below to begin — it does not
    satisfy CALIBRATION READY by itself.**
 2. Whichever path is chosen must close, with the same empirical rigor
    already applied throughout this research thread, the specific gaps
-   identified in §0.2: broad-market OHLCV for 2018-2026; point-in-time
-   universe membership beyond the S&P 500; delisted-security price
-   coverage beyond the single verified case (FDO); and the DELL-class
-   ticker-identity ambiguity (resolved or explicitly excluded).
+   identified in §0.2 and confirmed still open by §0.4: broad-market
+   OHLCV for 2018-2026 (**completely unchanged and unresolved** — the
+   single hardest gate); point-in-time universe membership beyond the
+   S&P 1500 composite (§0.4's improvement does not reach this bar);
+   delisted-security **price** coverage beyond the single verified case
+   (FDO) — §0.4 added identity/date evidence for three more names but
+   zero additional price rows; and the DELL-class ticker-identity
+   ambiguity (boundary dates now resolved per §0.4, but the OHLCV-side
+   join remains open and moot pending verified OHLCV for the relevant
+   dates).
 3. §4's Tier 1 fidelity (point-in-time universe history + corporate-
    action adjustment) demonstrated for whatever regime span is
    eventually covered — not assumed.
 4. Explicit Controller authorization of the Phase 1 → Phase 2 transition
    (§15) — data acquisition and the offline calibration engine build —
-   including any associated cost (e.g., an Alpaca SIP subscription, if
-   that path is chosen).
+   **at zero cost, consistent with the permanent $0 data policy above.**
 
 **Until all four are satisfied, D-0026 remains BLOCKED at this gate.**
+Per the Controller's explicit instruction following the 2026-09-14 final
+feasibility pass, this closes the free-data-sourcing research thread for
+D-0026: no further dataset search should be performed, and no further
+progress on this status is expected from documentation work alone — the
+next required action, if any, is Controller-side (verifying a
+row-level-blocked candidate from an unblocked network, or a decision to
+proceed with calibration design bounded by these limitations).
 No numeric parameter may be proposed for approval, no calibration code
 may be written, and no historical dataset may be acquired in full,
 consistent with every constraint stated at the top of this task and

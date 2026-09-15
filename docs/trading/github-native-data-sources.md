@@ -1302,3 +1302,218 @@ section. No strategy mechanics were changed. No frozen decision (D-0011,
 D-0012, D-0021 through D-0025, or the D-0026 architecture itself) was
 modified. No dataset — full or partial — was downloaded. No calibration
 code was written. No D-0026 numeric parameter was selected or approved.
+
+---
+
+## 9. Final focused feasibility pass — PIT/identity candidates verified, OHLCV gap unchanged (2026-09-14)
+
+**Permanent project data policy, restated:** this project uses a
+permanent **$0 data policy**. No paid data source is used, recommended,
+trialed, or designed around now or at any future point, unless the
+Controller explicitly changes this rule in a future decision recorded
+in `decisions.md`. Nothing in this section evaluates, mentions
+favorably, or depends on any paid provider.
+
+This section documents a final, targeted pass validating the strongest
+already-known candidates plus three closely-related, newly-surfaced
+point-in-time (PIT) universe/identity candidates — not a new broad
+dataset search. `huggingface.co` was re-tested and remains blocked
+(identical `CONNECT tunnel failed, response 403` signature already
+documented in §7); Hugging Face Candidates A (`elkassabgi/hfdatalibrary`)
+and B (`mito0o852/OHLCV-1m`) remain **UNVERIFIED at the row level**,
+unchanged from §7 — no inference was made from metadata or search
+snippets.
+
+### 9.1 `thuningxu/sp500nq100` — verified directly (cloned, inspected)
+
+- Real, committed data: a 2,713-row S&P 500 daily change-log
+  (1996–2026-05-21, last commit 2026-06-06) and a 113-row Nasdaq-100
+  history (2007–present).
+- **Not independent for its S&P 500 half** — the repository's own README
+  states it uses `fja05680/sp500` as a "pinned historical anchor" through
+  2026-01-14, extended forward with Wikipedia's structured change
+  tables. Real, incremental value is limited to **Nasdaq-100** coverage
+  (2007+, with two disclosed pre-2017 gaps: ENDP, CMCSK) and the
+  post-2026-01-14 S&P 500 extension.
+- **License: UNKNOWN.** No `LICENSE` file exists in the repository and
+  the README states no terms. Per this thread's standing rule, an
+  unclear license means **ROOT APPROVAL = NO** for this repository as an
+  independent artifact, regardless of the MIT/CC-BY-SA lineage of the
+  sources it draws from.
+- No delisting-date suffix notation (unlike `fja05680`) — membership
+  timing must be derived by diffing consecutive rows.
+- **Verdict: usable only as an unlicensed Nasdaq-100 breadth reference,
+  not approved pending an explicit license statement from the
+  maintainer.**
+
+### 9.2 `arielNacamulli/pitindex` — verified directly (cloned, inspected) — the strongest find of this entire research thread
+
+- Real, committed Python package with actual data files:
+  `sp500_changes.csv`, `sp400_changes.csv`, `sp600_changes.csv`, plus
+  current-roster files carrying `ticker, name, cik, gics_sector,
+  gics_sub_industry`.
+- **Coverage, verified from the package's own documentation and data
+  files:** S&P 500 from **2005-01-03**, S&P 400 (mid-cap) from
+  **2011-11-20**, S&P 600 (small-cap) from **2021-03-26**, and a virtual
+  S&P 1500 composite from **2021-03-26** (the max of the three floors).
+  This is materially broader than any single-index source found
+  anywhere in this thread — the first free, verified reach into
+  mid-cap and small-cap PIT membership.
+- **License: CLEAR — MIT**, verified directly from a real `LICENSE`
+  file, with an explicit, honest provenance chain in the README:
+  Wikipedia (CC BY-SA 4.0) + `fja05680/sp500` (MIT) for the underlying
+  facts, MIT for the curation. This is the cleanest license chain of
+  any universe/identity candidate found in this entire thread.
+- **Actively maintained:** a weekly GitHub Actions cron; last commit
+  2026-09-07 (1 week stale at the time of this research).
+- **Real engineering rigor, verified directly:** a "reconciliation
+  gate" that fails the build loud if reconstructed-vs-actual roster
+  diverges by more than 5%; explicit, dated, self-disclosed
+  limitations (fill-event dates are upper bounds for sp400/sp600; no
+  CIK for sp400; some delisted tickers carry upstream-encoded forms
+  like `LEHMQ`/`WAMUQ`/`ABKFQ`).
+- **Contains no price data of any kind** — universe/identity layer
+  only, exactly as expected and required by this pass's scope.
+
+### 9.3 `joeyfife/point-in-time-sp500` — verified directly (cloned, inspected)
+
+- Real, committed data: `data/membership.json` (27 KB), 402 single-symbol
+  add/remove events spanning 1976-07-01 to 2026-06-30, plus a
+  dependency-free Python loader.
+- **License: CLEAR** — code MIT, data explicitly CC BY 4.0 (derived from
+  Wikipedia CC BY-SA), stated directly in both the README and the
+  `LICENSE` file.
+- **Self-disclosed validation boundary, a genuine positive signal:**
+  membership counts were validated against fetchable price history for
+  every mid-year date 2016→2026 (100% coverage each year, delisted
+  names included); events before 2016 "ship as-is... not validated."
+  This honesty about the limits of its own validation is a real
+  quality signal, not a claim taken at face value.
+- **Contains no price data** — the repository's own example harness
+  explicitly *reports* the delisted-name price gap per rebalance rather
+  than hiding it, independently corroborating (from a third party, for
+  a different purpose) the same OHLCV-for-delisted-names gap this
+  entire research thread has documented.
+- Commercially linked to a paid product (`coil.trade`) for promotional
+  purposes, but the repository and its data require no payment, no
+  registration, and no API key — a plain `git clone` was sufficient.
+  This qualifies under the "free means free" standard: promotional
+  content about an unrelated paid product does not gate this specific
+  repository's own freely-licensed data.
+
+### 9.4 DELL identity — partially resolved (a genuine finding this pass)
+
+Two **independent** sources — `joeyfife/point-in-time-sp500`
+(Wikipedia-change-log-derived) and `arielNacamulli/pitindex`
+(`fja05680`-snapshot-diff-derived) — **agree exactly**:
+
+| Event | joeyfife | pitindex |
+|---|---|---|
+| DELL removed from S&P 500 | 2013-10-29 | 2013-10-29 |
+| DELL re-added to S&P 500 | 2024-09-23 (replacing ETSY) | 2024-09-23, `name: "Dell Technologies"`, **CIK 0001571996** |
+
+This is real, cross-verified, dated evidence that "DELL" represents two
+separate S&P 500 membership episodes 11 years apart, and `pitindex`
+explicitly resolves the current one as **Dell Technologies, CIK
+0001571996** — not the original Dell Inc.
+
+**What this resolves and what it does not:** the boundary dates and the
+current entity's CIK are now verified facts, not an open question about
+*whether* two companies are involved. What remains unresolved is the
+**join to any actual OHLCV source** — no free OHLCV source verified in
+this thread (Hugging Face candidates included, still unverified) carries
+a CIK field or comparable per-ticker inception marker. A calibration
+engine would still need to enforce "DELL rows before 2013-10 and after
+2024-09 are different securities" as an explicit rule sourced from this
+universe layer — it cannot be verified automatically from OHLCV data
+alone, because no free OHLCV data has been verified to exist for the
+relevant dates in the first place. **Status: DELL moves from "FAILED,
+unresolved" to "PARTIALLY RESOLVED — boundary dates and current CIK
+known; OHLCV-side join still unverified and, separately, still blocked
+by the absence of any verified free OHLCV source covering the relevant
+dates."**
+
+### 9.5 FDO / RSH / HNZ / BBI — cross-source delisted-timing check
+
+| Symbol | joeyfife event | pitindex event | `fja05680` (§6.2, prior pass) | Consistency |
+|---|---|---|---|---|
+| FDO | removed 2015-07-08 | removed 2015-07-07 | `FDO-201507` | **Consistent across all three** — matches the real Dollar Tree/Family Dollar merger close |
+| HNZ | removed 2013-06-06 | removed 2013-06-07 | `HNZ-201306` | **Consistent across all three** — matches the real Heinz acquisition close |
+| RSH | removed **2011-06-30** | removed **2011-07-01** | `RSHCQ-201510` | **A real, disclosed discrepancy — not resolved here.** joeyfife and pitindex agree the ticker left the S&P 500 *index* in mid-2011 (a market-cap-driven index removal); `fja05680`'s embedded suffix reads October 2015 (RadioShack's actual bankruptcy/final delisting). These are two conceptually different events — leaving an index is not the same as ceasing to trade — and this pass surfaces, for the first time in this thread, that different free sources encode different event types under a similar-looking "date" without saying so plainly. Treated as an open semantics question, not silently resolved either way. |
+| BBI | not found | not found | not found (prior pass) | **Still FAILED** — no source anywhere in this thread establishes BBI (Blockbuster) as ever having been an S&P 500 constituent; no identity/date evidence exists for it via the universe layer at all. |
+
+**No source in this pass adds a single OHLCV row for FDO, RSH, HNZ, or
+BBI.** All three new candidates are universe/identity-only, exactly as
+expected. FDO remains the only one of the four Controller test names
+with actual verified pre-delisting price data anywhere in this thread
+(via `pystock-data`, within its 2009-2017 window). RSH, HNZ, and BBI
+remain PARTIAL or FAILED on the OHLCV dimension, unchanged by this pass.
+
+### 9.6 What materially improved vs. what did not
+
+**Materially improved (universe/identity/validation layer only):**
+
+- Point-in-time S&P 500 membership is now cross-verified across four
+  independent-ish sources rather than one.
+- Real, MIT-licensed PIT coverage now reaches S&P 400 (mid-cap, 2011+)
+  and S&P 600 (small-cap, 2021+) via `pitindex` — the first free,
+  verified reach beyond large-cap-only membership in this thread.
+- DELL's identity ambiguity is now anchored to verified boundary dates
+  and a verified current CIK, resolving the "is this even two
+  companies" question, though not the OHLCV-side join.
+- A genuine, disclosed cross-source discrepancy (RSH's index-removal
+  date vs. final-delisting date) was surfaced and documented rather
+  than silently glossed over.
+
+**Unchanged — still failing:**
+
+- **Modern (2018-2026) broad-market OHLCV: still NOT verified from any
+  free source.** Hugging Face Candidates A and B remain UNVERIFIED at
+  the row level; no new OHLCV source was searched for or found this
+  pass, per the Controller's explicit instruction to validate existing
+  candidates rather than restart the search.
+- **Delisted-security OHLCV coverage: still insufficient.** Of the four
+  standing test names, only FDO has verified price data anywhere, and
+  only within `pystock-data`'s 2009-2017 window.
+- **S&P 500 / S&P 400 / S&P 600 / S&P 1500 composite is NOT equivalent
+  to D-0026's dynamic, symbol-agnostic universe requirement**, no
+  matter how many index families are stacked together — these remain
+  fixed, rules-based index memberships, not the data-quality/
+  execution-quality-driven dynamic selection D-0026's architecture
+  specifies. Explicitly not proposed as a substitute here.
+- A broader-than-S&P-1500 US equity/ETF universe, and any true
+  bid/ask spread data, remain unavailable from anything free found in
+  this thread.
+
+### 9.7 Final verdict for this pass
+
+**B — FREE PARTIAL SOLUTION EXISTS, BUT D-0026 REMAINS BLOCKED.**
+
+Not C, because this pass produced genuinely new, verified, well-licensed,
+usable free components for the universe/identity layer — understating
+that would misstate real, documented progress. Not A, and not close to
+it: **D-0026's calibration status remains exactly BLOCKED**, unchanged
+from D-0028 and the Hugging Face verification pass, because the
+OHLCV/survivorship layer that actually gates calibration has no new
+verified evidence this pass. `arielNacamulli/pitindex` and
+`joeyfife/point-in-time-sp500` are genuinely usable, free, clearly-
+licensed additions to the identity/universe/validation layer only —
+never as OHLCV, never as calibration evidence, never as a substitute for
+D-0026's dynamic universe, and never sufficient, alone or combined, to
+move D-0026 past BLOCKED.
+
+**Per the Controller's explicit instruction, this closes the free
+GitHub-hosted data-sourcing research thread for D-0026.** No further
+dataset search is recommended or was performed. The three repositories
+cloned for this pass (`thuningxu/sp500nq100`,
+`arielNacamulli/pitindex`, `joeyfife/point-in-time-sp500`) were removed
+from local disk after inspection (`rm -rf`, confirmed) — no bulk data
+was retained or committed to this repository.
+
+No production code, dependency, scheduler change, live routine change,
+live universe selection, or order was created while producing this
+section. No strategy mechanics were changed. No frozen decision (D-0011,
+D-0012, D-0021 through D-0025, or the D-0026 architecture itself) was
+modified. No paid data source was used, recommended, trialed, or
+designed around. D-0026 numeric parameters remain NOT approved. D-0026
+CALIBRATION = BLOCKED.
