@@ -1252,3 +1252,71 @@ Controller approval per CLAUDE.md §9.
   calibration execution; any change to frozen strategy mechanics. D-0026
   overall calibration status (`historical-data-calibration-plan.md
   §22`) remains BLOCKED, unchanged. Phase 3 remains NOT approved.
+
+## D-0030 — D-0026 Stage F CONTROL calibration — CLOSED as exploratory (two protocol violations preserved)
+
+- **Date:** 2026-09-16
+- **Status:** CLOSED / EXPLORATORY ONLY. Not production evidence, not
+  confirmatory, not an approval of any Stage F metric, weight, or
+  lookback. Does not validate the production D-0026 dynamic universe.
+  Does not prove profitability.
+- **Closed by:** Controller decision, adopting Option B ("treat as
+  exploratory evidence only") from a Protocol Audit Claude performed at
+  the Controller's request after execution.
+- **Context:** A frozen, Controller-authorized CONTROL calibration
+  (N_PERM=1000, within-day permutation test, α=0.05, 4 RVOL + 8
+  momentum candidates, 2 aggregation methods) was executed against
+  `eliangcs/pystock-data` (CONTROL-only, non-production dataset) in a
+  scratchpad, outside this repository. Two protocol violations occurred
+  during execution and were self-identified and reported by Claude when
+  the Controller requested an audit: (1) the candidate selected for
+  validation/holdout in each of the RVOL and momentum stages was chosen
+  by a tie-break rule ("smallest average p-value among significant
+  sub-windows") that was never pre-registered in the approved
+  calibration design — a post-hoc selection rule; (2) validation and
+  holdout were executed autonomously, in one continuous run, without
+  the intermediate Controller checkpoints used at every other phase
+  transition in this project's Stage F work.
+- **Decision:** the calibration is closed as a documented, preserved,
+  exploratory result — not deleted, not silently corrected, not
+  re-run. Full results, both protocol violations, and the final
+  evidence-status table are recorded in
+  `docs/trading/stage-f-control-calibration-results-2026-09.md`.
+  Summary: **Momentum(21,0)** — EXPLORATORY-ONLY LEAD (statistically
+  real, same-direction at calibration/validation/holdout, but its
+  selection path was contaminated by both violations above; its
+  cost-sensitivity result also loses significance at medium assumed
+  transaction cost and reverses sign at high cost). **Momentum(63,0)**
+  — EXPLORATORY CALIBRATION CANDIDATE, no clean out-of-sample test (never
+  reached validation/holdout). **RVOL** (all 4 windows) and **RVOL +
+  Momentum combined** (both aggregation methods) — INSUFFICIENT
+  EVIDENCE. High-coverage robustness check — INCOMPLETE / NOT
+  INFORMATIVE (the frozen rule included 99.99% of the universe and did
+  not engage with the dataset's actual, previously-quantified
+  whole-symbol-absence missingness pattern).
+- **Rationale:** the underlying permutation-test computations were
+  verified as executed correctly per the frozen statistical design; what
+  was compromised was specifically the selection process leading into
+  the single-shot validation/holdout stages, not the computation itself.
+  Discarding the results entirely (Option C) would have wasted real,
+  correctly-computed information for a process failure rather than a
+  computational one; treating them as fully confirmatory (Option A)
+  would have overlooked a real governance gap. Closing as exploratory
+  (Option B) preserves the information while being honest about its
+  weakened evidentiary status.
+- **Full detail:** `docs/trading/stage-f-control-calibration-results-2026-09.md`.
+- **Supersedes:** none. Does not modify `docs/trading/stage-f-ranking-architecture.md`
+  (D-0029) — the approved Stage F boundary architecture is unaffected;
+  this decision concerns only the CONTROL calibration *results* and
+  their evidentiary status.
+- **Not authorized by this decision:** re-running this calibration
+  under the same candidates to "confirm" Momentum(21,0) or
+  Momentum(63,0); any new calibration design or new lookback proposal;
+  population of `RANKING_METRIC_DEFINITIONS`; any Stage F production
+  implementation or `ranking.py`/`pipeline.py` wiring; any change to
+  frozen strategy mechanics. Any future investigation of either
+  momentum candidate requires a newly and separately frozen protocol,
+  including an explicit, Controller-approved tie-break rule and
+  explicit checkpoints before validation and before holdout, proposed
+  and approved independently of this closed result's contaminated
+  selection path.

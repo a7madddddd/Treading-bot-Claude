@@ -1,10 +1,13 @@
 # D-0026 Stage F — Ranking Architecture (Approved Boundary, No Metrics Approved)
 
 **Status: Stage F BOUNDARY ARCHITECTURE APPROVED. No ranking metric,
-weight, or numeric parameter is approved. No implementation exists.
-No calibration has occurred. No historical data is available. Stage F
-is NOT implemented, NOT wired into the pipeline, and NOT production
-ready.**
+weight, or numeric parameter is approved. No production implementation
+exists. Stage F is NOT wired into the pipeline and NOT production
+ready. A CONTROL-only, non-production calibration exploration has since
+occurred (`stage-f-control-calibration-results-2026-09.md`, D-0030)
+and was CLOSED as exploratory-only, with two protocol violations
+preserved in that record — it does not change any status on this page
+and authorizes no production metric.**
 
 Approved: 2026-09-15 (Controller decision, following a multi-round
 design/red-team/consistency-review process conducted entirely in
@@ -17,7 +20,10 @@ engine boundary), `docs/trading/universe-selection-analysis.md`
 ranking parameter catalog — this document narrows and supersedes
 *only* the boundary/shape decisions listed below within that broader,
 still-PROPOSED mechanism), `docs/trading/decisions.md` D-0029 (decision
-log entry for this approval), `src/d0026/ranking.py` (dormant Phase 1
+log entry for this approval) and D-0030 (CONTROL calibration exploration,
+closed as exploratory-only), `docs/trading/stage-f-control-calibration-results-2026-09.md`
+(full CONTROL calibration results and preserved protocol violations),
+`src/d0026/ranking.py` (dormant Phase 1
 scaffolding — `RankingMetricDefinition`, `RankingMetricId`,
 `RANKING_METRIC_DEFINITION_VERSION`, empty
 `RANKING_METRIC_DEFINITIONS`, `compute_ranking_score_summary()`,
