@@ -1320,3 +1320,35 @@ Controller approval per CLAUDE.md §9.
   explicit checkpoints before validation and before holdout, proposed
   and approved independently of this closed result's contaminated
   selection path.
+
+## D-0031 — D-0026 Stage F exploratory research CLOSED; research/architecture phase CLOSURE
+
+- **Date:** 2026-09-16.
+- **Status:** D-0026 exploratory CONTROL research is CLOSED. Stage F
+  architecture remains approved only as a boundary (D-0029,
+  `docs/trading/stage-f-ranking-architecture.md`); Stage F implementation
+  remains dormant (`src/d0026/ranking.py` unwired, `RANKING_METRIC_DEFINITIONS`
+  empty, `NotCalibratedStageEvaluator` sole evaluator for `PipelineStage.RANKING`
+  in `pipeline.py`). RVOL and Momentum remain PROPOSED / NOT APPROVED
+  production metrics. Momentum(21,0) remains EXPLORATORY-ONLY evidence
+  (D-0030 §10, unchanged by the subsequent symbol-split work).
+- **Symbol-split robustness work:** the Momentum(21,0) symbol-split
+  Gate 0/1/2 protocol (`docs/trading/momentum-21-0-symbol-split-robustness-protocol.md`)
+  is CLOSED. It must not be rerun merely to seek confirmation — its
+  result is directionally-consistent descriptive evidence only, using an
+  explicitly reconstructed (not historically recovered) ForwardReturn
+  convention, and does not repair the original post-hoc candidate-selection
+  violation.
+- **Data boundary:** the existing CONTROL dataset (`eliangcs/pystock-data`)
+  cannot resolve the survivorship-bias or point-in-time-universe
+  production-data problem (`free-data-verification-pass.md` §3D,
+  `github-native-data-sources.md` §1.2) — this is a data-acquisition
+  limitation, not a statistical-design gap, and no further CONTROL-dataset
+  experimentation closes it.
+- **Future production calibration** remains separately BLOCKED BY DATA
+  (`historical-data-calibration-plan.md` §22, `pre-apply-checklist.md`
+  B16) and requires a new, explicit Controller decision, informed by a
+  genuinely new, production-grade data source — not authorized by this
+  entry.
+- **No production Stage F implementation is authorized by D-0031.**
+- **Supersedes:** none. Does not modify D-0029 or D-0030.
