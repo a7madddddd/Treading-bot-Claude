@@ -1352,3 +1352,304 @@ Controller approval per CLAUDE.md §9.
   entry.
 - **No production Stage F implementation is authorized by D-0031.**
 - **Supersedes:** none. Does not modify D-0029 or D-0030.
+
+## D-0032 — Telegram notification integration implemented (Phase 1, notifications only, not wired into any live path)
+
+- **Date:** 2026-09-16.
+- **Status:** IMPLEMENTED and tested. `src/notifications/` —
+  `INotificationService`, `NotificationEvent`, `NotificationLevel`,
+  `NotificationResult`, `TelegramNotificationService` (direct Telegram
+  Bot API `sendMessage` over HTTPS, stdlib `urllib.request` only, no new
+  dependency). 26 unit tests, all passing, using an injected fake HTTP
+  transport — no real network call in the test suite.
+- **Scope:** outbound notifications only. No inbound commands, no
+  polling, no webhook, no approval buttons, no trading/operational
+  authority. Matches Controller-approved Option A from the
+  Telegram-integration recommendation.
+- **Not wired into any live execution path.** Repository inspection
+  confirmed the live system runs as Claude Code Routines
+  (`routines/*/prompt.md`) issuing raw `curl` calls, with zero runtime
+  coupling to this repository's Python code — there is currently no
+  persistent process to call this module from. Connecting a real live
+  event would require either a live-trigger prompt change (its own
+  separate, explicit Controller authorization) or a not-yet-built
+  persistent engine process. Neither was undertaken; flagged as a
+  Controller checkpoint per explicit instruction not to improvise a
+  larger architectural change.
+- **Real-world Telegram verification:** requested by the Controller but
+  **could not be performed** — this environment has no
+  `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` configured (no `.env` file,
+  no environment variables set). Not claimed to have succeeded.
+- **Failure isolation:** `send()` never raises; a failed/slow
+  notification cannot become a trading decision input or affect
+  execution, satisfying `docs/trading/execution.md`'s existing rule
+  structurally.
+- **Full detail:** `docs/architecture/telegram-notifications.md`.
+- **Supersedes:** none. Does not modify D-0025 (`telegram-approval.md`,
+  still design-only future work) or any D-0026/Stage F decision.
+- **Not authorized by this decision:** any live routine/trigger change;
+  inbound Telegram commands of any kind; any trading/operational
+  authority for Telegram; a new persistent process/daemon; any change to
+  entry, Ladder 1, Ladder 2, Floor, position sizing, or risk rules; live
+  trading.
+
+## D-0033 — Ladder execution range: Limit Order price separated from D-0007 trigger
+
+- **Date:** 2026-09-17
+- **Status:** APPROVED and IMPLEMENTED (`src/execution/service.py`)
+- **Approved by:** Controller (project owner)
+- **Context:** The Execution Service originally submitted Ladder 1/Ladder
+  2 BUY orders as Limit Orders priced at the raw strategy trigger itself
+  (−5% / −8%). Reviewed as part of pre-Alpaca-integration execution
+  mechanics: a Limit Order priced exactly at the trigger has no room to
+  fill if price does not retrace back up through the trigger after
+  touching it.
+- **Decision:** Remain on Limit Orders — Market Orders are explicitly
+  rejected. Introduce a separate "execution range" concept, distinct from
+  the trigger:
+  - **Ladder 1:** trigger unchanged at −5%. Execution range −5% to −4%.
+    The BUY Limit price is the upper (less negative) boundary of that
+    range, −4%, computed from the same base price the trigger itself was
+    derived from.
+  - **Ladder 2:** trigger unchanged at −8%. Execution range −8% to −7%.
+    The BUY Limit price is the upper boundary, −7%, computed the same
+    way.
+  - No additional price buffer beyond this fixed 1-percentage-point
+    range. No Market Orders introduced anywhere.
+  - D-0007 continues to validate against the ORIGINAL, unchanged trigger
+    price (−5% / −8% / proposed_entry) — the execution-range Limit price
+    is used ONLY for the actual broker order and is never passed to
+    D-0007's price-band/floor-priority revalidation
+    (`proposals/revalidation.py::validate_for_submission()`, itself
+    unmodified).
+  - Initial Entry is unaffected: it continues to submit a Limit Order at
+    `proposed_entry` with no execution range applied.
+  - No change to the approved strategy's trigger levels, quantities, or
+    Floor (`strategy.md` §1-2 unchanged).
+- **Rationale:** Keeps the approved Limit Order discipline (never Market
+  Orders, never worse than a stated price) while giving each ladder a
+  small, fixed, pre-approved amount of realistic room to actually fill
+  near its trigger, without touching the trigger itself or any risk/sizing
+  rule.
+- **Implementation:** `LADDER_EXECUTION_RANGE_FRACTION = 0.01` and
+  `_execution_limit_price_for()` in `src/execution/service.py`; kept out
+  of `proposals/models.py` (`TradeProposal` unchanged) since this is a
+  broker-submission concern, not a Proposal concern. Covered by
+  `tests/execution/test_service.py::TestExecutionRangeLimitPrices` and
+  `TestExecutionRangeNonRoundPrices`.
+- **Supersedes:** none. Does not modify D-0007 or D-0001's strategy
+  parameters.
+
+## D-0034 — Ladder 2 partial-fill handling: reactive cancellation + explicit Controller confirmation (Ladder 2 only)
+
+- **Date:** 2026-09-17
+- **Status:** APPROVED and IMPLEMENTED (`src/execution/service.py`)
+- **Approved by:** Controller (project owner)
+- **Context:** Ladder 2 requests 20 shares. Real market liquidity at the
+  execution-range Limit price is not reliably knowable before
+  submission, so the system cannot predict in advance whether the full
+  20 shares will fill. Prior drafts of this decision (predicting
+  liquidity pre-submission via a buying-power check) were explicitly
+  rejected by the Controller in favor of a purely reactive,
+  post-submission mechanism.
+- **Decision (Ladder 2 ONLY — never extended to Ladder 1 or Initial
+  Entry):**
+  1. Submit the normal Ladder 2 Limit Order for the full intended 20
+     shares.
+  2. If the broker reports a live, non-terminal partial fill
+     (`0 < filled_qty < 20`), immediately request cancellation of the
+     remaining unfilled quantity. The filled quantity observed at that
+     moment is never treated as final, and the Controller is not
+     notified yet.
+  3. Continue reconciling the order until the broker reports a genuinely
+     terminal state. Only the broker's TERMINAL `filled_qty` is ever
+     authoritative.
+  4. Once terminal:
+     - **Final = 20:** apply the full Ladder 2 fill automatically; mark
+       Ladder 2 PASSED/COMPLETED. No Controller approval required.
+     - **Final between 1 and 19:** do NOT update Trade automatically.
+       Surface that Ladder 2 intended 20 but the broker's final fill was
+       the reduced quantity, and require explicit Controller approval
+       before recording it. Once approved, apply the ladder fill using
+       the ACTUAL final filled quantity and mark Ladder 2
+       PASSED/COMPLETED. Do not submit another BUY for the remaining
+       quantity — the remainder is permanently forfeited for this Ladder
+       2 event. No automatic retry or top-up, ever.
+     - **Final = 0:** no Trade update; no Controller approval needed.
+  5. If cancellation loses the race against the broker (the order fully
+     fills before cancellation takes effect), treat the outcome exactly
+     as the Final = 20 case above — a normal automatic full fill.
+  6. A failed or ambiguous cancellation request is never guessed at; it
+     is safely retried on a later reconciliation pass and must never
+     abort processing of this or any other execution.
+  7. Ladder 1 partial fills are explicitly OUT OF SCOPE for this
+     mechanism: they remain unrepresented in Trade with no confirmation
+     path, pending a separate, future Controller decision if ever
+     revisited.
+- **Rationale:** Matches real, Alpaca-documented partial-fill/
+  cancellation behavior (asynchronous cancellation, no guaranteed
+  immediate effect, possible continued fills during the cancel race)
+  while preserving the Controller's standing rule that no
+  discretionary/reduced-quantity fill is ever accepted as a completed
+  ladder event without explicit approval, and that there is never an
+  automatic retry or top-up of a forfeited remainder.
+- **Persistence/domain:** no new domain fields, no new database
+  tables/columns. The "awaiting Controller confirmation" state is fully
+  derivable from existing persisted state
+  (`OrderExecution.is_broker_terminal=True AND 0 < filled_qty <
+  requested_qty AND Trade.ladder2_filled == False`) — no new persistence
+  was introduced.
+- **Implementation:** `BrokerClient.cancel_order()` (new abstract method,
+  `src/execution/broker_client.py`); `_maybe_cancel_ladder2_remainder()`,
+  `_apply_ladder_fill()`, and `confirm_ladder2_partial_fill()` (new
+  method, requires an explicit `decided_by`) in
+  `src/execution/service.py`. `Ladder2PartialFillNotPendingError` is
+  raised by `confirm_ladder2_partial_fill()`'s own precondition checks
+  (not LADDER_2, no execution, not yet terminal, not actually partial, or
+  already confirmed). Covered by
+  `tests/execution/test_service.py::TestLadder2CancellationTrigger`,
+  `TestLadder2PartialFillCases`, `TestConfirmLadder2PartialFillRefusals`,
+  and the resume-path regression in
+  `TestAmbiguousResumeLadder2CancellationTrigger`.
+- **Supersedes:** none. Does not modify the approved strategy's Ladder 2
+  trigger (−8%), quantity (20), or the Floor's priority over any ladder.
+
+## D-0035 — Engine: Watchlist-driven Trade lifecycle + Floor SELL execution
+
+- **Date:** 2026-09-22
+- **Status:** APPROVED and IMPLEMENTED (`src/engine/`, `src/execution/`)
+- **Approved by:** Controller (project owner)
+- **Context:** The Engine skeleton (design-reviewed and implemented
+  earlier this session) assumed Trades already existed and had no way
+  to execute the approved strategy's Floor rule (−10% → SELL ALL) —
+  `ExecutionService` only ever submitted BUY-side orders. This decision
+  closes both gaps.
+- **Decision:**
+  1. **Universe/Watchlist drives the Engine.** A new `WatchlistSource`
+     interface (`get_active_symbols() -> Tuple[str, ...]`) is the
+     Engine's sole source of which symbols to watch — the Engine
+     never selects, ranks, or filters symbols itself. For this phase,
+     since D-0026's real selection pipeline remains BLOCKED (data-
+     sourcing verdict C, pre-apply-checklist B15/B16) and TSLA is
+     TEST-ONLY, the concrete provider is `StaticWatchlistSource`, an
+     explicit, Controller-approved, single-symbol (`TSLA`) list —
+     never a silently-invented default. Swapping in a real
+     `ApprovedUniverseSnapshot`-backed provider later requires no
+     Engine change.
+  2. **Initial Entry is now watchlist-driven.** On the same D-0021-
+     gated cadence as Ladder trigger detection, the Engine checks
+     every watchlist symbol against `TradeRepository.list_for_symbol()`
+     (already existed); a symbol with no open Trade
+     (`AWAITING_INITIAL_FILL`/`ACTIVE`) gets a new Trade + Initial
+     Entry proposal via the existing, unmodified
+     `TradeProposalService.start_trade()` — same Controller-approval
+     gate as before, the Engine only decides *when* to call it.
+  3. **Rejected Initial Entry:** left in `AWAITING_INITIAL_FILL`
+     indefinitely (no new "abandon" transition added to `Trade`) — an
+     accepted, explicitly tracked gap requiring no domain change now.
+     **Follow-up:** revisit whether a real `Trade.abandon()`-style
+     transition is worth adding once this is observed in practice —
+     tracked here so it is not forgotten.
+  4. **Crash between Trade creation and Proposal creation:** Engine
+     startup recovery now also detects a Trade with zero proposals and
+     re-creates the missing Initial Entry proposal — no new
+     persistence, reuses `list_active()`/`list_for_trade()`.
+  5. **Floor SELL execution.** `OrderExecution` is generalized (not a
+     second execution system): a new `side` field (`"buy"`/`"sell"`),
+     `proposal_id` becomes optional (Floor has no Proposal — it never
+     goes through Controller approval, matching `TradeAction`
+     deliberately excluding FLOOR), and `trade_id` is now the row's
+     real, always-present anchor. Migration
+     `0004_order_execution_side_and_trade_id.sql`
+     (`APPROVED_SCHEMA_VERSION` 3 → 4). A new, deliberately SEPARATE
+     `ExecutionService.submit_protective_exit(trade_id, quantity,
+     limit_price, now)` entry point — never routed through
+     `submit_approved_proposal()`, since Floor has no D-0007/approval
+     step to revalidate. Quantity is always the caller's freshly-read
+     `trade.total_shares` (SELL ALL). Reuses
+     `BrokerClient.submit_order(side="sell", ...)` (already
+     side-agnostic) and the existing `reconcile_unresolved()`/
+     `recover_if_terminal()`-style machinery (a new
+     `recover_protective_exit_if_terminal()` counterpart, since Floor
+     executions have no `proposal_id` to look them up by).
+  6. **Floor partial fills auto-apply immediately — no Controller
+     confirmation gate**, unlike Ladder 2. Rationale: Floor is a
+     protective exit, not a discretionary add; leaving shares
+     unprotected pending a human response works against the rule's
+     own purpose. The unfilled remainder is re-offered automatically
+     on the Engine's next cycle (no artificial forfeiture, unlike
+     Ladder 2 — Floor's goal is to finish exiting, not to cap
+     position size). Idempotency requires NO new "applied" flag:
+     the target `total_shares` (`execution.requested_qty -
+     execution.filled_qty`) is computed once from the execution's own
+     immutable fields, and re-applying an already-applied execution is
+     a safe no-op because `Trade.total_shares` already reflects it —
+     mirrors how `ladder1_filled`/`ladder2_filled` already serve this
+     role for BUY executions.
+  7. **Floor limit price: an execution range of −1% to −0.5% off the
+     current price at the moment Floor fires**, mirroring the SAME
+     "or better" reasoning already approved for Ladder 1/Ladder 2's
+     own execution range (D-0033) — a SELL limit executes at the
+     specified price or better (at or above it), so the LOWER (−1%,
+     more negative) boundary is submitted as the actual limit price,
+     giving the order the widest room to fill while capping the worst
+     acceptable price at 1% below the trigger-time price. No new
+     numeric constant invented — this reuses the same 1% figure
+     already approved for Ladder execution ranges, applied
+     symmetrically to a SELL.
+  8. **Floor trigger detection cadence: the faster, independent
+     reconciliation cadence, NOT D-0021's hourly schedule.** Approved
+     revision, this session: a protective exit benefits from faster
+     detection than a discretionary entry does. This does NOT
+     "silently change" D-0021 — that schedule only ever governed
+     Ladder/entry trigger detection; Floor detection is a new check
+     added to the already-separate, already-approved reconciliation
+     loop (D-0034's own review established this loop; this decision
+     is what actually populates it with Floor logic).
+  9. **Trailing Floor requires no new execution code at all** —
+     verified, not assumed: `Trade.active_floor_price` already
+     reflects the ratcheted value (D-0004/D-0008, unmodified), so
+     Floor detection picks it up automatically. Covered by a dedicated
+     confirmation test
+     (`tests/engine/test_engine.py::TestFloorTriggerDetection::
+     test_trailing_floor_ratchet_is_used_automatically_with_no_new_code`).
+     No standing broker-side stop order was built — the existing
+     polling cadence is sufficient at this stage; deferred, not
+     rejected, as a future latency optimization only.
+- **Bug found and fixed during implementation (not a new decision, a
+  correction of a genuine implementation error against already-
+  approved rules):** the Engine's ladder-proposal-creation code was
+  passing the LIVE market price into `build_trade_proposal()`'s
+  `current_price` parameter for Ladder 1/Ladder 2 proposals, which
+  that function (unmodified, shared with Initial Entry) uses to
+  recompute `ladder_1_trigger`/`ladder_2_trigger` from scratch. This
+  would have silently drifted a ladder's trigger away from
+  `Trade.ladder1_price`/`ladder2_price` (frozen at
+  `freeze_initial_reference()` time from the ORIGINAL entry fill,
+  per D-0001 — verified directly against `strategy.md` and
+  `routine-policy-alignment.md`'s own documented rejection of exactly
+  this class of drift in the old live routine). Fixed by passing
+  `trade.original_initial_entry_fill_price` instead. Caught by the
+  Engine's own test suite (a D-0007 band-violation failure) before
+  reaching any committed code.
+- **Rationale:** Extends the Engine to the full strategy lifecycle
+  (Universe → Trade → Initial Entry → Ladder 1 → Ladder 2 → Floor →
+  Closed) using, wherever possible, mechanisms already built and
+  approved (Ladder execution-range reasoning, the Ladder 2 partial-
+  fill idempotency pattern, the existing recovery/reconciliation
+  machinery) rather than a second, parallel execution system for
+  Floor.
+- **Safety:** Paper trading only. No live trading. No change to the
+  approved strategy's trigger levels (−5%/−8%/−10%), quantities
+  (10/20/SELL ALL), maximum position (40), or Trailing Floor math.
+  Floor remains fully automatic with no Controller approval step, per
+  `execution.md` §1/§2, unchanged.
+- **Tests:** 706/706 passing full-suite (37 new tests this phase: 11
+  `submit_protective_exit`/reconciliation/recovery tests, 5
+  `WatchlistSource` tests, 21 Engine-level tests covering watchlist-
+  driven Trade creation, orphaned-Trade recovery, Floor full/partial/
+  duplicate-prevention detection, the exact −1% limit-price value, and
+  the Trailing Floor confirmation).
+- **Supersedes:** none. Extends D-0033/D-0034's execution-mechanics
+  pattern to Floor; does not modify D-0001, D-0004, D-0007, D-0008,
+  D-0011, D-0012, D-0021, D-0026, D-0033, or D-0034.

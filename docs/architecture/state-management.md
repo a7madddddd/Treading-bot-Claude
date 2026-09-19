@@ -120,7 +120,7 @@ On routine start:
 ## 3a. Runtime environment guard (cross-reference)
 
 The runtime that hosts this engine must assert, at startup, the
-paper-endpoint guard specified in `docs/trading/execution.md §8`:
+paper-endpoint guard specified in `docs/trading/execution.md §11`:
 
 - `ALPACA_BASE_URL` points at the paper endpoint.
 - Live-trading URLs are refused.
