@@ -226,6 +226,21 @@ left-to-right rendering in some terminals. Write each line either fully
 in Arabic or fully in English/code; when a technical identifier is
 needed to explain an Arabic point, list it separately (its own line or
 bullet) right after the Arabic explanation, never embedded inside it.
+This applies to every line of output, including inline mentions of a
+`variable_name`, a file path, an env var, or a short code fragment
+inside an otherwise-Arabic sentence — no exception for "just one word."
+
+Concrete example:
+- ✗ WRONG (violates this rule):
+  "قيمة `ALPACA_BASE_URL` يجب أن تكون بدون `/v2` في النهاية."
+- ✓ CORRECT (two lines, each fully one language/script):
+  "القيمة يجب أن تكون بدون `/v2` في النهاية."
+  `ALPACA_BASE_URL = https://paper-api.alpaca.markets`
+
+Before sending any response, re-scan every line for this specific
+violation (an Arabic clause and a Latin-script/code token sharing one
+line) and split any offending line into two, per the example above.
+This check is mandatory on every response, not only long ones.
 
 **Structure for any substantial response:**
 1. Start with a short, plain-Arabic summary of the overall result
@@ -237,7 +252,12 @@ bullet) right after the Arabic explanation, never embedded inside it.
    risk/safety, data correctness, restart/recovery, broker execution,
    strategy behavior, Controller approval, or architectural
    boundaries — not every minor implementation detail.
-4. Include at least one concrete example for important behavior.
+4. Every explanation of a technical change, a bug, or a new concept
+   MUST include at least one concrete, worked example (an actual value,
+   an actual before/after, an actual number) — a description with no
+   example is treated as incomplete, not as done. A vague summary
+   ("this could cause an error") is not sufficient; show the specific
+   input/output or the specific old value vs. new value.
 
 **Facts vs. recommendations — always label distinctly:**
 - FACT — directly verified from code, docs, tests, or an authoritative
