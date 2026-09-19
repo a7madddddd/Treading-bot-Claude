@@ -1728,3 +1728,50 @@ Controller approval per CLAUDE.md §9.
   `execution.md`, position sizing, risk limits, or any approval
   workflow.
 - **Supersedes:** none.
+
+## D-0037 — Perplexity transport migrated to Agent API (`/v1/responses`)
+
+- **Date:** 2026-09-19
+- **Status:** APPROVED
+- **Approved by:** Controller
+- **Context:** During a Phase-1 connectivity check for the cloud
+  session on branch `claude/youthful-goodall-4cr0ei`, a direct HTTPS
+  probe against `POST https://api.perplexity.ai/chat/completions`
+  returned HTTP 403 with `code: agent_api_migration_required` and the
+  message: *"Sonar is now the Agent API. Use `/v1/responses` instead
+  of `/chat/completions`."* A follow-up probe against
+  `POST /v1/responses` was authenticated successfully (auth accepted;
+  request rejected only because the model name in the probe was not a
+  supported Agent API model — HTTP 400, not 401/403). This confirms:
+  (a) `PERPLEXITY_API_KEY` is valid; (b) the legacy transport is gone
+  at the product level, not per-key; (c) a new API key would produce
+  the same outcome.
+- **Decision:**
+  1. Perplexity integration for this project targets the Agent API
+     endpoint `POST https://api.perplexity.ai/v1/responses` from day
+     one. The legacy `/chat/completions` endpoint is not used and must
+     not be introduced.
+  2. `docs/architecture/research-sources.md` is amended with a new
+     §7 "Perplexity transport (Agent API)" documenting endpoint,
+     request shape, auth, and error handling.
+  3. No implementation code is added under this decision. The
+     research/adapter layer (§1.A operations `researchMarket`,
+     `researchStock`, etc.) is designed and built under a separate,
+     later decision, scheduled after the current pre-APPLY checklist
+     closes.
+  4. No change to trading strategy, execution behavior, risk limits,
+     ladders, floor rules, Alpaca configuration, or notifications.
+     Perplexity remains an advisory research source per
+     `CLAUDE.md §5–6`; it never overrides the deterministic risk
+     engine or the active protective floor.
+- **Rationale:** Recording the transport change transparently rather
+  than silently editing D-0019 preserves the append-only decision log
+  required by `CLAUDE.md §7`. Deferring the adapter implementation
+  respects the 7-phase workflow: Inspect confirmed no code exists yet,
+  so this decision is a documentation-only capture, and the design
+  pass gets its own inspect/research/plan/approval cycle later.
+- **Supersedes:** none. D-0019 stands; only the transport section of
+  the referenced architecture doc is amended.
+- **Non-supersession note:** D-0001 (approved trading strategy),
+  D-0002 (paper trading only), D-0019 (Perplexity + Capitol Trades as
+  independent research sources) are unchanged.

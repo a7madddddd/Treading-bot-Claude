@@ -111,3 +111,33 @@ trades; both feed the research synthesis layer for Controller review.
 Additional research sources (news APIs, SEC EDGAR, insider filings,
 alt-data) plug in the same way: their output is a typed, timestamped
 findings record; the synthesis layer treats them independently.
+
+## 7. Perplexity transport (Agent API)
+
+- **Endpoint:** `POST https://api.perplexity.ai/v1/responses`.
+- **Legacy endpoint NOT used:** the older OpenAI-compatible path
+  `POST /chat/completions` was deprecated by Perplexity in favor of the
+  Agent API. Any code that references `/chat/completions` for this
+  project is an error and must be rejected in review.
+- **Request shape (minimum):**
+  ```json
+  {
+    "model": "<supported-agent-model>",
+    "input": "<prompt string or structured input>"
+  }
+  ```
+  The exact list of supported model names is decided at implementation
+  time by reading Perplexity's current Agent API documentation, not by
+  guessing. Model choice is recorded in the adapter's config, not
+  hard-coded across the codebase.
+- **Auth:** `Authorization: Bearer $PERPLEXITY_API_KEY` (env var name
+  unchanged; see `.env.example`).
+- **Error handling:** any HTTP 4xx/5xx from `/v1/responses` is treated
+  the same as any other Perplexity error under §5 above — logged,
+  IMPORTANT-level notification, and the routine continues without a
+  fabricated summary. A response with `code: agent_api_migration_required`
+  is CRITICAL and blocks the routine, because it indicates the endpoint
+  itself changed again.
+- **No live trading path depends on Perplexity.** Consistent with
+  `CLAUDE.md §5–6`, Perplexity output remains advisory and never
+  overrides the deterministic risk engine or the active protective floor.
