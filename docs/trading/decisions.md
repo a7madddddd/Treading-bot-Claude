@@ -1653,3 +1653,78 @@ Controller approval per CLAUDE.md §9.
 - **Supersedes:** none. Extends D-0033/D-0034's execution-mechanics
   pattern to Floor; does not modify D-0001, D-0004, D-0007, D-0008,
   D-0011, D-0012, D-0021, D-0026, D-0033, or D-0034.
+
+## D-0036 — Cloud environment credential storage and network access (operational, non-trading)
+
+- **Date:** 2026-09-19
+- **Status:** APPROVED (Controller), operational only — no trading
+  behavior, strategy, or code changed by this decision.
+- **Approved by:** Controller (project owner)
+- **Context:** The Controller's Claude Code cloud environment ("Edit
+  cloud environment" settings, environment name "Default") exposes
+  three relevant, distinct controls: a "Network access" setting
+  (Full/restricted), an "Environment Variables" box (plain `.env`-
+  format text), and a separate "API credentials" mechanism (values
+  hidden after saving; scoped to HTTP header injection for specific
+  allowed websites). None of these are part of this repository's own
+  code or the SQLite/state contract in
+  `docs/architecture/state-management.md` — they are Claude Code
+  platform configuration only.
+- **Findings verified this session:**
+  1. The "Environment Variables" box is the correct mechanism for the
+     six secrets this codebase reads via `os.environ` at startup
+     (`PERPLEXITY_API_KEY`, `ALPACA_API_KEY_ID`, `ALPACA_API_SECRET_KEY`,
+     `ALPACA_BASE_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — see
+     `.env.example`). The "API credentials" mechanism does not fit:
+     Alpaca requires two simultaneous headers
+     (`APCA-API-KEY-ID`/`APCA-API-SECRET-KEY`), and Telegram's token is
+     embedded in the URL path, not a header — neither maps onto that
+     tool's single-Bearer-token/allowed-website model.
+  2. The platform's own UI text states values in "Environment
+     Variables" are visible to "anyone using this environment." The
+     Controller confirmed this cloud account/environment is used
+     solely by the Controller, with no other person having access —
+     the Controller accepted this as the working storage mechanism on
+     that basis. If this account is ever shared (a teammate added, a
+     session link shared with a third party, a future Team/Enterprise
+     upgrade), the plaintext values must be rotated or removed first —
+     this is a standing condition of this approval, not a one-time
+     check.
+  3. "Network access" changes (this session: set to "Full") apply only
+     to sessions created AFTER the change — the platform's own dialog
+     states this explicitly. This session (already running) does not
+     pick up the new network policy; a genuinely new session must be
+     started to test outbound connectivity (Alpaca paper endpoint,
+     Telegram, Perplexity).
+  4. There is no mechanism, from any tool available to this agent, to
+     "fork" or "branch" a running session into a new one that both (a)
+     carries this exact conversation's full raw history and (b) picks
+     up new environment settings. The two are mutually exclusive given
+     current platform capability. The durable substitute already in
+     place per `CLAUDE.md §7` is `docs/` itself: `CLAUDE.md` is read
+     automatically at the start of every session (governs behavior
+     identically without copying anything), and `docs/trading/
+     decisions.md` / `docs/trading/pre-apply-checklist.md` carry
+     project state forward. A new session does not receive this
+     conversation's exact wording, but does receive the governing
+     rules and the decision trail.
+- **Decision:** Store the six credentials in the cloud environment's
+  "Environment Variables" box (plain-text, this-account-only, per
+  finding 2 above). Network access left at "Full" for this
+  environment, effective for new sessions only. No change to
+  `.env.example`, `CLAUDE.md §8`, or any code — the naming contract
+  those already document is unchanged; this decision only fixes where
+  the Controller enters the values on this specific hosting surface.
+- **Still open (Controller-owned, unresolved as of this entry):**
+  - The exposed, live Alpaca key found earlier this session in 3 of 4
+    active Routine prompts is still not rotated and those Routines are
+    still enabled — this decision does not resolve that; see
+    `pre-apply-checklist.md` B1, B14.
+  - Live connectivity to Alpaca/Telegram/Perplexity from a Claude Code
+    session has not yet been verified end-to-end; requires a new
+    session opened after this "Full" network-access change.
+- **Safety:** Paper trading only; unchanged. This decision is
+  infrastructure/config only and does not touch `strategy.md`,
+  `execution.md`, position sizing, risk limits, or any approval
+  workflow.
+- **Supersedes:** none.

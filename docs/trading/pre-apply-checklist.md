@@ -3,9 +3,15 @@
 Single source of truth for what must happen before the Controller
 writes "APPLY THE CHANGES". Updated when a blocker moves.
 
-**Current gate status:** NOT ready for APPLY. Design decisions largely
-resolved; several implementation items remain, and no code has been
-written.
+**Current gate status:** NOT ready for APPLY. Design decisions resolved;
+the Trade/Proposal/Execution/Engine implementation is now complete and
+tested (706 tests passing, D-0007 through D-0035) — what remains is
+almost entirely Controller-owned operational steps (credential
+rotation, hosting, disabling live Routines) plus three deferred code
+integrations (concrete Alpaca `BrokerClient`, concrete
+`MarketDataSource`, Telegram inbound approval). Updated 2026-09-22 to
+reflect the actual implemented state — see `decisions.md` D-0035 for
+the full implementation trail.
 
 ---
 
@@ -52,8 +58,8 @@ written.
 | B4 | Populate `.env` with new secrets locally | ❌ BLOCKER | Controller | `.env` gitignored; never committed. |
 | B5 | Deployment host chosen for the Python process | ❌ BLOCKER | Controller + design | Any host that gives us a stable process + `tzdata`. Options: user's machine, small VM, container-as-a-service. |
 | B6 | `TELEGRAM_ADMIN_USER_IDS` env var populated with Controller's Telegram user id | ❌ BLOCKER | Controller | Determines who can Approve/Reject. |
-| B7 | Repository abstraction for SQLite drafted (interface only, no impl) | 🟨 IN DESIGN | Claude | Design will be added under `docs/architecture/state-repository.md` when Controller says to. |
-| B8 | Engine skeleton drafted (interface only, no impl) | 🟨 IN DESIGN | Claude | Symbol-agnostic per D-0026; awaiting Controller cue. |
+| B7 | Repository abstraction for SQLite | ✅ IMPLEMENTED | Claude | `src/persistence/`, `src/trade/`, `src/proposals/`, `src/execution/` — full SQLite-backed repositories, migrations 0001-0004, 706 tests passing. |
+| B8 | Engine skeleton | ✅ IMPLEMENTED | Claude | `src/engine/` — watchlist-driven Trade lifecycle, D-0021-gated Ladder trigger detection, independent reconciliation/Floor cadence, SQLite process lock, startup recovery, in-memory notification dedup. Symbol-agnostic (reads `WatchlistSource`, currently a static Controller-approved TSLA list per D-0026's still-blocked real pipeline). See D-0035. |
 | B9 | Verification-plan §1 (static prompt review) executed | 🟨 IN DESIGN | Controller | Line-by-line review of `prompt-proposed.md` files. |
 | B10 | Verification-plan §2 (deterministic engine math) executed | ❌ Requires code | Claude on Controller cue | Simulator tests before any broker call. |
 | B11 | Verification-plan §3 (broker dry-run) executed | ❌ Requires B1–B5 done | Claude on Controller cue | `no_submit` flag; only reads. |

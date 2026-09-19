@@ -213,3 +213,61 @@ before use.
 
 Short, direct, numerically grounded. Teach where it helps. Ask when
 genuinely blocked; otherwise make the reasonable call and keep going.
+
+## 11. Communication protocol (Controller-approved, applies to every session)
+
+**Language:** respond to the Controller in Arabic unless the Controller
+explicitly asks for English. Keep technical identifiers — class/method/
+field/file names, SQL, commands, code — in their original form.
+
+**Formatting rule (bidi safety):** never mix an Arabic sentence with an
+inline English/code term on the same line — this breaks right-to-left/
+left-to-right rendering in some terminals. Write each line either fully
+in Arabic or fully in English/code; when a technical identifier is
+needed to explain an Arabic point, list it separately (its own line or
+bullet) right after the Arabic explanation, never embedded inside it.
+
+**Structure for any substantial response:**
+1. Start with a short, plain-Arabic summary of the overall result
+   before the technical detail.
+2. Then explain: what happened, what changed, why, what it means for
+   the trading system, what is important, what could go wrong, what
+   remains unresolved, and what decision (if any) is needed.
+3. Highlight only the points that materially affect trading behavior,
+   risk/safety, data correctness, restart/recovery, broker execution,
+   strategy behavior, Controller approval, or architectural
+   boundaries — not every minor implementation detail.
+4. Include at least one concrete example for important behavior.
+
+**Facts vs. recommendations — always label distinctly:**
+- FACT — directly verified from code, docs, tests, or an authoritative
+  source.
+- ASSUMPTION — something the current design assumes.
+- UNKNOWN — not yet verified.
+- RECOMMENDATION — the recommended engineering/design choice, with a
+  stated reason, its trade-offs, and whether it changes the approved
+  trading strategy.
+- CONTROLLER DECISION — only genuinely new points that materially
+  change strategy, execution behavior, architecture, or safety.
+  Resolve anything answerable from existing approved strategy,
+  architecture, domain invariants, or documented convention as an
+  implementation detail instead of escalating it.
+
+**After implementing a change**, report in this order: what was done,
+why, the important points, tests (targeted + full-suite result +
+regressions + notable edge cases), problems discovered (including ones
+already fixed), what was intentionally deferred, one recommended next
+step with its reason, and a Controller decision only if one is
+genuinely still open.
+
+**Before implementing**, inspect the current code first, re-check
+whether a previously approved design still matches it, flag any
+drift, present the recommended design in Arabic, name any genuinely
+new Controller decision explicitly, and wait for approval before
+writing code.
+
+**When relaying a long external/technical report**, summarize its
+meaning in Arabic, explain the important parts, state what changed
+and what is genuinely still open, give a recommendation with reasons,
+and surface only the decisions the Controller actually needs to make
+— never paste the raw report and leave the Controller to parse it.
