@@ -1775,3 +1775,59 @@ Controller approval per CLAUDE.md §9.
 - **Non-supersession note:** D-0001 (approved trading strategy),
   D-0002 (paper trading only), D-0019 (Perplexity + Capitol Trades as
   independent research sources) are unchanged.
+
+## D-0038 — Credential rotation closed; interim host set; Telegram admin id set; legacy Routines deactivated
+
+- **Date:** 2026-09-20
+- **Status:** APPROVED
+- **Approved by:** Controller
+- **Context:** Controller completed the operational steps that were
+  blocking APPLY under `pre-apply-checklist.md §B`. Connectivity was
+  independently verified in this session against real endpoints on
+  branch `claude/youthful-goodall-4cr0ei`:
+  - Alpaca: `GET /v2/account` returned HTTP 200 with
+    `account_number = PA33OKKMOU89` (paper prefix `PA`) and
+    `status = ACTIVE`.
+  - Telegram: `POST /sendMessage` returned HTTP 200 to the
+    Controller's chat (`chat.id = 8888859393`).
+  - Perplexity: `POST /v1/responses` (the Agent API endpoint
+    recorded in D-0037) accepted the bearer token; the request was
+    rejected only because the probe model name was not a supported
+    Agent API model (HTTP 400, not 401/403).
+- **Decision:**
+  1. **B1 (Alpaca), B2 (Perplexity), B3 (Telegram)** — credentials
+     rotated by Controller; the previously leaked keys can now be
+     revoked at their respective provider consoles.
+  2. **B4** — the new credentials are injected via the Claude Code
+     cloud environment's Environment Variables layer for as long as
+     the engine runs from that host; no local `.env` change is
+     required under B5's current interim choice.
+  3. **B5** — the current Claude Code cloud session environment is
+     chosen as the **interim** host for verification and dry runs
+     only. It is explicitly NOT approved as the durable host for a
+     live paper session. A new checklist item `B17` tracks the
+     durable-host selection.
+  4. **B6** — the Controller's Telegram user id is set as
+     `TELEGRAM_ADMIN_USER_IDS`; this determines who can
+     Approve / Reject via the Telegram bot (D-0025).
+  5. **B14** — the previously live account-level Routines that
+     held the old credentials have been deactivated by the
+     Controller, eliminating the dual-writer risk against the
+     Alpaca paper account.
+- **Rationale:** These are operational, not trading-behavior,
+  changes. Recording them keeps `decisions.md` truthful about what
+  has actually happened outside the code, per `CLAUDE.md §7`.
+- **Safety notes:**
+  - No live trading is enabled by this decision. Paper-only
+    guardrail (D-0002) is unchanged.
+  - Approved strategy (D-0001), ladder rules (D-0007), trailing
+    math (D-0004, D-0008), and the active-protective-floor
+    priority are all unchanged.
+  - The ephemeral nature of the interim host means the engine
+    MUST NOT be launched into a live paper session from this host
+    until `B17` is closed with a durable, always-on host.
+  - Perplexity remains an advisory research source per
+    `CLAUDE.md §5-6`; connectivity verification does not change
+    that role.
+- **Supersedes:** none. Closes `pre-apply-checklist.md §B` items
+  B1, B2, B3, B4, B5 (interim), B6, and B14. Adds `B17`.
