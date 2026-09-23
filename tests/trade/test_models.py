@@ -435,14 +435,24 @@ class TestTrailingFloor(unittest.TestCase):
             t.activate_trailing(current_price=120.0, now=_now())
 
     def test_ratchet_matches_worked_example_table(self):
+        # Full verification-plan §2 worked example: entry = 100 → thresholds
+        # 110.0, 115.5, 121.275, 127.339 → floors 104.5, 109.725, 115.211,
+        # 120.972 within ±0.001.
         t = _frozen_trade().activate_trailing(current_price=110.0, now=_now())
+        self.assertAlmostEqual(t.trailing_current_threshold, 110.0, places=3)
+        self.assertAlmostEqual(t.trailing_floor_price, 104.5, places=3)
+
         t = t.ratchet_trailing(current_price=115.5, now=_now())
-        self.assertAlmostEqual(t.trailing_current_threshold, 115.5)
-        self.assertAlmostEqual(t.trailing_floor_price, 109.725)
+        self.assertAlmostEqual(t.trailing_current_threshold, 115.5, places=3)
+        self.assertAlmostEqual(t.trailing_floor_price, 109.725, places=3)
 
         t = t.ratchet_trailing(current_price=121.275, now=_now())
-        self.assertAlmostEqual(t.trailing_current_threshold, 121.275)
-        self.assertAlmostEqual(t.trailing_floor_price, 115.2113, places=3)
+        self.assertAlmostEqual(t.trailing_current_threshold, 121.275, places=3)
+        self.assertAlmostEqual(t.trailing_floor_price, 115.211, places=3)
+
+        t = t.ratchet_trailing(current_price=127.339, now=_now())
+        self.assertAlmostEqual(t.trailing_current_threshold, 127.339, places=3)
+        self.assertAlmostEqual(t.trailing_floor_price, 120.972, places=3)
 
     def test_ratchet_before_activation_raises(self):
         t = _frozen_trade()
@@ -462,6 +472,30 @@ class TestTrailingFloor(unittest.TestCase):
         self.assertEqual(t.trailing_floor_price, floor_after_activation)
         t = t.ratchet_trailing(current_price=115.5, now=_now())
         self.assertGreater(t.trailing_floor_price, floor_after_activation)
+
+    def test_trailing_floor_monotonic_across_random_walk(self):
+        # Verification-plan §2 monotonicity clause: for any random walk,
+        # the trailing floor must be non-decreasing. Deterministic seed
+        # keeps the test reproducible.
+        import random
+        rng = random.Random(20260923)
+        t = _frozen_trade(price=100.0).activate_trailing(current_price=110.0, now=_now())
+        previous_floor = t.trailing_floor_price
+        price = 110.0
+        for _ in range(2000):
+            # Multiplicative walk keeps the sequence positive.
+            price *= 1.0 + rng.uniform(-0.02, 0.02)
+            # Only ratchet when the next-threshold rule allows it, since
+            # ratchet_trailing() otherwise raises by design. Pass the
+            # actual walking price so any FP-roundoff on the exact
+            # threshold*1.05 boundary does not spuriously fail the check.
+            while price >= t.trailing_current_threshold * 1.05:
+                t = t.ratchet_trailing(current_price=price, now=_now())
+                self.assertGreaterEqual(t.trailing_floor_price, previous_floor)
+                previous_floor = t.trailing_floor_price
+            # Regardless of whether a ratchet fired, the floor must never
+            # have gone down between iterations.
+            self.assertGreaterEqual(t.trailing_floor_price, previous_floor)
 
 
 class TestActiveFloor(unittest.TestCase):
