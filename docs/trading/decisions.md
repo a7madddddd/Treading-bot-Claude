@@ -1958,3 +1958,58 @@ Controller approval per CLAUDE.md §9.
   agnostic universe principle) with an approved boundary and an
   explicit deferral of numbers. Complements D-0029 (Stage F
   boundary) unchanged.
+
+## D-0040 — TSLA-specific routine template retired; replaced by symbol-agnostic policy template
+
+- **Date:** 2026-09-23
+- **Status:** APPROVED
+- **Approved by:** Controller
+- **Context:** D-0015 (2026-09-14) directed a rewrite of a live
+  `tsla-paper-trading-monitor` account-level routine. Since then the
+  project has moved to a dynamic, symbol-agnostic engine (D-0026),
+  approved its boundary and deferred all numeric parameters (D-0039),
+  and deactivated the legacy account-level routines (D-0038). The
+  TSLA-specific routine is no longer the execution path; the
+  persistent Python engine under `src/engine/` is. Verification §1's
+  static prompt review nevertheless caught real drift in the
+  TSLA-specific proposed prompt (Market orders instead of D-0033
+  Limits; no D-0034 Ladder 2 partial-fill handling; no D-0011
+  debounce reference; pre-D-0038 credentials wording).
+- **Decision:**
+  1. The TSLA-specific proposed prompt
+     `routines/tsla-paper-trading-monitor/prompt-proposed.md` is
+     retired.
+  2. Its content is replaced by a symbol-agnostic policy template
+     at
+     `routines/paper-trading-monitor-template/prompt-proposed.md`.
+  3. The new template preserves the spirit of D-0015 ("routine
+     enforces policy, never invents it") but drops the single-symbol
+     framing: every rule applies per in-scope symbol, and the set of
+     in-scope symbols comes from the daily
+     `ApprovedUniverseSnapshot` filtered by per-symbol Controller
+     approval per D-0039.
+  4. The new template incorporates the drifts the verification §1
+     pass identified: Ladder 1 / Ladder 2 are Limit orders at the
+     D-0033 execution-range upper edges (−4% and −7%); Ladder 2
+     partial-fill handling follows D-0034 (reactive cancel +
+     explicit Controller confirmation); trigger detection defers to
+     the D-0011 debounce state machine; credentials come from
+     container-level environment variables per D-0038.
+  5. The template does not create a live routine; the persistent
+     Python engine remains the enforcement mechanism. The template
+     is a readable policy reference for the Controller and any
+     future developer.
+- **Rationale:** Recording the transition explicitly rather than
+  silently rewriting D-0015 preserves the append-only decision log
+  required by `CLAUDE.md §7`. Aligns the routine document with the
+  approved dynamic-universe architecture and unblocks
+  `verification-plan §1` for a passing verdict on the new template.
+- **Safety notes:**
+  - No trading behavior change. D-0001 (strategy), D-0002
+    (paper-only), D-0007 (approval window), D-0011 (debounce),
+    D-0033 (Limit execution range), and D-0034 (Ladder 2
+    partial-fill) are all unchanged.
+  - Perplexity remains advisory (D-0019, D-0037).
+- **Supersedes:** the letter of D-0015 for the routine file itself.
+  Does NOT supersede D-0015's spirit; the spirit continues in the
+  new template.
