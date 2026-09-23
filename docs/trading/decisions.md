@@ -1831,3 +1831,130 @@ Controller approval per CLAUDE.md §9.
     that role.
 - **Supersedes:** none. Closes `pre-apply-checklist.md §B` items
   B1, B2, B3, B4, B5 (interim), B6, and B14. Adds `B17`.
+
+## D-0039 — Universe subsystem: structure approved, numbers deferred, broker-derived symbolic-capital path opened
+
+- **Date:** 2026-09-23
+- **Status:** APPROVED
+- **Approved by:** Controller
+- **Context:** After a bilingual walkthrough of B15 (universe
+  subsystem), the Controller confirmed alignment on three items:
+  (a) approve the structural boundary and principles now, (b) defer
+  every numeric parameter until calibration data exists, and (c)
+  approve daily snapshots on a per-symbol basis rather than as an
+  all-or-nothing block. The Controller also asked to open a small
+  symbolic-capital path on the Alpaca paper account to prove the
+  end-to-end plumbing works before any calibrated universe is
+  available. Rather than fixing the dollar amount here, the design
+  reads the live cash balance from the broker at the start of each
+  pipeline run, so the derived thresholds self-adapt to whatever
+  the paper account holds at that moment.
+- **Decision:**
+  1. **Structure & boundary — APPROVED.**
+     - The engine-boundary contract `ApprovedUniverseSnapshot`
+       (`docs/architecture/universe.md §2`) is approved as the
+       stable contract between the universe subsystem and the
+       strategy engine.
+     - The 9-stage pipeline shape A→I
+       (`docs/architecture/universe.md §1`) is approved as the
+       structural design.
+     - The "no-universe = no-trade" hard rule
+       (`docs/architecture/universe.md §6`) is approved as
+       non-negotiable.
+     - Stage F's architectural boundary approved under D-0029
+       remains as-is; no ranking metric or numeric weight is
+       approved.
+     - TSLA remains TEST-ONLY per
+       `docs/architecture/universe.md §5`.
+  2. **Numeric parameters — DEFERRED.**
+     - Every numeric threshold and every formula constant listed
+       in `docs/trading/universe-selection-analysis.md §3` is
+       formally deferred.
+     - No absolute number (liquidity floor, spread cap, ATR band,
+       regime thresholds, ranking weights, sector cap, correlation
+       threshold, Top-N, warm-up) is approved.
+     - The deferral is lifted only by a future decision after
+       the calibration-data blocker recorded in
+       `pre-apply-checklist.md B16` is resolved.
+  3. **Per-symbol daily approval — APPROVED as the operating mode.**
+     - The Controller reviews each candidate symbol inside the
+       daily snapshot individually.
+     - A symbol not explicitly approved by the Controller for a
+       given day is NOT eligible for a new initial entry that day.
+     - Already-open trades continue to run under the existing
+       strategy rules regardless of daily approval status
+       (consistent with `docs/architecture/universe.md §2`).
+  4. **Broker-derived capital + manual symbol list — APPROVED (paper only).**
+     - At the start of every pipeline run, the system reads the
+       current cash balance from the Alpaca paper account. The
+       broker is the source of truth for account state; no
+       Controller-supplied dollar amount is used or stored.
+     - A small safety buffer (a fixed ratio, initial value to be
+       set by the Controller before the first run) is subtracted
+       from the read cash to cover slippage and fees; the result
+       is `usable_cash`.
+     - The maximum candidate share price for the manual list is
+       derived mechanically from the strategy's fixed 40-share
+       final position size:
+
+           max_share_price ≈ usable_cash / 40
+
+       so it self-adapts to whatever cash the paper account holds
+       at that moment.
+     - Until §2 above is lifted, the daily universe is a
+       Controller-supplied manual list of a handful of well-known
+       symbols priced at or below `max_share_price`, passed
+       through the same `ApprovedUniverseSnapshot` contract.
+     - Any symbol whose current price exceeds `max_share_price`
+       at snapshot time is dropped from that day's list before
+       the Controller sees it, and the drop is logged.
+     - The Controller MAY still reject any surviving symbol
+       per §3 above.
+     - If the read cash is too low to afford even a single share
+       of any submitted candidate, the snapshot is empty and the
+       engine trades nothing that day per
+       `docs/architecture/universe.md §6`.
+     - This path exists only to prove end-to-end plumbing on
+       paper. It is NOT a calibrated strategy claim.
+  5. **Ratio-based thresholds preferred where possible.**
+     - Any threshold that can naturally be expressed as a ratio
+       to the trade's own position size (for example
+       "daily dollar volume must exceed N × our order notional")
+       SHOULD be written in ratio form so it self-adapts to
+       future capital changes without recalibration.
+     - Any threshold whose meaning does NOT scale with capital
+       (spread caps, ATR%, market-regime thresholds, ranking
+       weights, correlation) MUST remain deferred under §2 until
+       calibration data exists.
+- **Rationale:**
+  - Approving the boundary now unblocks the three deferred code
+    slices (concrete Alpaca `BrokerClient`, concrete
+    `MarketDataSource`, Telegram inbound approval) without
+    committing to any sensitive number.
+  - Deferring all numbers preserves the CLAUDE.md rules against
+    claiming profitability without evidence and against treating
+    AI confidence as evidence.
+  - The broker-derived symbolic-capital path gives the Controller
+    a concrete way to observe the whole pipeline running on the
+    paper account before calibrated selection is possible.
+  - Reading live cash from Alpaca instead of taking a
+    Controller-supplied amount aligns with the project rule that
+    the broker is the source of truth for account state, avoids
+    drift between assumed and actual cash, and removes a manual
+    step every time the Controller wants to test with a different
+    symbolic size.
+- **Safety notes:**
+  - Paper trading only. D-0002 unchanged.
+  - Approved strategy (D-0001) is unchanged: entry 10 shares,
+    Ladder 1 at −5% adds 10, Ladder 2 at −8% adds 20, Original
+    Floor at −10% sells all, Trailing Floor activates at +10%
+    above weighted-average entry.
+  - Active-protective-floor priority is unchanged and cannot
+    be lowered to permit a Ladder.
+  - No live trading is enabled by this decision.
+  - The engine will not trade on an empty snapshot; per-symbol
+    Controller rejections on a given day are honored.
+- **Supersedes:** none. Complements D-0026 (dynamic, symbol-
+  agnostic universe principle) with an approved boundary and an
+  explicit deferral of numbers. Complements D-0029 (Stage F
+  boundary) unchanged.
