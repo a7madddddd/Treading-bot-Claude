@@ -34,6 +34,22 @@ class BrokerSubmissionAmbiguousError(BrokerClientError):
     rejection by any caller."""
 
 
+class BrokerCommunicationError(BrokerClientError):
+    """Raised by non-submit BrokerClient calls (get_order_by_client_order_id,
+    get_cash_balance) when the broker could not be reached with a
+    well-formed response. The caller does not learn any state from this
+    error and must retry or report; it is never a signal that the
+    resource does not exist -- for that, get_order_by_client_order_id()
+    returns None from a definite HTTP 404, not from a network failure."""
+
+
+class BrokerAccountBlockedError(BrokerClientError):
+    """Raised by get_cash_balance() when the broker reports the account
+    is blocked (trading_blocked or account_blocked) -- callers must treat
+    the account as unusable for new orders even if a cash balance is
+    reported alongside the block."""
+
+
 @dataclass(frozen=True)
 class BrokerOrderState:
     """A normalized, broker-neutral snapshot of one order's current
@@ -94,4 +110,17 @@ class BrokerClient(ABC):
         is_terminal=True to learn the actual, final outcome. Safe to
         call repeatedly/idempotently on an already-cancelled or
         already-terminal order."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_cash_balance(self) -> float:
+        """Returns the account's current cash balance in USD as read
+        directly from the broker at call time. The broker is the source
+        of truth for account state (D-0018 / D-0039); this method must
+        never return a cached value that could drift from the broker's
+        actual figure. Raises BrokerAccountBlockedError if the broker
+        reports the account is blocked for trading or fully blocked --
+        the caller must not use any cash figure from a blocked account
+        to authorize new orders. Raises BrokerCommunicationError if the
+        broker could not be reached with a well-formed response."""
         raise NotImplementedError

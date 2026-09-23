@@ -46,6 +46,7 @@ class FakeBrokerClient(BrokerClient):
         self.submit_calls = []
         self.submit_limit_prices: Dict[str, float] = {}
         self.cancel_calls = []
+        self._cash_balance: float = 100000.0
 
     def queue_response(self, client_order_id: str, state: BrokerOrderState) -> None:
         self._queued_responses[client_order_id] = state
@@ -100,6 +101,12 @@ class FakeBrokerClient(BrokerClient):
             self._raise_on_get_order.discard(client_order_id)
             raise RuntimeError("simulated transient broker/API/network error")
         return self._orders.get(client_order_id)
+
+    def set_cash_balance(self, cash: float) -> None:
+        self._cash_balance = cash
+
+    def get_cash_balance(self) -> float:
+        return self._cash_balance
 
 
 def _repos():

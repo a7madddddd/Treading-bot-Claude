@@ -55,6 +55,9 @@ class FakeBrokerClient(BrokerClient):
     def cancel_order(self, client_order_id: str) -> None:
         self.cancel_calls.append(client_order_id)
 
+    def get_cash_balance(self) -> float:
+        return 100000.0
+
 
 class FakeMarketDataSource(MarketDataSource):
     def __init__(self, prices: Optional[Dict[str, float]] = None):
