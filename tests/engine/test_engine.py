@@ -130,25 +130,59 @@ def _make_engine(
 
 class TestD0021Schedule(unittest.TestCase):
     def test_matches_each_of_the_seven_scheduled_times(self):
-        for hour in range(8, 15):
-            ct = datetime(2026, 9, 21, hour, 30, tzinfo=ZoneInfo("America/Chicago"))  # Monday
-            self.assertTrue(is_d0021_check_time(ct), f"expected {hour}:30 CT to match")
+        # D-0041 realignment: 09:30 through 15:30 ET (same wall-clock
+        # moments as the pre-D-0041 08:30-14:30 CT labels).
+        for hour in range(9, 16):
+            et = datetime(2026, 9, 21, hour, 30, tzinfo=ZoneInfo("America/New_York"))  # Monday
+            self.assertTrue(is_d0021_check_time(et), f"expected {hour}:30 ET to match")
 
     def test_does_not_match_off_schedule_time(self):
-        ct = datetime(2026, 9, 21, 9, 0, tzinfo=ZoneInfo("America/Chicago"))
-        self.assertFalse(is_d0021_check_time(ct))
+        et = datetime(2026, 9, 21, 10, 0, tzinfo=ZoneInfo("America/New_York"))
+        self.assertFalse(is_d0021_check_time(et))
 
     def test_does_not_match_weekend(self):
-        ct = datetime(2026, 9, 19, 8, 30, tzinfo=ZoneInfo("America/Chicago"))  # Saturday
-        self.assertFalse(is_d0021_check_time(ct))
+        et = datetime(2026, 9, 19, 9, 30, tzinfo=ZoneInfo("America/New_York"))  # Saturday
+        self.assertFalse(is_d0021_check_time(et))
 
     def test_tolerance_window_absorbs_a_late_wake(self):
-        ct = datetime(2026, 9, 21, 8, 31, 20, tzinfo=ZoneInfo("America/Chicago"))
-        self.assertTrue(is_d0021_check_time(ct, tolerance_seconds=90))
+        et = datetime(2026, 9, 21, 9, 31, 20, tzinfo=ZoneInfo("America/New_York"))
+        self.assertTrue(is_d0021_check_time(et, tolerance_seconds=90))
 
     def test_naive_datetime_rejected(self):
         with self.assertRaises(ValueError):
-            is_d0021_check_time(datetime(2026, 9, 21, 8, 30))
+            is_d0021_check_time(datetime(2026, 9, 21, 9, 30))
+
+    def test_spring_forward_monday_09_30_et_still_matches(self):
+        # D-0041 §1 + verification-plan §6: on the Monday following the
+        # US spring-forward Sunday, the schedule must still fire at the
+        # ET wall-clock time -- the TZ-aware scheduler absorbs the
+        # +1-hour shift automatically.
+        et = datetime(2027, 3, 15, 9, 30, tzinfo=ZoneInfo("America/New_York"))  # Monday after 2027-03-14
+        self.assertTrue(is_d0021_check_time(et))
+
+    def test_fall_back_monday_09_30_et_still_matches(self):
+        # Verification-plan §6: on the Monday following the US fall-back
+        # Sunday, the schedule must still fire at the ET wall-clock time.
+        et = datetime(2026, 11, 2, 9, 30, tzinfo=ZoneInfo("America/New_York"))  # Monday after 2026-11-01
+        self.assertTrue(is_d0021_check_time(et))
+
+    def test_dst_transitions_shift_the_UTC_moment_even_though_ET_is_stable(self):
+        # Demonstrates the drift a fixed-UTC cron would suffer: the exact
+        # same 09:30 ET wall-clock hits a *different* UTC instant before
+        # and after the spring-forward. A fixed-UTC schedule targeting
+        # the winter UTC would fire an hour off the ET wall-clock after
+        # the transition -- which is exactly why D-0020/D-0041 forbid
+        # fixed-UTC cron for market-anchored routines.
+        winter_et = datetime(2027, 3, 8, 9, 30, tzinfo=ZoneInfo("America/New_York"))  # EST
+        summer_et = datetime(2027, 3, 15, 9, 30, tzinfo=ZoneInfo("America/New_York"))  # EDT
+        # Same ET wall-clock, but UTC moments differ by exactly one hour.
+        winter_utc = winter_et.astimezone(ZoneInfo("UTC"))
+        summer_utc = summer_et.astimezone(ZoneInfo("UTC"))
+        self.assertEqual((winter_utc.hour, winter_utc.minute), (14, 30))  # EST = UTC-5
+        self.assertEqual((summer_utc.hour, summer_utc.minute), (13, 30))  # EDT = UTC-4
+        # Both, however, ARE valid schedule slots for our TZ-aware check.
+        self.assertTrue(is_d0021_check_time(winter_et))
+        self.assertTrue(is_d0021_check_time(summer_et))
 
 
 class TestTriggerDetection(unittest.TestCase):
