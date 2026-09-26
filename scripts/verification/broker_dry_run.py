@@ -26,18 +26,28 @@ Checks:
     5. AlpacaBrokerClient.get_order_by_client_order_id(<nonexistent>) returns None.
     6. Paper-api guard rejects construction against a live URL.
     7. Empty-credentials guard rejects construction.
-    8. Reconciliation catches a synthetic state-vs-broker mismatch (in-process).
+
+Not covered here (covered by unit tests instead):
+    - ExecutionService reconcile_unresolved()'s reaction to a synthetic
+      state-vs-broker mismatch (verification-plan §3's fourth item).
+      That end-to-end reconciliation flow lives at the ExecutionService
+      layer, not the BrokerClient layer this script exercises. It is
+      already covered by tests in tests/execution/test_service.py,
+      notably `test_ambiguous_lost_then_reconcile_confirms_unknown`
+      and neighbours, which drive a full submit → ambiguity →
+      reconcile_unresolved() flow against a broker double that returns
+      None for the stored id (exactly the "synthetic mismatch"
+      scenario the verification-plan describes).
 """
 
 from __future__ import annotations
 
 import os
 import sys
-import time
 import traceback
 import uuid
 from dataclasses import dataclass
-from typing import Callable, List, Optional
+from typing import Callable, List
 
 
 # Make src/ importable when the script is run from the repo root.
@@ -103,12 +113,7 @@ def main() -> int:
         return _summarize(results)
 
     from execution.alpaca_broker_client import AlpacaBrokerClient
-    from execution.broker_client import (
-        BrokerAccountBlockedError,
-        BrokerCommunicationError,
-    )
     from marketdata.alpaca_source import AlpacaMarketDataSource
-    from marketdata.source import MarketDataUnavailableError
 
     key_id = os.environ["ALPACA_API_KEY_ID"]
     secret = os.environ["ALPACA_API_SECRET_KEY"]
@@ -174,27 +179,6 @@ def main() -> int:
         raise AssertionError("empty credentials were not rejected")
 
     results.append(_run("empty-credentials guard", check_empty_creds_guard))
-
-    # --- Check 8: synthetic reconciliation mismatch --------------------
-    # In-process check: build a client-side "state" that disagrees with
-    # what the broker returns, and verify our code notices. We do this
-    # by asking the broker for a nonexistent order id while our stored
-    # state claims one exists -- the broker returning None is exactly
-    # the signal reconcile_unresolved() acts on. This is a pure logic
-    # check; no data on the broker changes.
-    def check_reconciliation_signal() -> str:
-        fake_stored_id = f"DRYRUN-STATE-{uuid.uuid4().hex}"
-        state = broker.get_order_by_client_order_id(fake_stored_id)
-        assert state is None, (
-            "broker returned a state for a fabricated id; cannot test the "
-            "mismatch signal reliably"
-        )
-        return (
-            "broker returns None for the fabricated id, which is the exact "
-            "signal reconciliation uses to detect a state-vs-broker mismatch"
-        )
-
-    results.append(_run("synthetic reconciliation mismatch signal", check_reconciliation_signal))
 
     return _summarize(results)
 
