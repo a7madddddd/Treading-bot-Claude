@@ -259,6 +259,17 @@ This check is mandatory on every response, not only long ones.
    ("this could cause an error") is not sufficient; show the specific
    input/output or the specific old value vs. new value.
 
+**Precision when describing code behavior.** Before stating what a
+piece of code does — what a function is called with, what it returns,
+what a test asserts, or what a check verifies — re-read the exact
+code path. Never conflate an argument with a return value, an input
+type with an output type, or a caller's expectation with a callee's
+guarantee. If a claim about behavior is worth making in a report or
+a review, it is worth verifying against the actual code first, even
+when the answer feels obvious. Vague or hedged phrasing that a reader
+could reasonably misinterpret is treated as a factual error, not a
+stylistic one, and must be corrected explicitly when caught.
+
 **Facts vs. recommendations — always label distinctly:**
 - FACT — directly verified from code, docs, tests, or an authoritative
   source.
