@@ -96,6 +96,7 @@ class AlpacaBrokerClient(BrokerClient):
         secret_key: str,
         timeout_seconds: float = 10.0,
         http_transport: Optional[HttpTransport] = None,
+        allow_non_paper_url: bool = False,
     ):
         if not base_url:
             raise ValueError("base_url must be a non-empty URL")
@@ -109,6 +110,20 @@ class AlpacaBrokerClient(BrokerClient):
         normalized = base_url.rstrip("/")
         if normalized.endswith("/v2"):
             normalized = normalized[: -len("/v2")]
+        # Paper-only guardrail (D-0002; verification-plan §3): refuse to
+        # construct against any URL that is not the Alpaca paper endpoint.
+        # This is the code-layer enforcement of "paper trading only" and
+        # is deliberately uncircumventable except by an explicit,
+        # documented `allow_non_paper_url=True` opt-in reserved for a
+        # future signed decision that authorizes live trading.
+        if not allow_non_paper_url and "paper-api" not in normalized:
+            raise ValueError(
+                "Refusing to construct AlpacaBrokerClient against a non-paper "
+                "URL. Paper trading only (D-0002). Expected the host to "
+                "contain 'paper-api' (i.e. https://paper-api.alpaca.markets). "
+                "If you have an approved decision authorizing live trading, "
+                "pass allow_non_paper_url=True explicitly."
+            )
         self._config = _AlpacaConfig(
             base_url=normalized,
             key_id=key_id,

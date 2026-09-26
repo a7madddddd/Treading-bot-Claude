@@ -83,6 +83,48 @@ class TestConstruction(unittest.TestCase):
         with self.assertRaises(ValueError):
             AlpacaBrokerClient(base_url="https://x", key_id="k", secret_key="")
 
+    def test_rejects_non_paper_url_by_default(self):
+        # Paper-only guardrail (D-0002; verification-plan §3): the client
+        # must refuse construction against Alpaca's live URL.
+        with self.assertRaises(ValueError) as ctx:
+            AlpacaBrokerClient(
+                base_url="https://api.alpaca.markets",
+                key_id="k", secret_key="s",
+                http_transport=_StubTransport(),
+            )
+        self.assertIn("paper", str(ctx.exception).lower())
+
+    def test_rejects_arbitrary_non_paper_host(self):
+        with self.assertRaises(ValueError):
+            AlpacaBrokerClient(
+                base_url="https://evil.example.com",
+                key_id="k", secret_key="s",
+                http_transport=_StubTransport(),
+            )
+
+    def test_paper_url_variants_accepted(self):
+        # All these contain 'paper-api' and must be accepted.
+        for url in (
+            "https://paper-api.alpaca.markets",
+            "https://paper-api.alpaca.markets/",
+            "https://paper-api.alpaca.markets/v2",
+        ):
+            AlpacaBrokerClient(
+                base_url=url, key_id="k", secret_key="s",
+                http_transport=_StubTransport(),
+            )  # must not raise
+
+    def test_allow_non_paper_url_opt_in_bypasses_guard(self):
+        # Reserved for a future signed decision authorizing live trading;
+        # today it is not used anywhere, but must exist as the documented
+        # opt-in path so the guard is not silently bypassable via config.
+        AlpacaBrokerClient(
+            base_url="https://api.alpaca.markets",
+            key_id="k", secret_key="s",
+            http_transport=_StubTransport(),
+            allow_non_paper_url=True,
+        )  # must not raise
+
     def test_strips_trailing_slash_and_v2_suffix(self):
         transport = _StubTransport()
         transport.queue((200, _order_payload()))
