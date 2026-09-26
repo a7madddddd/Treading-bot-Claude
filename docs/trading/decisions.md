@@ -2104,3 +2104,100 @@ Controller approval per CLAUDE.md §9.
   - D-0021 (schedule anchors) — realigned to America/New_York with
     identical wall-clock moments; the anchor times are re-expressed
     in the new TZ.
+
+## D-0042 — B16 data sources: two-group free architecture (primary + support); supersedes verdict C
+
+- **Date:** 2026-09-26
+- **Status:** APPROVED
+- **Approved by:** Controller
+- **Context:** A fresh cloud-side probe run during this session
+  invalidated three key assumptions in the prior B16 verdict C:
+  SEC EDGAR (with a descriptive User-Agent), Nasdaq Trader's
+  symbol directory, and Yahoo Finance's v8/chart endpoint (with
+  a browser User-Agent) all reach and respond from the current
+  cloud environment. Combined with the earlier verified sources
+  (Alpaca SIP historical bars 2016-present, eliangcs/pystock-data
+  2009-2017, fja05680/sp500 point-in-time membership 1996-2026,
+  datasets/finance-vix 2004-2026), the free-source picture is
+  materially better than "insufficient".
+- **Decision:**
+  1. **Primary group (four sources).** These carry the calibration
+     workload:
+     - Alpaca `/v2/stocks/{symbol}/bars?feed=sip` — daily OHLCV
+       for currently-listed US equities, 2016-01-04 to present,
+       professional SIP feed, our existing paper keys, 200
+       requests/minute limit, no delisted symbols.
+     - `eliangcs/pystock-data` on GitHub (CC BY-SA 4.0) — daily
+       OHLCV 2009-01 to 2017-03, including a partial slice of
+       names that were later delisted.
+     - `fja05680/sp500` on GitHub (MIT) — point-in-time S&P 500
+       constituency 1996-2026, the anti-survivorship-bias overlay.
+     - `datasets/finance-vix` on GitHub (PDDL) — daily VIX
+       2004-2026, used for Stage E regime signals.
+  2. **Support group (four sources).** These are used for
+     cross-validation, official records, and specific gap-filling,
+     not as the primary price source:
+     - SEC EDGAR — official filings including delisting notices;
+       requires a descriptive User-Agent header (verified via
+       CIK 320193 Apple submissions, HTTP 200, 164 KB).
+     - Yahoo Finance v8 chart
+       (`query1.finance.yahoo.com/v8/finance/chart/{symbol}`) —
+       cross-check price for currently-listed symbols; requires a
+       browser User-Agent; delisted symbols confirmed absent (404
+       for BBI and FDO).
+     - Nasdaq Trader symbol directory — daily active-symbol list
+       (verified: 349 KB of pipe-separated CSV, columns Symbol,
+       Security Name, Market Category, Test Issue, Financial
+       Status, Round Lot Size, ETF, NextShares).
+     - Twelve Data — cross-check secondary; the public `demo` key
+       returns real recent data; a free registration gives 8
+       requests/minute and 800/day.
+  3. **Deferred sources (not part of the design today).** Kept
+     available as future backups without further work: Alpha
+     Vantage (25 req/day free), Tiingo (end-of-day only free),
+     Polygon.io (5 req/min free), Finnhub (one year history
+     free), FRED (macro only). Stooq remains the single source
+     genuinely blocked from the current cloud environment
+     (probe returned an immediate timeout).
+  4. **Residual gap, disclosed explicitly.** Symbols delisted
+     between 2018 and 2026 have no price series available from
+     any of the free cloud sources above. SEC EDGAR can supply
+     the delisting date but not the pre-delisting price series.
+     This introduces a residual survivorship bias in any
+     calibration or backtest that targets the 2018-2026 slice;
+     the bias is smaller than the pre-D-0042 baseline (which had
+     no verified 2018-2026 price source at all) but not zero.
+     Every calibration or backtest produced under this
+     architecture must state this limit in its report; no result
+     is presented as if the gap were closed.
+  5. **Corrective docs update.** Prior notes in the project
+     (`docs/trading/data-acquisition-pilot.md` claiming SEC and
+     Nasdaq Trader are blocked, `docs/trading/free-data-
+     verification-pass.md` downgrading Yahoo) are superseded by
+     the probe evidence recorded here. Those older files remain
+     for their research/design-pattern value; the current truth
+     about cloud reachability is this decision plus the new
+     §8 added to `docs/architecture/research-sources.md`.
+- **Rationale:** The two-group split keeps the calibration
+  workload on the four highest-quality sources and preserves the
+  four support sources for cross-validation and official records
+  without cluttering the primary path. Zero paid providers are
+  authorized; D-0028's rejection of paid providers is preserved.
+  Explicit disclosure of the residual gap keeps the CLAUDE.md
+  rules against claiming profitability without evidence intact.
+- **Safety notes:**
+  - Paper trading only remains in force (D-0002 unchanged).
+  - Approved strategy (D-0001), ladder rules (D-0007), trailing
+    math (D-0004, D-0008), active-floor priority, and per-symbol
+    Controller approval (D-0039 §3) are all unchanged.
+  - This decision authorizes calibration methodology on the
+    named sources; it does NOT authorize starting a calibration
+    run. Any numeric parameter derived from this data still
+    needs a future decision to move it from PROPOSED to APPROVED,
+    per D-0039 §2's deferral.
+- **Supersedes:** the "verdict C: data insufficient" position
+  recorded across `docs/trading/data-acquisition-pilot.md`,
+  `docs/trading/free-data-verification-pass.md`, and B16 in
+  `pre-apply-checklist.md`. Complements D-0026 (dynamic
+  universe principle) and D-0039 (universe boundary and
+  numeric-parameter deferral) unchanged.
