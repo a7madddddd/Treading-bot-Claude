@@ -32,20 +32,16 @@ from __future__ import annotations
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
-# Renamed per D-0041 (America/New_York). The legacy `D0021_TIMEZONE`
-# and `D0021_CHECK_TIMES_CT` symbols are retained as aliases below so
-# any external caller that imported the old names does not break; they
-# now point at the D-0041 values.
+# Per D-0041 the D-0021 schedule runs in America/New_York. The
+# constants below carry an explicit `_ET` suffix so any future
+# market's routine (per D-0041 §2) can add its own suffixed
+# constants without name collisions.
 D0021_TIMEZONE_ET = ZoneInfo("America/New_York")
 
 D0021_CHECK_TIMES_ET = tuple(time(hour=h, minute=30) for h in range(9, 16))
 """09:30, 10:30, 11:30, 12:30, 13:30, 14:30, 15:30 -- the exact 7
 scheduled passes per D-0041's realignment of D-0021 (identical
 wall-clock moments to the pre-D-0041 CT labels)."""
-
-# Backwards-compatible aliases -- same objects, new-TZ values.
-D0021_TIMEZONE = D0021_TIMEZONE_ET
-D0021_CHECK_TIMES_CT = D0021_CHECK_TIMES_ET
 
 DEFAULT_TOLERANCE_SECONDS = 90.0
 """How close `now` must be to a scheduled check time to count as that
