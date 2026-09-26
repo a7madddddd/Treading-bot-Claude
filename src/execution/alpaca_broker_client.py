@@ -75,6 +75,13 @@ _TERMINAL_ALPACA_STATUSES = frozenset({
 _ACCEPTED_SIDES = frozenset({"buy", "sell"})
 
 
+# The one and only host the paper-only guardrail (D-0002) accepts by
+# default. A future decision authorizing live trading must extend this
+# via the `allow_non_paper_url=True` opt-in on the constructor, never
+# by silently widening this constant.
+_APPROVED_PAPER_HOST = "paper-api.alpaca.markets"
+
+
 HttpResponse = Tuple[int, bytes]  # (http_status_code, response_body_bytes)
 HttpTransport = Callable[..., HttpResponse]  # (method, url, *, headers, body) -> HttpResponse
 
@@ -116,14 +123,22 @@ class AlpacaBrokerClient(BrokerClient):
         # is deliberately uncircumventable except by an explicit,
         # documented `allow_non_paper_url=True` opt-in reserved for a
         # future signed decision that authorizes live trading.
-        if not allow_non_paper_url and "paper-api" not in normalized:
-            raise ValueError(
-                "Refusing to construct AlpacaBrokerClient against a non-paper "
-                "URL. Paper trading only (D-0002). Expected the host to "
-                "contain 'paper-api' (i.e. https://paper-api.alpaca.markets). "
-                "If you have an approved decision authorizing live trading, "
-                "pass allow_non_paper_url=True explicitly."
-            )
+        #
+        # The check compares the parsed HOST against the exact approved
+        # paper host -- a substring test on the URL is not enough because
+        # a URL like "https://api.alpaca.markets/paper-api" would pass a
+        # substring test while its host is actually the live account.
+        if not allow_non_paper_url:
+            host = (urllib.parse.urlparse(normalized).hostname or "").lower()
+            if host != _APPROVED_PAPER_HOST:
+                raise ValueError(
+                    f"Refusing to construct AlpacaBrokerClient against a "
+                    f"non-paper host. Paper trading only (D-0002). Expected "
+                    f"host {_APPROVED_PAPER_HOST!r}, parsed host {host!r} "
+                    f"from URL {normalized!r}. If you have an approved "
+                    f"decision authorizing live trading, pass "
+                    f"allow_non_paper_url=True explicitly."
+                )
         self._config = _AlpacaConfig(
             base_url=normalized,
             key_id=key_id,

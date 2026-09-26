@@ -102,6 +102,27 @@ class TestConstruction(unittest.TestCase):
                 http_transport=_StubTransport(),
             )
 
+    def test_rejects_paper_api_in_path_but_not_host(self):
+        # Substring-only guards would accept this deceptive URL: the
+        # host is the LIVE account api.alpaca.markets, and the string
+        # 'paper-api' appears only in the path. The guard must reject.
+        with self.assertRaises(ValueError) as ctx:
+            AlpacaBrokerClient(
+                base_url="https://api.alpaca.markets/paper-api",
+                key_id="k", secret_key="s",
+                http_transport=_StubTransport(),
+            )
+        self.assertIn("api.alpaca.markets", str(ctx.exception))
+        self.assertIn("paper-api.alpaca.markets", str(ctx.exception))
+
+    def test_rejects_paper_api_as_subdomain_of_wrong_host(self):
+        with self.assertRaises(ValueError):
+            AlpacaBrokerClient(
+                base_url="https://paper-api.evil.example.com",
+                key_id="k", secret_key="s",
+                http_transport=_StubTransport(),
+            )
+
     def test_paper_url_variants_accepted(self):
         # All these contain 'paper-api' and must be accepted.
         for url in (
