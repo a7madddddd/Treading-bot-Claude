@@ -2013,3 +2013,94 @@ Controller approval per CLAUDE.md §9.
 - **Supersedes:** the letter of D-0015 for the routine file itself.
   Does NOT supersede D-0015's spirit; the spirit continues in the
   new template.
+
+## D-0041 — Scheduling timezone: America/New_York for the US routine; per-routine TZ principle for future markets; supersedes D-0005 and D-0020; realigns D-0021 anchors
+
+- **Date:** 2026-09-26
+- **Status:** APPROVED
+- **Approved by:** Controller
+- **Context:** D-0005 (2026-09-14) and D-0020 (2026-09-14) tied the
+  scheduling clock to America/Chicago. The US equity market itself
+  (NYSE and NASDAQ) is documented and operated on America/New_York;
+  Alpaca — the only broker this project talks to today (D-0038) —
+  serves that exact market. During a session-level review, the
+  Controller also raised the question of whether the "universe trade"
+  concept in D-0026 implies non-US markets. It does not: D-0026's
+  scope is "US stocks and eligible ETFs", and no non-US broker or
+  market data source is authorized. However, the Controller wants
+  the scheduling architecture to be future-friendly so a non-US
+  market can be added later without touching the current routine.
+- **Decision:**
+  1. **Timezone for the current US routine:** America/New_York.
+     - Every routine that talks to the US equity market via Alpaca
+       is scheduled in America/New_York.
+     - The scheduler remains TZ-aware; DST transitions
+       (EST ↔ EDT) are handled automatically.
+     - Fixed-UTC cron is explicitly forbidden for market-anchored
+       routines (this clause of D-0020 is preserved and re-stated).
+  2. **Per-routine timezone principle (future markets).**
+     - Each routine carries its own timezone as part of its
+       metadata; the system does not enforce a single global TZ.
+     - If a future decision authorizes a non-US market via a
+       different broker, that market's routine is added with its
+       own market-native timezone (e.g. Asia/Tokyo for a hypothetical
+       TSE routine) and the existing US routine is not modified.
+  3. **Realigned D-0021 anchor times, in the new TZ (unchanged
+     market wall-clock).**
+     - `paper-trading-monitor` (the D-0040 symbol-agnostic template):
+       first pass at **09:30 America/New_York** (US regular-session
+       open), then hourly on the half-hour through **15:30 ET**. Cron
+       under a TZ-aware scheduler: `30 9-15 * * 1-5`.
+     - The pre-market research anchor previously described as
+       "07:00 CT" (D-0021) is re-expressed as **08:00 America/New_York**.
+       It is the same wall-clock moment; only the label changes.
+     - The `tsla-wheel-daily-summary` end-of-day anchor previously
+       described as "14:55 CT" (D-0021) is re-expressed as
+       **15:55 America/New_York**. Same wall-clock moment; only the
+       label changes.
+  4. **What is NOT changed by this decision.**
+     - D-0006 (US market trading calendar: weekdays plus US market
+       holidays and early-close days) is unchanged. Only the calendar
+       for the US routine is defined; adding a non-US market later
+       will require its own calendar decision.
+     - D-0026 is unchanged: scope remains "US stocks and eligible
+       ETFs", and the dynamic-universe boundary in
+       `docs/architecture/universe.md` is unchanged.
+     - D-0001 (approved strategy), D-0002 (paper trading only),
+       D-0007 (approval window), D-0033 (ladder Limit price),
+       D-0034 (Ladder 2 partial-fill), D-0011 (debounce),
+       D-0038 (credentials/host), D-0039 (universe boundary and
+       broker-derived symbolic capital), and D-0040 (symbol-agnostic
+       routine template) are all unchanged.
+     - Alpaca remains the sole broker. No non-US broker, no non-US
+       data source, and no non-US universe is authorized by this
+       decision.
+- **Rationale:**
+  - New York is the actual clock defining NYSE and NASDAQ opens and
+    closes; the routine, the market data, and the broker all live on
+    that clock. Chicago and New York observe US DST identically, so
+    the functional behavior is unchanged; the label is the only
+    difference for today's routine.
+  - Making the timezone per-routine (rather than system-wide) turns
+    a future non-US market into an additive change instead of a
+    rewrite of the scheduler.
+  - Being explicit that this decision does NOT authorize non-US
+    markets protects against the misreading that "universe trade"
+    means "global market trade" and keeps the CLAUDE.md rule against
+    claiming capability without evidence.
+- **Safety notes:**
+  - Paper trading only remains in force (D-0002 unchanged).
+  - Approved strategy (D-0001), ladder rules (D-0007), trailing math
+    (D-0004, D-0008), and active-protective-floor priority are all
+    unchanged.
+  - Per-symbol Controller approval (D-0039 §3) is unchanged.
+  - The routine's wall-clock behavior does not change on 2026-09-26;
+    only the label used to describe it changes.
+- **Supersedes:**
+  - D-0005 (timezone: America/Chicago) — superseded.
+  - D-0020 (Chicago DST-aware clarification) — superseded, except
+    for the "TZ-aware scheduler required; fixed UTC forbidden"
+    principle which is preserved by §1 above.
+  - D-0021 (schedule anchors) — realigned to America/New_York with
+    identical wall-clock moments; the anchor times are re-expressed
+    in the new TZ.
