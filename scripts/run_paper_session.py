@@ -159,6 +159,11 @@ def main() -> int:
     parser.add_argument("--skip-confirm", action="store_true",
                         help="Skip the grace-period wait (unsafe; only for "
                              "scripted tests).")
+    parser.add_argument("--universe-mode", choices=("static", "snapshot"),
+                        default="static",
+                        help="static=StaticWatchlistSource (from --symbols); "
+                             "snapshot=SnapshotUniverseSource reading today's "
+                             "D-0026 snapshot from SQLite (B22).")
     args = parser.parse_args()
 
     key_id = _require_env("ALPACA_API_KEY_ID")
@@ -231,7 +236,15 @@ def main() -> int:
     execution_service = ExecutionService(execution_repo, proposal_repo,
                                          trade_repo, broker,
                                          risk_enforcer=risk_enforcer)
-    watchlist = StaticWatchlistSource(symbols)
+    if args.universe_mode == "snapshot":
+        from d0026.sqlite_repository import SqliteSnapshotRepository
+        from engine.snapshot_watchlist import SnapshotUniverseSource
+        snapshot_repo = SqliteSnapshotRepository(conn)
+        watchlist = SnapshotUniverseSource(
+            snapshot_repo, fallback_watchlist=symbols,
+        )
+    else:
+        watchlist = StaticWatchlistSource(symbols)
     lock = EngineLock(conn)
 
     engine = Engine(
