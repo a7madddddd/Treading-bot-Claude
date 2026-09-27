@@ -287,39 +287,67 @@ def _extract_output_text(payload: dict) -> str:
 
 
 def _extract_annotations(payload: dict) -> Tuple[EvidenceSource, ...]:
-    """Perplexity annotations carry citation URLs. Shape varies; we
-    handle both `annotations[].url` and `annotations[].url_citation.url`."""
+    """Extracts citation URLs. Real Perplexity `/v1/responses` places
+    them in TWO shapes; we handle both:
+
+    - `output[N].results[].url` — the search-tool result block that
+      appears alongside the assistant message (typical Sonar/agent
+      responses today).
+    - `output[N].content[].annotations[].url`
+      / `annotations[].url_citation.url` — the OpenAI-Responses-style
+      inline citation objects (used when annotations are non-empty).
+
+    Missing/malformed shapes never raise; they simply contribute
+    nothing to the returned tuple."""
 
     out = payload.get("output")
     if not isinstance(out, list):
         return ()
     sources: List[EvidenceSource] = []
+    seen: set = set()
     now = datetime.now(timezone.utc)
+
+    def _add(url: object, title: object) -> None:
+        if not isinstance(url, str) or not url or url in seen:
+            return
+        seen.add(url)
+        sources.append(EvidenceSource(
+            url=url,
+            title=title if isinstance(title, str) and title else url,
+            retrieval_timestamp=now,
+        ))
+
     for item in out:
         if not isinstance(item, dict):
             continue
+
+        # Shape 1: search-tool result block.
+        results = item.get("results")
+        if isinstance(results, list):
+            for r in results:
+                if isinstance(r, dict):
+                    _add(r.get("url"),
+                         r.get("title") or r.get("name"))
+
+        # Shape 2: OpenAI-Responses-style inline annotations.
         content = item.get("content")
-        if not isinstance(content, list):
-            continue
-        for piece in content:
-            if not isinstance(piece, dict):
-                continue
-            anns = piece.get("annotations", [])
-            if not isinstance(anns, list):
-                continue
-            for a in anns:
-                if not isinstance(a, dict):
+        if isinstance(content, list):
+            for piece in content:
+                if not isinstance(piece, dict):
                     continue
-                url = a.get("url")
-                title = a.get("title", "")
-                if not url and isinstance(a.get("url_citation"), dict):
-                    url = a["url_citation"].get("url")
-                    title = a["url_citation"].get("title", title)
-                if isinstance(url, str) and url:
-                    sources.append(EvidenceSource(
-                        url=url, title=title or url,
-                        retrieval_timestamp=now,
-                    ))
+                anns = piece.get("annotations", [])
+                if not isinstance(anns, list):
+                    continue
+                for a in anns:
+                    if not isinstance(a, dict):
+                        continue
+                    url = a.get("url")
+                    title = a.get("title", "")
+                    if not url and isinstance(a.get("url_citation"), dict):
+                        url = a["url_citation"].get("url")
+                        title = a["url_citation"].get("title", title)
+                    _add(url, title)
+
     return tuple(sources)
 
 

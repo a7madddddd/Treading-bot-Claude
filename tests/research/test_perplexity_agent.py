@@ -107,6 +107,69 @@ class TestHappyPath(unittest.TestCase):
         self.assertNotIn("preset", sent)
 
 
+class TestSourceExtraction(unittest.TestCase):
+    def test_results_block_shape(self):
+        """Real Perplexity response places sources in
+        `output[N].results[].url`, not in annotations. Regression
+        guard against the pre-fix bug that lost every source."""
+        payload = {
+            "id": "resp_x", "model": "openai/gpt-6-luna",
+            "output": [
+                {
+                    "type": "web_search_call",
+                    "queries": ["q"],
+                    "results": [
+                        {"url": "https://a.example", "title": "A"},
+                        {"url": "https://b.example", "name": "B"},
+                        {"url": "https://c.example"},
+                        {"url": "https://a.example", "title": "dup"},
+                    ],
+                },
+                {
+                    "type": "message",
+                    "content": [{
+                        "type": "output_text",
+                        "text": ("SUMMARY: ok.\nCONFIDENCE: LOW\n"),
+                        "annotations": [],
+                    }],
+                },
+            ],
+        }
+        transport = _RecordingTransport([HttpResponse(200, json.dumps(payload).encode())])
+        client = PerplexityAgentClient(api_key="k", transport=transport,
+                                       sleep_fn=lambda s: None)
+        report = client.research_market("Q?")
+        urls = [s.url for s in report.sources]
+        self.assertEqual(urls, [
+            "https://a.example", "https://b.example", "https://c.example",
+        ])
+        self.assertEqual(report.sources[0].title, "A")
+        self.assertEqual(report.sources[1].title, "B")
+        self.assertEqual(report.sources[2].title, "https://c.example")
+
+    def test_both_shapes_merged_and_deduped(self):
+        payload = {
+            "id": "resp_x", "model": "openai/gpt-6-luna",
+            "output": [
+                {"results": [{"url": "https://a.example", "title": "A"}]},
+                {"content": [{
+                    "type": "output_text", "text": "SUMMARY: ok\nCONFIDENCE: LOW\n",
+                    "annotations": [
+                        {"url": "https://b.example", "title": "B"},
+                        {"url_citation": {"url": "https://a.example",
+                                          "title": "dup"}},
+                    ],
+                }]},
+            ],
+        }
+        transport = _RecordingTransport([HttpResponse(200, json.dumps(payload).encode())])
+        client = PerplexityAgentClient(api_key="k", transport=transport,
+                                       sleep_fn=lambda s: None)
+        report = client.research_market("Q?")
+        urls = [s.url for s in report.sources]
+        self.assertEqual(urls, ["https://a.example", "https://b.example"])
+
+
 class TestErrors(unittest.TestCase):
     def test_migration_required_is_critical(self):
         body = json.dumps({"error": {"code": "agent_api_migration_required",
