@@ -82,8 +82,13 @@ def drop_bottom_percentile(
         return tuple(kvi[2] for kvi in keyed), tuple(missing)
 
     n = len(keyed)
-    drop_n = min(n, max(1, _ceil(n * bottom_fraction))
-                 if bottom_fraction > 0 else 0)
+    # Standard rounding: `n * bottom_fraction` is the fractional
+    # number of items to drop; round-half-to-even (Python's `round`)
+    # gives the intuitively correct count. For a 1-item pool with
+    # bottom_fraction < 0.5, the item is kept (nothing to compare
+    # against). For pool >= 5, results align with what a human would
+    # expect: drop 1 of 5 (20%), drop 2 of 10 (20%), etc.
+    drop_n = min(n, round(n * bottom_fraction)) if bottom_fraction > 0 else 0
     keyed.sort(key=lambda kvi: (kvi[0], kvi[1]))  # ascending
     dropped_ids = {keyed[i][1] for i in range(drop_n)}
     survivors = tuple(kvi[2] for kvi in keyed if kvi[1] not in dropped_ids)

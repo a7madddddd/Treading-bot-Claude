@@ -69,6 +69,29 @@ class TestDropBottomPercentile(unittest.TestCase):
         self.assertNotIn(("b", None), surv)
         self.assertIn(("b", None), rej)
 
+    def test_single_item_pool_never_drops_at_small_fraction(self):
+        """Regression: pre-fix `drop_bottom_percentile([5], 0.2)` returned
+        `((), (5,))` because a `max(1, ...)` clause forced dropping at
+        least one item. The corrected behavior uses standard rounding,
+        so `round(1 * 0.2) = 0` and the item is kept."""
+        surv, rej = drop_bottom_percentile([5], lambda x: x,
+                                           bottom_fraction=0.2)
+        self.assertEqual(surv, (5,))
+        self.assertEqual(rej, ())
+
+    def test_two_item_pool_at_20pct_keeps_both(self):
+        surv, rej = drop_bottom_percentile([1, 2], lambda x: x,
+                                           bottom_fraction=0.2)
+        self.assertEqual(len(surv), 2)
+        self.assertEqual(rej, ())
+
+    def test_ten_items_at_20pct_drops_two(self):
+        surv, rej = drop_bottom_percentile(list(range(10)),
+                                           lambda x: x,
+                                           bottom_fraction=0.2)
+        self.assertEqual(sorted(surv), list(range(2, 10)))
+        self.assertEqual(sorted(rej), [0, 1])
+
 
 class TestRankPercentile(unittest.TestCase):
     def test_ranks_in_zero_to_one(self):
