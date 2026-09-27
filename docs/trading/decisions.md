@@ -2393,3 +2393,80 @@ Controller approval per CLAUDE.md §9.
   registered-key entries; complements it. Does not alter the
   fundamental two-group architecture, the residual-gap
   disclosure, or the numeric-parameter deferral.
+
+---
+
+## D-0045 — First real-case paper testing plan; B17 (durable host) explicitly deferred
+
+**Date:** 2026-09-27
+**Decided by:** Controller
+**Status:** APPROVED
+
+### Context
+
+B16's data-source review closed. The only remaining pre-APPLY item
+that was not `RESOLVED` was **B17 — choose a durable always-on host
+before live paper execution starts**. The Controller decided that
+choosing a durable host is NOT the priority now; the priority is to
+exercise the full paper-trading cycle (Trigger → Proposal →
+Telegram Approval → Alpaca Paper Order → Fill → Floor / Trailing)
+on real data first, on the current cloud session, and only then
+choose a host based on what those runs teach us.
+
+### Decision
+
+1. **B17 is DEFERRED.** The current Claude Code cloud session is the
+   host for real-case paper testing. Its ephemeral nature is
+   accepted; runs are bounded and can be restarted at will. B17 stays
+   `IN DESIGN` on the pre-apply checklist with the deferral called
+   out; APPLY does not depend on B17 while this deferral holds.
+2. **Approved first watchlist for real-case testing:** `TSLA`,
+   `AAPL`, `SPY`. TSLA is already TEST-ONLY under D-0026 §5. AAPL
+   and SPY are approved by this decision solely for real-case cycle
+   testing and are logged here for that purpose (they do not
+   promote either symbol to any strategy role beyond that).
+3. **Staged rollout, not simultaneous.** The first session runs
+   TSLA alone so a single full cycle can be observed cleanly.
+   Session 2 adds AAPL. Session 3 adds SPY. Escalation happens only
+   after the prior session was observed end-to-end without an
+   unexplained event.
+4. **Session runner design gates:**
+   - Time-bounded (`--max-hours`, default 6h). No unbounded
+     `run_forever()` on an ephemeral host.
+   - Pre-flight before Engine start: Alpaca `/v2/account`,
+     Alpaca `/v2/clock`, Telegram `getMe`, one Telegram
+     summary, then a grace period (default 30s) so the
+     Controller can Ctrl+C to abort a bad launch before any
+     Initial Entry proposal is created.
+   - Clean shutdown on SIGINT/SIGTERM, releasing `EngineLock`
+     and sending a Telegram close notice.
+   - Paper endpoint enforced (existing `AlpacaBrokerClient`
+     host-equality guard; no code change here).
+5. **What real-case testing is expected to answer:**
+   - Does the full Trigger → Proposal → Approval → Submit →
+     Fill → Floor lifecycle actually work end-to-end against a
+     real Alpaca Paper account and a real Telegram round-trip?
+   - Does `EngineLock` behave correctly on real restart?
+   - Are notifications legible on the Controller's phone?
+   - What operational rough edges appear that unit tests could
+     not have caught?
+
+### Consequences
+
+- **What is NOT approved by this decision:**
+  - Live trading (paper-only, unchanged).
+  - Any change to the approved strategy math (D-0004, D-0007,
+    D-0008, D-0009, D-0010, D-0011, D-0033, D-0034).
+  - Any numeric parameter under B15/B16 (still deferred per
+    D-0039 §2). The engine trades on this manual list, not a
+    calibrated universe.
+- **What is approved:**
+  - Adding `scripts/run_paper_session.py` — a runner that wires
+    the existing components together under the design gates
+    above. No new business logic, no new persistence, no
+    change to the strategy engine.
+  - `docs/trading/pre-apply-checklist.md`'s B17 row annotated
+    as DEFERRED-BY-CONTROLLER (D-0045).
+- **Rollback:** stopping the Python process with SIGINT or
+  SIGTERM. The state is durable in SQLite; the next session
+  resumes via `Engine.recover()`.
