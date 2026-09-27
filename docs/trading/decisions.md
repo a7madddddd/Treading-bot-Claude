@@ -2476,3 +2476,88 @@ choose a host based on what those runs teach us.
 - **Rollback:** stopping the Python process with SIGINT or
   SIGTERM. The state is durable in SQLite; the next session
   resumes via `Engine.recover()`.
+
+---
+
+## D-0046 — Research subsystem implementation contract
+
+**Date:** 2026-09-27
+**Decided by:** Controller
+**Status:** APPROVED
+
+### Context
+
+D-0019 approved Perplexity + Capitol Trades as the two independent
+research sources. D-0037 documented the Perplexity Agent API
+migration to `POST /v1/responses`. Neither decision built the
+Python implementation. This decision closes that gap.
+
+### Decisions
+
+1. **Schedule (Controller decision 1B):** Research runs **twice
+   daily** — once before market open and once after market close.
+   Concrete cron times chosen at deployment; not fixed here.
+2. **Persistence (2A):** Records persist to `docs/trading/research-log.md`
+   AND SQLite (`research_reports`, `capitol_trades_records`,
+   `research_comparisons`). Migration 0005 introduces the tables and
+   bumps `APPROVED_SCHEMA_VERSION` from 4 to 5.
+3. **CapitolTrades scope (3A):** Ro Khanna only (per D-0019). The
+   scraper is politician-parameterized; adding more requires a new
+   Controller decision.
+4. **Perplexity model (4A):** Default request uses `preset: "medium"`;
+   probing today served `openai/gpt-6-luna`. An explicit
+   `model="provider/name"` is supported for reproducibility. This
+   choice matches the documented Perplexity `/v1/responses` contract
+   verified live before implementation.
+5. **Integration (5A):** Research is an **independent process**.
+   `scripts/run_research_cycle.py` runs one pass, then exits. The
+   trading Engine never imports research code and cannot be affected
+   by a research failure. Alignment with CLAUDE.md §5 — LLM output
+   never touches the trading path.
+6. **Outputs (6C):** Every cycle produces THREE outputs simultaneously:
+   Markdown append in `research-log.md`, SQLite row, and a Telegram
+   OPTIONAL-level summary per symbol.
+7. **Commit cadence (7B):** Small commits per module — models →
+   perplexity → capitol_trades → synthesis → log_writer →
+   sqlite_repository → runner → tests — each independently pushable
+   and tested.
+
+### Contract summary
+
+- `src/research/models.py` — frozen dataclasses (Finding,
+  EvidenceSource, ResearchReport, CapitolTradesRecord,
+  ComparisonRecord) with TZ-aware timestamps.
+- `src/research/perplexity_agent.py` — `PerplexityAgentClient` with
+  HttpTransport injection (same pattern as `AlpacaBrokerClient`).
+  Never uses `/chat/completions`. `agent_api_migration_required`
+  raises `PerplexityMigrationRequiredError` (CRITICAL, blocking).
+- `src/research/capitol_trades_scraper.py` — deterministic HTML
+  parse. If the schema markers are missing,
+  `CapitolTradesParserBrokenError` is raised so the runner can emit
+  a CRITICAL notification (research-sources.md §5) instead of
+  fabricating records.
+- `src/research/synthesis.py` — pure Python; produces
+  `ComparisonRecord` with overlap / contradictions / missing /
+  hypothesis / confidence / suggested_experiment.
+- `src/research/log_writer.py` — append-only Markdown writer with
+  per-id deduplication.
+- `src/research/sqlite_repository.py` — round-trip persistence.
+- `scripts/run_research_cycle.py` — orchestrates the cycle.
+- Tests: `tests/research/` — models, perplexity adapter, scraper,
+  synthesis, log writer, SQLite repository.
+
+### What is NOT approved by this decision
+
+- No autonomous trading, ranking, or ladder decision based on
+  research output. Advisory only, per CLAUDE.md §5.
+- No expansion of the CapitolTrades scope beyond Ro Khanna.
+- No paid Perplexity feature or non-agent Perplexity endpoint.
+
+### Consequences
+
+- Closes the "documented but not implemented" gap for the research
+  subsystem (from the 2026-09-27 audit).
+- Adds `B19 Research subsystem` to `pre-apply-checklist.md` as
+  **CLOSED** by this decision.
+- Trading Engine, verification-plan sections, and paper-session
+  runner are all unaffected.
