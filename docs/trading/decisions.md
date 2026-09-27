@@ -2425,11 +2425,17 @@ choose a host based on what those runs teach us.
    and SPY are approved by this decision solely for real-case cycle
    testing and are logged here for that purpose (they do not
    promote either symbol to any strategy role beyond that).
-3. **Staged rollout, not simultaneous.** The first session runs
-   TSLA alone so a single full cycle can be observed cleanly.
-   Session 2 adds AAPL. Session 3 adds SPY. Escalation happens only
-   after the prior session was observed end-to-end without an
-   unexplained event.
+3. **Full watchlist from session 1 (revised 2026-09-27).** The
+   Controller reviewed the earlier "staged rollout" plan and
+   correctly pointed out that the three proposals are per-symbol
+   distinguishable (each Telegram message carries the symbol, the
+   `proposal_id`, and its own Approve/Reject buttons), and that
+   `Engine._check_watchlist` iterates symbols sequentially inside
+   one trigger check with no shared state or race — so a
+   three-symbol first session exercises strictly more of the code
+   than a one-symbol first session (multi-symbol iteration path)
+   without any coupling risk. The session runs all three symbols
+   from the start; the earlier staged plan is superseded.
 4. **Session runner design gates:**
    - Time-bounded (`--max-hours`, default 6h). No unbounded
      `run_forever()` on an ephemeral host.

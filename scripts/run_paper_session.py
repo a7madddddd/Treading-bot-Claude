@@ -7,9 +7,12 @@ long-polling for approval decisions. Paper trading only. No live
 orders anywhere in this file.
 
 Design gates (all approved under D-0045, 2026-09-27):
-  1. Staged rollout. Default `--symbols` is `TSLA` alone. AAPL and SPY
-     may be added in later sessions once TSLA-only was observed to
-     work end-to-end.
+  1. Approved watchlist. Default `--symbols` is `TSLA,AAPL,SPY` — the
+     full Controller-approved test set from D-0045. `_check_watchlist`
+     iterates the symbols sequentially in one trigger check, so the
+     three Initial Entry proposals arrive as an ordered burst (a few
+     hundred milliseconds apart) with per-proposal ids and per-symbol
+     Approve/Reject buttons, never a race.
   2. Time-bounded run. `--max-hours` (default 6) caps the session so a
      forgotten process cannot outlive the cloud container's window.
   3. Pre-flight before entering the loop: Alpaca /v2/account,
@@ -140,8 +143,9 @@ def _install_signal_handlers(stop_flag: list) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="D-0045 paper-session runner")
-    parser.add_argument("--symbols", default="TSLA",
-                        help="Comma-separated watchlist (default: TSLA only)")
+    parser.add_argument("--symbols", default="TSLA,AAPL,SPY",
+                        help="Comma-separated watchlist "
+                             "(default: TSLA,AAPL,SPY per D-0045)")
     parser.add_argument("--max-hours", type=float, default=6.0,
                         help="Hard wall-clock cap on session length (default: 6)")
     parser.add_argument("--reconcile-seconds", type=float, default=30.0,
