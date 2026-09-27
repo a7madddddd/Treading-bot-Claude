@@ -2201,3 +2201,103 @@ Controller approval per CLAUDE.md §9.
   `pre-apply-checklist.md`. Complements D-0026 (dynamic
   universe principle) and D-0039 (universe boundary and
   numeric-parameter deferral) unchanged.
+
+## D-0043 — B16 Stage 3 executed; D-0042 architecture confirmed; Polygon free tier does not serve delisted names
+
+- **Date:** 2026-09-27
+- **Status:** APPROVED
+- **Approved by:** Controller
+- **Context:** D-0042 approved the two-group free calibration data
+  architecture (four Primary + four Support sources + Polygon Flat
+  Files deferred). Stage 3 of the Controller-directed four-stage
+  methodology (Categorize → Test → Try use cases → Review
+  registration value) ran the use-case verification against all
+  thirteen probes on 2026-09-27 in a fresh verification session that
+  inherited the freshly-rotated Environment Variables. Twelve of
+  thirteen use cases passed with real, numeric evidence; one failure
+  yielded an actionable finding about Polygon's free tier.
+- **Results:**
+  1. **12/13 PASS on real live endpoints:**
+     - Alpaca SIP daily 2025-01-02..08 for AAPL: 5 bars, close range
+       242.21–245.00.
+     - Yahoo v8 chart 2020-01 for AAPL: 6 bars, close range 74.36–77.41.
+     - CBOE VIX History CSV: 9,282 daily rows from 01/02/1990 to
+       09/25/2026 (deeper than the GitHub finance-vix dataset).
+     - SEC EDGAR CIK 0001085734 (Blockbuster, delisted 2010):
+       164 8-K filings from 2003-10-21 to 2012-01-10 — proves
+       delisted-company records remain accessible with a
+       descriptive User-Agent.
+     - Nasdaq Trader `nasdaqtraded.txt`: 13,289 symbols in the
+       daily-active directory.
+     - `fja05680/sp500` (`sp500_ticker_start_end.csv` via
+       raw.githubusercontent.com — the GitHub API path is proxied
+       in this environment): 1,262 point-in-time membership rows.
+     - `datasets/finance-vix` (GitHub): 9,279 daily rows, last row
+       2026-09-22.
+     - Polygon REST daily 2025-01-02..08 for AAPL: 5 bars, close
+       range 242.21–245.00 — matches Alpaca SIP exactly.
+     - FRED UNRATE last 5 observations: latest 2026-08-01 = 4.1 %,
+       oldest 2026-04-01 = 4.3 %.
+     - Alpha Vantage TIME_SERIES_DAILY compact for IBM: 100 days,
+       2026-05-05..2026-09-25; no `Error Message` / `Information` /
+       `Note` field in the body (proves the key is valid, not just
+       that HTTP 200 was returned).
+     - Tiingo daily 2025-01-02..08 for AAPL: 5 days, close range
+       242.21–245.00 — matches Alpaca SIP and Polygon REST.
+     - Finnhub AAPL quote: current 341.07, prev-close 335.92,
+       high 341.67.
+  2. **Cross-validation confirmed on real data.** Three
+     independent price sources (Alpaca SIP, Polygon REST, Tiingo)
+     return identical AAPL close ranges 242.21–245.00 for the
+     2025-01-02..08 window. Two independent VIX sources (CBOE
+     History, GitHub finance-vix) return matching daily row
+     counts within a handful of rows (calendar / holiday
+     alignment). This is much stronger integrity evidence than
+     Stage 2's shape checks and validates the two-group design.
+  3. **One FAIL, actionable:** Polygon delisted probe for FDO
+     (Family Dollar, delisted 2015) in June 2014 returned
+     HTTP 403 — Polygon's free tier does NOT serve delisted
+     symbols. This is not a bug in our design; it confirms the
+     residual gap D-0042 §4 already disclosed:
+     "Symbols delisted between 2018 and 2026 have no price
+     series available from any of the free cloud sources."
+     Polygon free does not close that gap.
+  4. **Polygon Flat Files (S3):** three env vars present; live
+     S3 probe deferred per D-0042 (option (c)); no `boto3` /
+     `awscli` installed and no third-party dependency added.
+- **Decision:**
+  1. D-0042's two-group architecture is confirmed on real live
+     data. No change to the Primary or Support groups.
+  2. The residual gap disclosed in D-0042 §4 is confirmed to
+     remain open: free Polygon does not fix it. Any future
+     decision to close it will require either a paid provider
+     (currently rejected by D-0028) or a Controller-approved
+     methodology that operates without pre-delisting price
+     series (e.g. accepting the survivorship bias with an
+     explicit disclosure in every calibration report).
+  3. Stage 3 is closed as PASS on the passing 12 sources.
+     Polygon delisted is closed as WON'T-FIX under the free-only
+     policy; the negative result is recorded here explicitly.
+  4. B16 status in `pre-apply-checklist.md` moves to
+     "Stage 3 executed, 12/13 PASS, D-0042 architecture confirmed".
+- **Rationale:** Recording the Stage 3 execution as its own
+  decision (rather than silently mutating D-0042) preserves the
+  append-only decision log required by `CLAUDE.md §7`. The
+  triple-cross-validation match is strong quality evidence that
+  materially reduces the risk of a silent bad-data calibration
+  and merits an explicit APPROVED entry.
+- **Safety notes:**
+  - Paper trading only remains in force (D-0002 unchanged).
+  - Approved strategy (D-0001), ladder rules (D-0007), trailing
+    math (D-0004, D-0008), active-floor priority, and per-symbol
+    Controller approval (D-0039 §3) are all unchanged.
+  - No calibration run is authorized by this decision. Numeric
+    parameters still require a future decision to move from
+    PROPOSED to APPROVED per D-0039 §2's deferral.
+  - The verification session executed the script via
+    `git show origin/branch:path | python3 -`, keeping the
+    verification session's working tree unmodified and requiring
+    no permission exception; this pattern is recommended for
+    future one-shot script executions.
+- **Supersedes:** none. Confirms D-0042 unchanged and complements
+  it with real Stage 3 evidence.
