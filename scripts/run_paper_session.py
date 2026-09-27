@@ -215,8 +215,22 @@ def main() -> int:
     decision_source = TelegramDecisionSource.from_env()
 
     trade_proposal_service = TradeProposalService(trade_repo, proposal_repo)
+
+    # D-0047 portfolio risk enforcer: wired for real paper sessions.
+    from risk.enforcer import PortfolioRiskEnforcer
+    from risk.models import PortfolioRiskLimits
+    from risk.portfolio_snapshot import LivePortfolioSnapshotBuilder
+    snapshot_builder = LivePortfolioSnapshotBuilder(
+        broker_base_url=base_url, broker_key_id=key_id,
+        broker_secret_key=secret, sqlite_conn=conn,
+    )
+    risk_enforcer = PortfolioRiskEnforcer(
+        limits=PortfolioRiskLimits(),  # D-0047 defaults
+        snapshot_builder=snapshot_builder,
+    )
     execution_service = ExecutionService(execution_repo, proposal_repo,
-                                         trade_repo, broker)
+                                         trade_repo, broker,
+                                         risk_enforcer=risk_enforcer)
     watchlist = StaticWatchlistSource(symbols)
     lock = EngineLock(conn)
 

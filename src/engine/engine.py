@@ -69,6 +69,7 @@ from execution.service import (
     ExecutionAlreadySubmittedError,
     ExecutionService,
     Ladder2PartialFillNotPendingError,
+    PortfolioRiskViolatedError,
     SubmissionNotAllowedError,
 )
 from marketdata.source import MarketDataSource, MarketDataUnavailableError
@@ -611,6 +612,12 @@ class Engine:
                 level=NotificationLevel.IMPORTANT,
                 event="submission_not_allowed",
                 message=f"Submission for {proposal_id} refused by D-0007 revalidation: {exc}",
+            )
+        except PortfolioRiskViolatedError as exc:
+            self._notify(
+                level=NotificationLevel.IMPORTANT,
+                event="submission_risk_violated",
+                message=f"Submission for {proposal_id} refused by D-0047 portfolio risk enforcer: {exc}",
             )
         except BrokerSubmissionAmbiguousError as exc:
             self._notify(

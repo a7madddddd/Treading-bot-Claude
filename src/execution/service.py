@@ -108,6 +108,12 @@ class Ladder2PartialFillNotPendingError(ExecutionServiceError):
     (already confirmed once -- confirmation is not repeatable)."""
 
 
+class PortfolioRiskViolatedError(ExecutionServiceError):
+    """Raised by submit_approved_proposal() when the D-0047 portfolio
+    risk enforcer (when one is wired) rejects the submission. Carries
+    the enforcer's own reason string unchanged."""
+
+
 def _generate_id() -> str:
     """Provisional, implementation-specific placeholder. The exact
     format (e.g. length/character-set constraints for a real broker)
@@ -191,11 +197,24 @@ class ExecutionService:
         proposal_repo: ProposalRepository,
         trade_repo: TradeRepository,
         broker: BrokerClient,
+        *,
+        risk_enforcer=None,
     ) -> None:
+        """`risk_enforcer` is the optional D-0047 portfolio risk
+        enforcer. When wired (production, `scripts/run_paper_session.py`),
+        `submit_approved_proposal` calls it AFTER D-0007 passes and
+        BEFORE creating an OrderExecution / touching the broker. When
+        None (unit tests and any caller that has not chosen to enforce
+        portfolio-level limits), the risk check is skipped and the
+        service behaves exactly as before this parameter existed --
+        the D-0007 check still runs, and per-Proposal strategy math
+        is still owned by TradeProposalService."""
+
         self._execution_repo = execution_repo
         self._proposal_repo = proposal_repo
         self._trade_repo = trade_repo
         self._broker = broker
+        self._risk_enforcer = risk_enforcer
 
     def submit_approved_proposal(
         self,
@@ -273,6 +292,28 @@ class ExecutionService:
         )
         if not result.allowed:
             raise SubmissionNotAllowedError(result.reason)
+
+        # D-0047 portfolio-level risk check. Runs AFTER D-0007 passes
+        # (a proposal must first be revalidation-safe on its own before
+        # portfolio limits are even meaningful) and BEFORE any broker
+        # call. Skipped only when no enforcer was wired -- unit tests
+        # keep working; production wiring always provides one.
+        if self._risk_enforcer is not None:
+            qty_for_check = _requested_qty_for(proposal, strategy)
+            notional = qty_for_check * current_price
+            if proposal.approved_action is TradeAction.INITIAL_ENTRY:
+                risk_result = self._risk_enforcer.check_new_trade(
+                    symbol=proposal.symbol, proposed_notional=notional,
+                )
+            else:
+                risk_result = self._risk_enforcer.check_ladder_addition(
+                    symbol=proposal.symbol, proposed_notional=notional,
+                )
+            if not risk_result.allowed:
+                raise PortfolioRiskViolatedError(
+                    risk_result.first_violation_reason()
+                    or "portfolio risk limits violated"
+                )
 
         if existing is None:
             new_execution = OrderExecution(
