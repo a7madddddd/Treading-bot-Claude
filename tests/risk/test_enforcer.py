@@ -149,6 +149,27 @@ class TestEnforcerWrapper(unittest.TestCase):
         enforcer.check_ladder_addition(symbol="X", proposed_notional=1.0)
         self.assertEqual(calls["n"], 2)
 
+    def test_snapshot_builder_failure_is_fail_closed(self):
+        """Fail-closed doctrine: if the snapshot builder raises (Alpaca
+        network error, malformed body), the enforcer returns VIOLATED
+        with a `snapshot_unavailable` finding. It NEVER propagates the
+        raw exception -- that would crash the trigger loop that services
+        other trades' Floors."""
+        def failing_builder():
+            raise RuntimeError("Alpaca /v2/account timed out")
+        enforcer = PortfolioRiskEnforcer(limits=LIMITS,
+                                         snapshot_builder=failing_builder)
+
+        for check in (
+            lambda: enforcer.check_new_trade(symbol="X", proposed_notional=1.0),
+            lambda: enforcer.check_ladder_addition(symbol="X", proposed_notional=1.0),
+        ):
+            r = check()
+            self.assertEqual(r.verdict, RiskVerdict.VIOLATED)
+            self.assertEqual(len(r.checks), 1)
+            self.assertEqual(r.checks[0].name, "snapshot_unavailable")
+            self.assertIn("timed out", r.first_violation_reason())
+
 
 if __name__ == "__main__":
     unittest.main()

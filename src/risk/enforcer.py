@@ -213,23 +213,50 @@ class PortfolioRiskEnforcer:
     """Convenience wrapper for `ExecutionService`. Rebuilds the
     snapshot before every check (freshness is always the responsibility
     of the injected builder callable). The pure functions above stay
-    the authority; this class is just plumbing."""
+    the authority; this class is just plumbing.
+
+    Fail-closed on builder errors: if the snapshot builder raises
+    (Alpaca 5xx, network timeout, malformed body), the check returns
+    VIOLATED with a `snapshot_unavailable` RiskCheck, never propagates
+    the raw exception. CLAUDE.md §6: a failed safety check must never
+    lead to a broker submission -- but must also never crash the
+    trigger loop that would otherwise service other trades' Floors."""
 
     def __init__(self, *, limits: PortfolioRiskLimits,
                  snapshot_builder: SnapshotBuilder) -> None:
         self._limits = limits
         self._snapshot_builder = snapshot_builder
 
+    def _safe_snapshot(self):
+        try:
+            return self._snapshot_builder(), None
+        except Exception as ex:  # noqa: BLE001 -- doctrine: fail-closed
+            return None, ex
+
+    def _snapshot_unavailable(self, exc: Exception) -> RiskCheckResult:
+        return RiskCheckResult(
+            verdict=RiskVerdict.VIOLATED,
+            checks=(RiskCheck(
+                name="snapshot_unavailable", passed=False,
+                reason=(f"portfolio snapshot could not be built "
+                        f"({type(exc).__name__}: {exc}); fail-closed"),
+            ),),
+        )
+
     def check_new_trade(self, *, symbol: str,
                         proposed_notional: float) -> RiskCheckResult:
-        snapshot = self._snapshot_builder()
+        snapshot, err = self._safe_snapshot()
+        if snapshot is None:
+            return self._snapshot_unavailable(err)
         return evaluate_new_trade(symbol=symbol,
                                   proposed_notional=proposed_notional,
                                   snapshot=snapshot, limits=self._limits)
 
     def check_ladder_addition(self, *, symbol: str,
                               proposed_notional: float) -> RiskCheckResult:
-        snapshot = self._snapshot_builder()
+        snapshot, err = self._safe_snapshot()
+        if snapshot is None:
+            return self._snapshot_unavailable(err)
         return evaluate_ladder_addition(
             symbol=symbol, proposed_notional=proposed_notional,
             snapshot=snapshot, limits=self._limits,
