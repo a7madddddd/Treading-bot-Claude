@@ -2561,3 +2561,95 @@ Python implementation. This decision closes that gap.
   **CLOSED** by this decision.
 - Trading Engine, verification-plan sections, and paper-session
   runner are all unaffected.
+
+---
+
+## D-0047 — Portfolio-level hard risk limits
+
+**Date:** 2026-09-27
+**Decided by:** Controller
+**Status:** APPROVED
+
+### Context
+
+CLAUDE.md §5 assigns deterministic code the ownership of risk limits.
+`docs/trading/risk-management.md §5` documented portfolio-level hard
+limits as TBD; no code enforced them. Approvals-by-Controller alone
+were the safety net. This decision closes that gap with a
+deterministic guardrail that runs before every broker submission.
+
+### Approved numeric values
+
+| Rule | Value | Behavior on 50,000 USD equity |
+|---|---|---|
+| max_gross_exposure_fraction | **0.60** | Total invested capped at 30,000 USD |
+| max_single_symbol_fraction | **0.10** | Per-symbol capped at 5,000 USD |
+| max_concurrent_trades | **5** | Six open trades refused |
+| max_daily_new_trades | **3** | Fourth new trade of the day refused |
+| daily_loss_kill_switch_fraction | **0.03** | -1,500 USD stops all new/ladder trades today |
+
+Note: ladder additions to an existing symbol do NOT count against
+concurrent_trades or new_trades_today. They still count against
+gross_exposure, single_symbol_exposure, and daily_loss_kill_switch.
+
+### Implementation
+
+- `src/risk/models.py` — `PortfolioRiskLimits`, `PortfolioSnapshot`,
+  `PositionView`, `RiskCheck`, `RiskCheckResult` (frozen dataclasses).
+  Defaults match the approved values above.
+- `src/risk/enforcer.py` — `evaluate_new_trade()` and
+  `evaluate_ladder_addition()` as pure functions over snapshot +
+  limits. `PortfolioRiskEnforcer` wraps them with a rebuilt-per-check
+  snapshot builder.
+- `src/risk/portfolio_snapshot.py` — `LivePortfolioSnapshotBuilder`
+  reads live Alpaca `/v2/account` (equity + `last_equity` as the
+  prior-day anchor) and `/v2/positions`, plus the SQLite `trades`
+  table for open-trades and new-trades-today counts.
+- `src/execution/service.py` — `ExecutionService` now accepts an
+  optional `risk_enforcer=None`. When wired (production), the check
+  runs AFTER `validate_for_submission` (D-0007) passes and BEFORE
+  creating an `OrderExecution` or touching the broker. When `None`
+  (unit tests that predate this decision), behavior is unchanged.
+  New exception: `PortfolioRiskViolatedError` (carries the enforcer's
+  reason string).
+- `src/engine/engine.py` — `_submit_approved` catches the new
+  exception and notifies IMPORTANT-level (event
+  `submission_risk_violated`).
+- `scripts/run_paper_session.py` — always wires the enforcer.
+- Tests: `tests/risk/` — 30 tests covering models, pure evaluators
+  (boundary conditions per rule + ladder-vs-new-trade differences),
+  live snapshot builder (SQL queries + Alpaca stubs), and the
+  ExecutionService integration.
+
+### Enforcement location (Controller decision 6A)
+
+The check runs inside `ExecutionService.submit_approved_proposal`
+after D-0007 revalidation passes. This preserves the property that
+a Proposal is always visible to the Controller in Telegram (the
+approve-flow does NOT hide anything); only the submission itself
+is refused when a portfolio limit would break. The refusal reaches
+the Controller as a Telegram IMPORTANT-level notice naming which
+rule failed and by how much.
+
+### Consequences
+
+- Closes B20 (portfolio risk limits) in `pre-apply-checklist.md`.
+- 878/878 tests pass (848 pre-D-0047 + 30 new tests).
+- The Engine's trading path continues to work unchanged when no
+  enforcer is wired -- all pre-existing tests in `tests/execution`,
+  `tests/engine`, and `tests/proposals` still pass.
+- Kill-switch behavior for a paper session: an existing protective
+  Floor / Trailing Floor remains active (per CLAUDE.md §2 and
+  D-0002). Only NEW entries and NEW ladders are refused for the rest
+  of the trading day. The Controller can lift the switch overnight
+  when the anchor rolls forward.
+
+### What is NOT approved by this decision
+
+- No change to per-Proposal strategy math (D-0004, D-0007, D-0008,
+  D-0009, D-0010, D-0011, D-0033, D-0034).
+- No change to the paper-only rule (D-0002).
+- No autonomous override of these limits by any LLM (CLAUDE.md §5).
+- No policy for automatically resuming trading after a kill switch;
+  the switch simply refuses further submissions until the daily
+  anchor advances at the next trading-day rollover.
