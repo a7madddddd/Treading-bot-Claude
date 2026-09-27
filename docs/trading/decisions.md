@@ -2653,3 +2653,99 @@ rule failed and by how much.
 - No policy for automatically resuming trading after a kill switch;
   the switch simply refuses further submissions until the daily
   anchor advances at the next trading-day rollover.
+
+---
+
+## D-0048 — D-0026 pipeline structure with percentage-only parameters
+
+**Date:** 2026-09-27
+**Decided by:** Controller
+**Status:** APPROVED
+
+### Context
+
+D-0039 §2 deferred the D-0026 numeric parameters until backtesting
+evidence was available. Backtesting infrastructure did not exist,
+so the pipeline was structurally BLOCKED under
+`NotCalibratedStageEvaluator` stubs -- every candidate through any
+stage raised `CalibrationRequiredError`.
+
+Controller proposed a different approach: express every threshold
+as a **percentage, ratio, percentile rank, or domain category**.
+Under this reformulation:
+- Nothing depends on a magic dollar / share / count threshold that
+  would need backtesting to justify.
+- Every value can be Controller-approved directly by domain
+  reasoning ("top 30% by volume", "≤ 0.15% spread", "1%–5% ATR").
+- The pipeline gains meaning today rather than after 5-6 weeks of
+  backtesting work.
+
+This closes D-0039 §2 by SUPERSEDING it: numeric parameters are
+no longer deferred; percentage parameters are approved here.
+
+### Approved percentage parameters
+
+| Stage | Parameter | Value | Meaning |
+|---|---|---|---|
+| A Tradability | min_volume_percentile | 0.30 | top 30% by liquidity |
+| A Tradability | drop_bottom_price_percentile | 0.20 | drop bottom 20% by price |
+| A Tradability | min_market_cap_percentile | 0.40 | top 40% by cap (when data present) |
+| B Data Quality | min_completeness_fraction | 0.90 | ≥ 90% feature completeness |
+| B Data Quality | max_gap_fraction | 0.05 | ≤ 5% data gap in window |
+| C Execution Q | max_spread_fraction | 0.0015 | spread ≤ 0.15% of price |
+| C Execution Q | min_spread_tightness_percentile | 0.40 | top 40% by tightness |
+| D Strategy Fit | min_atr_fraction | 0.01 | ATR/price ≥ 1% |
+| D Strategy Fit | max_atr_fraction | 0.05 | ATR/price ≤ 5% |
+| D Strategy Fit | min_trend_percentile | 0.50 | top 50% by momentum |
+| E Regime | vix_topmost_percentile | 0.80 | VIX > 80th pct of last 126d = risk-off |
+| E Regime | vix_history_days | 126 | ~6 months lookback for VIX percentile |
+| F Ranking | momentum_weight | 0.40 | 40% of aggregate rank |
+| F Ranking | quality_weight | 0.30 | 30% of aggregate rank |
+| F Ranking | liquidity_weight | 0.30 | 30% of aggregate rank |
+| G Concentration | max_sector_fraction | 0.30 | ≤ 30% of pool in one sector |
+| G Concentration | max_pairwise_correlation | 0.70 | correlation cutoff (when available) |
+| H Top-N | top_n | 10 | Controller operational cap |
+
+Any change to these values is itself a new Controller decision.
+
+### Implementation
+
+- `src/d0026/config.py` — `UniverseSelectionConfig` frozen
+  dataclass with the approved defaults + guardrails (weights sum
+  to 1, ATR band coherent, percentages in [0, 1]).
+- `src/d0026/percentile_utils.py` — pure functions:
+  `top_percentile`, `drop_bottom_percentile`, `rank_percentile`,
+  `historical_percentile`. Deterministic ties (stable input order).
+- `src/d0026/stages/` — eight concrete stage evaluators (A-H),
+  each ~50-100 lines, each carrying its own percentile / ratio
+  logic. Stage I (PERSIST_SNAPSHOT) lives inside the pipeline
+  orchestrator, not the stages package.
+- `src/d0026/stages/__init__.py` — `default_percentage_evaluators()`
+  factory wiring the eight stages with a given config.
+- Tests: `tests/d0026/test_config.py`,
+  `tests/d0026/test_percentile_utils.py`,
+  `tests/d0026/stages/test_stages.py`,
+  `tests/d0026/stages/test_pipeline_integration.py`. Full suite
+  915/915 PASS (was 879 before D-0048; +36 new tests).
+
+### What is NOT changed by D-0048
+
+- **Numeric CALIBRATION** by backtesting is still valuable and can
+  refine the approved percentages later. This decision does not
+  reject backtesting; it removes it as a BLOCKER for closing D-0026.
+- **`ApprovedUniverseSnapshot`** boundary contract is unchanged.
+- **`NotCalibratedStageEvaluator`** is retained as a fallback so a
+  future caller who wants the pre-D-0048 posture can still opt in.
+- **No wiring into Engine yet.** The Engine still reads
+  `StaticWatchlistSource` per D-0039 §4. Wiring a live selector to
+  the Engine will replace `StaticWatchlistSource` with a snapshot
+  reader in a follow-up commit.
+
+### Consequences
+
+- Closes B21 (D-0026 pipeline structure) in `pre-apply-checklist.md`.
+- Removes the "calibration BLOCKED" wall for the universe pipeline;
+  a real pipeline can now produce a real snapshot given a real
+  provider and feature enricher.
+- Backtesting becomes an OPTIONAL follow-up bounded by cost/benefit,
+  not a prerequisite.
