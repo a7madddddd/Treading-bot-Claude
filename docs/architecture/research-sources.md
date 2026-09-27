@@ -213,3 +213,60 @@ the gap were closed.
   above lives in D-0042's Context section.
 - No adoption of a source that would silently overwrite the
   survivorship-bias disclosure in §8.D.
+
+## 9. Post-Stage-4 refinements (D-0043 + D-0044)
+
+Section 8 above reflects the D-0042 baseline. The Stage 3
+execution (D-0043) and Stage 4 per-source value review (D-0044)
+refined that baseline. The current active-design source list is:
+
+### 9.A Primary group — calibration workhorses (final)
+
+- Alpaca historical bars — 2016-present, live symbols only.
+- `eliangcs/pystock-data` — 2009-2017 OHLCV.
+- `fja05680/sp500` — point-in-time S&P 500 membership 1996-2026.
+- CBOE VIX History CSV — daily VIX from 1990 (deeper than the
+  GitHub finance-vix dataset; added post-D-0042 via Stage 2
+  discovery, formalized in D-0044).
+- `datasets/finance-vix` — VIX 2004-2026 (retained as backup for
+  the CBOE feed).
+
+### 9.B Support group — cross-validation and official records (final)
+
+- SEC EDGAR — delisting dates, filings, company records.
+- Yahoo Finance v8 chart — price cross-check for live symbols.
+- Nasdaq Trader symbol directory — active-symbol list.
+- Tiingo — price cross-check (demoted from primary by D-0044
+  after matching Alpaca exactly with no unique value over Alpaca).
+
+### 9.C Specialized group (new post-Stage-4)
+
+- FRED — sole macro data source. Feeds Stage E regime signals
+  with rates, inflation, unemployment, yield curve, and
+  industrial indicators. ~120 requests/minute free tier.
+- Polygon REST — corporate actions (splits, dividends, mergers)
+  ONLY. Not used for price OHLCV; Alpaca SIP matched Polygon
+  exactly in Stage 3, so Polygon offers no unique price value.
+
+### 9.D Removed from active design (D-0044)
+
+- Polygon Flat Files (S3): adding boto3/awscli would break the
+  project's stdlib-only discipline; no incremental value over
+  Alpaca REST bulk pulls and GitHub bulk datasets.
+- Alpha Vantage: 25 requests/day is not operationally viable.
+- Finnhub: 1-year history is too shallow; Alpaca and SEC EDGAR
+  cover its use cases better.
+
+Their env vars remain documented in `.env.example` under the
+D-0042 section; no code path reads them. Removing them cleanly
+prevents an accidental future dependency on a source known to be
+inferior for our actual use case.
+
+### 9.E Twelve Data — status update
+
+Section 8.B listed Twelve Data as a support-tier cross-check
+based on demo-key testing. During Stage 4 the Controller confirmed
+that Twelve Data was NOT registered (the earlier "Tango" mention
+resolved to Tiingo). Twelve Data therefore has no active-design
+role today; if a future decision registers it, it re-enters as a
+support-tier cross-check per §8.B's wording.

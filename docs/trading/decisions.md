@@ -2301,3 +2301,95 @@ Controller approval per CLAUDE.md §9.
     future one-shot script executions.
 - **Supersedes:** none. Confirms D-0042 unchanged and complements
   it with real Stage 3 evidence.
+
+## D-0044 — B16 Stage 4 outcome: registered-source value review; three removals, one demotion, two keeps
+
+- **Date:** 2026-09-27
+- **Status:** APPROVED
+- **Approved by:** Controller
+- **Context:** D-0042 approved a two-group free data architecture;
+  D-0043 recorded Stage 3 execution (12/13 PASS). Stage 4 is the
+  Controller-directed per-source unique-value assessment for the
+  five registered-key sources and Polygon Flat Files. All
+  evaluation is strictly within the free-only scope; D-0028's
+  rejection of paid providers is preserved without exception.
+- **Decision — per-source outcomes:**
+  1. **Polygon REST — KEEP for corporate actions only.**
+     Alpaca SIP already covers price OHLCV with equal precision
+     (verified by triple cross-check in D-0043). Polygon's unique
+     value is the consolidated corporate-actions endpoint
+     (splits, dividends, mergers), which Alpaca does not expose
+     as a single endpoint. Continues in the active design solely
+     for that use.
+  2. **Polygon Flat Files (S3) — REMOVE from active design.**
+     Live use requires adding a third-party S3 client (boto3 or
+     awscli). Adding either breaks this project's zero-third-
+     party discipline; the incremental benefit over Alpaca REST
+     (10,000 bars per request) and GitHub bulk datasets does not
+     justify the cost. Env vars remain in place as documentation;
+     no code path reads them.
+  3. **FRED — KEEP as sole macro data source.**
+     Provides 800,000+ official US macro time series (rates,
+     inflation, unemployment, yield curve, industrial
+     indicators). No free alternative covers the same breadth.
+     Effective ~120 req/min limit is generous. Feeds Stage E of
+     the D-0026 universe pipeline with regime signals
+     complementing VIX.
+  4. **Alpha Vantage — REMOVE from active design.**
+     Free tier is 25 requests/day. Backfilling a 500-symbol S&P
+     500 universe would take ~20 business days, which is not
+     operationally viable. Alpaca SIP and Yahoo v8 chart both
+     cover the same use case with materially higher throughput.
+     Env var remains in place as documentation; no code path
+     reads it.
+  5. **Tiingo — DEMOTE from primary to support-only.**
+     Free tier is 500 req/hour end-of-day only, matching Alpaca
+     SIP exactly in Stage 3's AAPL 2025-01-02..08 window (close
+     range 242.21–245.00). No unique value over Alpaca for the
+     primary price role. Retained in the support group solely
+     for cross-validation of suspicious Alpaca values.
+  6. **Finnhub — REMOVE from active design.**
+     Free tier is one year of history and a real-time quote
+     endpoint. Alpaca covers real-time quotes better; SEC EDGAR
+     covers company profiles authoritatively. Env var remains in
+     place as documentation; no code path reads it.
+- **Final active-design source list, post-Stage-4:**
+  Primary (calibration workhorses):
+    - Alpaca SIP historical bars (2016-present, live symbols).
+    - eliangcs/pystock-data (2009-2017 OHLCV).
+    - fja05680/sp500 (point-in-time S&P 500 membership).
+    - CBOE VIX History (VIX from 1990).
+    - datasets/finance-vix (VIX backup).
+  Support (cross-validation + official records):
+    - SEC EDGAR (delisting dates, filings, company records).
+    - Yahoo v8 chart (price cross-check).
+    - Nasdaq Trader (symbol directory).
+    - Tiingo (price cross-check, demoted from primary).
+  Specialized:
+    - FRED (sole macro data source, added in this decision).
+    - Polygon REST (corporate actions only).
+  Removed:
+    - Polygon Flat Files (S3), Alpha Vantage, Finnhub — env vars
+      documented in .env.example but unused by any code path.
+- **Rationale:** The per-source assessment kept only sources that
+  either fill a unique free-only need or provide meaningful
+  cross-validation. Removing Alpha Vantage, Finnhub, and Polygon
+  Flat Files avoids clutter and prevents an accidental future
+  dependency on a source we already know is inferior for our
+  actual use case. Keeping their env-var names documented ensures
+  no operational surprise if a future decision revisits them.
+- **Safety notes:**
+  - Paper trading only remains in force (D-0002 unchanged).
+  - Approved strategy (D-0001), ladder rules (D-0007), trailing
+    math (D-0004, D-0008), active-floor priority, and per-symbol
+    Controller approval (D-0039 §3) are all unchanged.
+  - No calibration run is authorized by this decision. Numeric
+    parameters still require a future decision to move from
+    PROPOSED to APPROVED per D-0039 §2's deferral.
+  - Zero paid providers authorized. D-0028's rejection preserved
+    without exception. The residual gap for delisted symbols
+    2018-2026 (D-0042 §4) is confirmed unchanged.
+- **Supersedes:** the source list in D-0042 for the four
+  registered-key entries; complements it. Does not alter the
+  fundamental two-group architecture, the residual-gap
+  disclosure, or the numeric-parameter deferral.
