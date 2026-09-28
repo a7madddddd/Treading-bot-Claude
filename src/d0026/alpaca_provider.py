@@ -99,7 +99,17 @@ class AlpacaAssetsProvider(UniverseSourceProvider):
                 f"Alpaca /v2/assets returned {resp.status}: "
                 f"{resp.body[:200]!r}"
             )
-        assets = json.loads(resp.body.decode("utf-8"))
+        try:
+            assets = json.loads(resp.body.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as ex:
+            raise AlpacaAssetsProviderFetchError(
+                f"Alpaca /v2/assets returned malformed body: {ex}"
+            )
+        if not isinstance(assets, list):
+            raise AlpacaAssetsProviderFetchError(
+                f"Alpaca /v2/assets returned non-list body of type "
+                f"{type(assets).__name__}"
+            )
 
         candidates = []
         for a in assets:

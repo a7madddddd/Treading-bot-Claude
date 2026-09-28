@@ -79,6 +79,18 @@ class TestFetch(unittest.TestCase):
         with self.assertRaises(AlpacaAssetsProviderFetchError):
             p.get_raw_candidates(date(2026, 1, 5))
 
+    def test_garbage_json_raises_fetch_error(self):
+        """Regression: malformed body must raise AlpacaAssetsProviderFetchError
+        (uniform error type), not a raw JSONDecodeError."""
+        p = self._provider(HttpResponse(200, b"not-json"))
+        with self.assertRaises(AlpacaAssetsProviderFetchError):
+            p.get_raw_candidates(date(2026, 1, 5))
+
+    def test_non_list_body_raises_fetch_error(self):
+        p = self._provider(HttpResponse(200, b'{"error": "wat"}'))
+        with self.assertRaises(AlpacaAssetsProviderFetchError):
+            p.get_raw_candidates(date(2026, 1, 5))
+
     def test_as_of_date_propagates(self):
         body = json.dumps([_asset("AAPL")]).encode()
         p = self._provider(HttpResponse(200, body))
