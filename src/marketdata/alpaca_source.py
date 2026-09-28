@@ -62,6 +62,7 @@ class AlpacaMarketDataSource(MarketDataSource):
         feed: str = "iex",
         timeout_seconds: float = 5.0,
         http_transport: Optional[HttpTransport] = None,
+        retry_policy=None,  # Optional common.http_retry.RetryPolicy
     ):
         if not base_url:
             raise ValueError("base_url must be a non-empty URL")
@@ -79,7 +80,11 @@ class AlpacaMarketDataSource(MarketDataSource):
             feed=feed,
             timeout_seconds=timeout_seconds,
         )
-        self._http = http_transport or self._default_transport
+        base_transport = http_transport or self._default_transport
+        if retry_policy is not None:
+            from common.http_retry import with_retry
+            base_transport = with_retry(base_transport, policy=retry_policy)
+        self._http = base_transport
 
     # ---- MarketDataSource contract ------------------------------------
 
