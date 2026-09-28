@@ -88,6 +88,7 @@ class AlpacaFeatureEnricher:
         min_bars: int = _DEFAULT_MIN_BARS,
         transport: HttpTransport = _urllib_transport,
         timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
+        retry_policy=None,  # Optional common.http_retry.RetryPolicy
     ) -> None:
         if not key_id or not secret_key:
             raise AlpacaFeatureEnricherConfigError(
@@ -104,6 +105,9 @@ class AlpacaFeatureEnricher:
         self._feed = feed
         self._history_days = history_days
         self._min_bars = min_bars
+        if retry_policy is not None:
+            from common.http_retry import with_retry
+            transport = with_retry(transport, policy=retry_policy)
         self._transport = transport
         self._timeout = timeout_seconds
 

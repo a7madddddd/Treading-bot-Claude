@@ -68,6 +68,7 @@ class AlpacaAssetsProvider(UniverseSourceProvider):
         require_fractionable: bool = False,
         transport: HttpTransport = _urllib_transport,
         timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
+        retry_policy=None,  # Optional common.http_retry.RetryPolicy
     ) -> None:
         if not key_id or not secret_key:
             raise AlpacaAssetsProviderConfigError(
@@ -81,6 +82,9 @@ class AlpacaAssetsProvider(UniverseSourceProvider):
             if symbol_whitelist is not None else None
         )
         self._require_fractionable = require_fractionable
+        if retry_policy is not None:
+            from common.http_retry import with_retry
+            transport = with_retry(transport, policy=retry_policy)
         self._transport = transport
         self._timeout = timeout_seconds
 
