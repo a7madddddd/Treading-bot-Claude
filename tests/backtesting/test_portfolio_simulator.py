@@ -102,6 +102,30 @@ class TestExitAndCooldown(unittest.TestCase):
         self.assertEqual(r.trades[0].exit_reason, ExitReason.FLOOR_HIT)
 
 
+class TestKillSwitch(unittest.TestCase):
+    def test_kill_switch_engages_on_multi_symbol_crash(self):
+        """Regression (B25b post-check): kill switch must engage when
+        a multi-symbol crash on the same day pushes equity below the
+        3% floor. The pre-fix bug used entry_price for OTHER positions
+        while checking a given symbol's ladder, missing the loss."""
+        cfg = PortfolioBacktestConfig(
+            initial_cash=100_000,
+            daily_loss_kill_switch_fraction=0.03,
+            max_daily_new_trades=10, max_concurrent_trades=10,
+        )
+        bars = {}
+        for sym in ["A", "B", "C", "D", "E"]:
+            prices = [100, 100, 30, 30, 30]
+            bars[sym] = [Bar(bar_date=date(2026,1,1)+timedelta(days=j),
+                             open=p, high=p+1, low=p-1, close=p,
+                             volume=1000)
+                         for j, p in enumerate(prices)]
+        r = PortfolioSimulator(cfg).run(bars)
+        kill_rej = [x for x in r.rejections
+                    if x.reason == RejectionReason.KILL_SWITCH]
+        self.assertGreater(len(kill_rej), 0)
+
+
 class TestEquityCurve(unittest.TestCase):
     def test_equity_curve_covers_all_dates(self):
         r = PortfolioSimulator().run({

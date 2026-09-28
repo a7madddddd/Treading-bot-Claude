@@ -107,7 +107,8 @@ class PortfolioSimulator:
                 bar = bars_index[sym][d]
                 outcome = self._advance_open_trade(sym, positions[sym], bar,
                                                    cash, equity_open,
-                                                   positions, rejections)
+                                                   positions, rejections,
+                                                   bars_index)
                 cash = outcome["cash"]
                 if outcome["exited"]:
                     completed.append(outcome["completed"])
@@ -226,6 +227,7 @@ class PortfolioSimulator:
         cash: float, equity_open: float,
         positions: Dict[str, _OpenPosition],
         rejections: List[RejectionRecord],
+        bars_index: Dict[str, Dict[date, Bar]],
     ) -> dict:
         trade = pos.trade
 
@@ -259,15 +261,18 @@ class PortfolioSimulator:
             notional = qty * price_attr
 
             # D-0047 for ladder: kill-switch + gross + single-symbol only.
-            current_equity = cash + sum(
-                p.trade.total_shares * bar.close if s == sym
-                else p.trade.total_shares * pos.entry_price  # rough
-                for s, p in positions.items()
-            )
-            gross_ex = sum(
-                p.trade.total_shares * (bar.close if s == sym else p.entry_price)
-                for s, p in positions.items()
-            )
+            # Mark all positions to the CURRENT day's close where a bar
+            # is available. Fixes a real kill-switch blind spot: a
+            # multi-symbol crash on the same day would previously value
+            # OTHER positions at their entry price, missing the loss.
+            def _mark(sym_of_pos: str, p_of_pos: _OpenPosition) -> float:
+                if sym_of_pos == sym:
+                    return p_of_pos.trade.total_shares * bar.close
+                other_bar = bars_index.get(sym_of_pos, {}).get(bar.bar_date)
+                px = other_bar.close if other_bar is not None else p_of_pos.entry_price
+                return p_of_pos.trade.total_shares * px
+            gross_ex = sum(_mark(s, p) for s, p in positions.items())
+            current_equity = cash + gross_ex
             symbol_existing = trade.total_shares * bar.close
             reason = self._check_ladder_addition(
                 equity_open=equity_open, current_equity=current_equity,
