@@ -84,6 +84,26 @@ class TestExecutionQualityStage(unittest.TestCase):
         result = ExecutionQualityStage(CFG).evaluate((c,), DATE, regime())
         self.assertEqual(len(result.survivors), 0)
 
+    def test_non_true_quote_bypasses_hard_cap(self):
+        """Regression (B24): when execution_quality_proxy_is_true_quote
+        is False (e.g. an IEX intraday-range proxy), the absolute
+        max_spread_fraction hard cap is skipped. The percentile
+        filter still applies."""
+        c_wide = candidate("W", spread=0.02, spread_is_true_quote=False)
+        result = ExecutionQualityStage(CFG).evaluate((c_wide,),
+                                                     DATE, regime())
+        self.assertEqual(len(result.survivors), 1)
+        self.assertEqual(len(result.rejections), 0)
+
+    def test_true_quote_still_hard_capped(self):
+        """Regression (B24): when the proxy IS a true quote,
+        max_spread_fraction still rejects."""
+        c_wide = candidate("W", spread=0.02, spread_is_true_quote=True)
+        result = ExecutionQualityStage(CFG).evaluate((c_wide,),
+                                                     DATE, regime())
+        self.assertEqual(len(result.survivors), 0)
+        self.assertEqual(len(result.rejections), 1)
+
 
 class TestStrategyMechanicsFitStage(unittest.TestCase):
     def test_atr_below_floor_rejects(self):
@@ -172,6 +192,17 @@ class TestConcentrationStage(unittest.TestCase):
         result = ConcentrationStage(CFG).evaluate(cs, DATE, regime())
         # Each sector 1/N -> 25% -> under 30% cap -> all survive.
         self.assertEqual(len(result.survivors), 4)
+
+    def test_unknown_sector_bypasses_cap(self):
+        """Regression (B24): when candidates' sector cannot be
+        determined ('unknown'), the sector cap is not applied. This
+        is honest fail-open behavior: we can't enforce
+        'no more than 30% in tech' if we don't know which is tech."""
+        cs = tuple(candidate(f"U{i}", source_reference="alpaca-iex")
+                   for i in range(5))
+        result = ConcentrationStage(CFG).evaluate(cs, DATE, regime())
+        self.assertEqual(len(result.survivors), 5)
+        self.assertEqual(len(result.rejections), 0)
 
 
 class TestTopNStage(unittest.TestCase):

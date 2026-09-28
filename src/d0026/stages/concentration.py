@@ -79,6 +79,15 @@ class ConcentrationStage(StageEvaluator):
         counts: Dict[str, int] = {}
         for c in candidates:
             sector = _sector_of(c)
+            # "unknown" sector bypasses the cap: we cannot honestly
+            # enforce a sector-diversification rule on data we do not
+            # have. This preserves the fail-open posture for missing
+            # data (research-sources.md §7.5 spirit); the surrounding
+            # data-quality and evidence layers still reject genuinely
+            # incomplete candidates elsewhere.
+            if sector == "unknown":
+                survivors.append(c)
+                continue
             projected = counts.get(sector, 0) + 1
             if projected > max_per_sector:
                 rejections.append(UniverseSelectionRejection(

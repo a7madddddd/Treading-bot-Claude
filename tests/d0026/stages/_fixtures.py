@@ -38,6 +38,7 @@ def candidate(
     atr: Optional[float] = 2.5,
     momentum: Optional[float] = 0.05,
     spread: Optional[float] = 0.001,
+    spread_is_true_quote: bool = True,
     warm_up_sufficient: bool = True,
     source_reference: str = "test",
     completeness_measures_present: bool = True,
@@ -70,7 +71,7 @@ def candidate(
         security_id=identity.security_id, feature_date=DATE,
         liquidity_measure=liquidity, atr_measure=atr,
         momentum_measure=momentum, execution_quality_proxy=spread,
-        execution_quality_proxy_is_true_quote=True,
+        execution_quality_proxy_is_true_quote=spread_is_true_quote,
         warm_up_sufficient=warm_up_sufficient,
         source_reference=source_reference,
     )
