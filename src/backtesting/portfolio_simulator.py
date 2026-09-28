@@ -57,6 +57,7 @@ class _OpenPosition:
     trade: Trade
     entry_date: date
     entry_price: float
+    commissions_paid: float = 0.0
 
 
 @dataclass
@@ -159,20 +160,24 @@ class PortfolioSimulator:
                     ))
                     continue
 
-                # Open position.
-                cash -= notional
+                # Open position (apply slippage + commission).
+                entry_fill = self._config.cost_model.buy_fill(bar.close)
+                commission_here = self._config.cost_model.commission(entry_qty)
+                actual_notional = entry_qty * entry_fill
+                cash -= actual_notional
                 trade = Trade(
                     trade_id=f"pf-{uuid.uuid4().hex[:12]}",
                     symbol=sym, created_at=_dt(d),
                 ).freeze_initial_reference(
                     order_status=InitialOrderStatus.FILLED,
                     filled_shares=entry_qty,
-                    fill_price=bar.close,
+                    fill_price=entry_fill,
                     strategy=self._strategy,
                     now=_dt(d),
                 )
                 positions[sym] = _OpenPosition(
-                    trade=trade, entry_date=d, entry_price=bar.close,
+                    trade=trade, entry_date=d, entry_price=entry_fill,
+                    commissions_paid=commission_here,
                 )
                 new_trades_today += 1
 
@@ -205,11 +210,15 @@ class PortfolioSimulator:
                     exit_dt = all_dates_for_sym[-1]
                 else:
                     exit_dt = last_date
-                exit_price = last_bar.close
-                cash += pos.trade.total_shares * exit_price
+                exit_fill = self._config.cost_model.sell_fill(last_bar.close)
+                exit_commission = self._config.cost_model.commission(
+                    pos.trade.total_shares
+                )
+                cash += pos.trade.total_shares * exit_fill
                 completed.append(_build_completed(
                     sym, pos.trade, pos.entry_date, pos.entry_price,
-                    exit_dt, exit_price, ExitReason.END_OF_PERIOD,
+                    exit_dt, exit_fill, ExitReason.END_OF_PERIOD,
+                    total_commission=pos.commissions_paid + exit_commission,
                 ))
 
         metrics = self._compute_metrics(completed, equity_curve, rejections)
@@ -234,12 +243,17 @@ class PortfolioSimulator:
         # Floor exit first (protective priority).
         floor = trade.active_floor_price
         if floor is not None and bar.low <= floor <= bar.high:
-            cash += trade.total_shares * floor
+            exit_fill = self._config.cost_model.sell_fill(floor)
+            exit_commission = self._config.cost_model.commission(
+                trade.total_shares
+            )
+            cash += trade.total_shares * exit_fill
             completed = _build_completed(
                 sym, trade, pos.entry_date, pos.entry_price,
-                bar.bar_date, floor,
+                bar.bar_date, exit_fill,
                 ExitReason.TRAILING_FLOOR_HIT if trade.trailing_activated
                 else ExitReason.FLOOR_HIT,
+                total_commission=pos.commissions_paid + exit_commission,
             )
             return {"cash": cash, "exited": True, "completed": completed}
 
@@ -286,22 +300,25 @@ class PortfolioSimulator:
                            f"for {sym} rejected"),
                 ))
                 continue
-            # Fill it.
-            cash -= notional
+            # Fill it (apply slippage + commission).
+            fill_px = self._config.cost_model.buy_fill(price_attr)
+            actual_notional = fill_px * qty
+            cash -= actual_notional
             prev_shares = trade.total_shares
             prev_wae = trade.weighted_avg_entry_price or 0.0
             new_total = prev_shares + qty
-            new_wae = ((prev_wae * prev_shares + price_attr * qty)
+            new_wae = ((prev_wae * prev_shares + fill_px * qty)
                        / new_total)
             trade = trade.record_ladder_fill(
                 action=TradeAction.LADDER_2 if ladder_2 else TradeAction.LADDER_1,
                 order_id=f"pf-o-{uuid.uuid4().hex[:8]}",
-                fill_price=price_attr, fill_qty=qty,
+                fill_price=fill_px, fill_qty=qty,
                 new_total_shares=new_total,
                 new_weighted_avg_entry_price=new_wae,
                 strategy=self._strategy,
             )
             pos.trade = trade
+            pos.commissions_paid += self._config.cost_model.commission(qty)
 
         # Trailing activation.
         wae = trade.weighted_avg_entry_price
@@ -451,6 +468,7 @@ def _build_completed(
     symbol: str, trade: Trade,
     entry_date: date, entry_price: float,
     exit_date: date, exit_price: float, reason: ExitReason,
+    total_commission: float = 0.0,
 ) -> BacktestTrade:
     return BacktestTrade(
         symbol=symbol, entry_date=entry_date, entry_price=entry_price,
@@ -464,6 +482,7 @@ def _build_completed(
         weighted_avg_entry_price=trade.weighted_avg_entry_price or entry_price,
         trailing_activated=trade.trailing_activated,
         trailing_peak_threshold=trade.trailing_current_threshold,
+        total_commission=total_commission,
     )
 
 

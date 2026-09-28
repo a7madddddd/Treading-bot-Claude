@@ -42,7 +42,10 @@ class ExitReason(str, Enum):
 @dataclass(frozen=True)
 class BacktestTrade:
     """One completed simulated trade (from initial entry to final
-    exit). Immutable audit record."""
+    exit). Immutable audit record. Fill prices already include any
+    slippage applied by the simulator's transaction-cost model;
+    commissions are tracked separately in `total_commission` and
+    subtracted from `pnl()`."""
 
     symbol: str
     entry_date: date
@@ -59,17 +62,58 @@ class BacktestTrade:
     weighted_avg_entry_price: float
     trailing_activated: bool
     trailing_peak_threshold: Optional[float]
+    total_commission: float = 0.0
 
     def pnl(self) -> float:
-        """Cash P&L: (exit_price - weighted_avg_entry) * final_shares."""
-        return (self.exit_price - self.weighted_avg_entry_price) * self.final_shares
+        """Net cash P&L, commission-adjusted. Slippage is already
+        baked into fill prices."""
+        gross = (self.exit_price - self.weighted_avg_entry_price) * self.final_shares
+        return gross - self.total_commission
 
     def return_fraction(self) -> float:
-        """Return as fraction of cost basis."""
+        """Return as fraction of cost basis (net of costs)."""
         cost = self.weighted_avg_entry_price * self.final_shares
         if cost <= 0:
             return 0.0
         return self.pnl() / cost
+
+
+@dataclass(frozen=True)
+class TransactionCostModel:
+    """Simulates the cost of trading in the backtest. Two components:
+
+    - `slippage_bps_*`: adverse fill in basis points (10 bps = 0.10%
+      of intended price). Applied per side. A buy fills at
+      `intended * (1 + bps/10000)`; a sell fills at
+      `intended * (1 - bps/10000)`. This is baked into the fill
+      price stored on BacktestTrade -- the sim never records the
+      "intended" price separately.
+    - `commission_per_share`: dollar commission per share. Alpaca
+      paper = 0.0. Included in `BacktestTrade.total_commission` and
+      subtracted from `pnl()`.
+
+    Defaults are zero -- baseline backtest behavior is preserved
+    unless a cost model is explicitly passed.
+    """
+
+    slippage_bps_buy: float = 0.0
+    slippage_bps_sell: float = 0.0
+    commission_per_share: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.slippage_bps_buy < 0 or self.slippage_bps_sell < 0:
+            raise ValueError("slippage_bps must be non-negative")
+        if self.commission_per_share < 0:
+            raise ValueError("commission_per_share must be non-negative")
+
+    def buy_fill(self, intended: float) -> float:
+        return intended * (1.0 + self.slippage_bps_buy / 10000.0)
+
+    def sell_fill(self, intended: float) -> float:
+        return intended * (1.0 - self.slippage_bps_sell / 10000.0)
+
+    def commission(self, shares: int) -> float:
+        return self.commission_per_share * shares
 
 
 @dataclass(frozen=True)
@@ -103,9 +147,16 @@ class BacktestConfig:
     with different position sizes; when None, the strategy's own
     `initial_qty` / `ladder_1_qty` / `ladder_2_qty` are used
     unchanged (default = D-0004 approved values 10 / 10 / 20).
+
+    `cost_model` defaults to zero costs (backward-compatible with
+    pre-B27a callers). Pass a non-zero TransactionCostModel to
+    simulate slippage + commissions.
     """
 
     override_initial_qty: Optional[int] = None
     override_ladder1_qty: Optional[int] = None
     override_ladder2_qty: Optional[int] = None
     cooldown_days_after_exit: int = 5
+    cost_model: TransactionCostModel = field(
+        default_factory=lambda: TransactionCostModel()
+    )

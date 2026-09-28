@@ -50,5 +50,51 @@ class TestBacktestTrade(unittest.TestCase):
         self.assertAlmostEqual(t.return_fraction(), 0.10)
 
 
+class TestTransactionCostModel(unittest.TestCase):
+    def test_defaults_are_zero(self):
+        from backtesting.models import TransactionCostModel
+        m = TransactionCostModel()
+        self.assertEqual(m.buy_fill(100.0), 100.0)
+        self.assertEqual(m.sell_fill(100.0), 100.0)
+        self.assertEqual(m.commission(10), 0.0)
+
+    def test_slippage_buy_worse(self):
+        from backtesting.models import TransactionCostModel
+        m = TransactionCostModel(slippage_bps_buy=5.0)
+        self.assertAlmostEqual(m.buy_fill(100.0), 100.05)
+
+    def test_slippage_sell_worse(self):
+        from backtesting.models import TransactionCostModel
+        m = TransactionCostModel(slippage_bps_sell=5.0)
+        self.assertAlmostEqual(m.sell_fill(100.0), 99.95)
+
+    def test_commission_per_share(self):
+        from backtesting.models import TransactionCostModel
+        m = TransactionCostModel(commission_per_share=0.01)
+        self.assertAlmostEqual(m.commission(100), 1.0)
+
+    def test_negative_slippage_rejected(self):
+        from backtesting.models import TransactionCostModel
+        with self.assertRaises(ValueError):
+            TransactionCostModel(slippage_bps_buy=-1.0)
+
+    def test_pnl_subtracts_commission(self):
+        from backtesting.models import BacktestTrade, ExitReason
+        from datetime import date
+        t = BacktestTrade(
+            symbol="X", entry_date=date(2026,1,1), entry_price=100,
+            initial_shares=10,
+            ladder1_fill_price=None, ladder1_fill_qty=0,
+            ladder2_fill_price=None, ladder2_fill_qty=0,
+            exit_date=date(2026,2,1), exit_price=110,
+            exit_reason=ExitReason.END_OF_PERIOD,
+            final_shares=10, weighted_avg_entry_price=100,
+            trailing_activated=False, trailing_peak_threshold=None,
+            total_commission=5.0,
+        )
+        # gross = (110-100)*10 = 100; net = 100 - 5 = 95
+        self.assertAlmostEqual(t.pnl(), 95.0)
+
+
 if __name__ == "__main__":
     unittest.main()

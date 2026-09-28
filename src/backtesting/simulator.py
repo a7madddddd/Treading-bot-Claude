@@ -93,12 +93,18 @@ class BacktestSimulator:
             return None
 
         entry_bar = bars[start_index]
-        entry_price = entry_bar.close
         entry_qty = (
             self._config.override_initial_qty
             if self._config.override_initial_qty is not None
             else self._strategy.initial_qty
         )
+        # Slippage applied to entry: paid price is worse than the bar's
+        # close by cost_model.slippage_bps_buy. The frozen reference
+        # (ladder + floor prices) is derived from the actual paid fill,
+        # which matches how the live engine anchors to broker-reported
+        # fills, not to any pre-order intent.
+        entry_price = self._config.cost_model.buy_fill(entry_bar.close)
+        commissions_paid = self._config.cost_model.commission(entry_qty)
 
         trade = Trade(
             trade_id=f"bt-{uuid.uuid4().hex[:12]}",
@@ -119,12 +125,17 @@ class BacktestSimulator:
             # 1) Floor hit? Protective exit wins over ladder fills.
             floor = trade.active_floor_price
             if floor is not None and bar.low <= floor <= bar.high:
+                exit_price_net = self._config.cost_model.sell_fill(floor)
+                commissions_paid += self._config.cost_model.commission(
+                    trade.total_shares
+                )
                 return (self._exit_trade(
                     symbol, trade, entry_bar.bar_date, entry_price,
-                    exit_date=bar.bar_date, exit_price=floor,
+                    exit_date=bar.bar_date, exit_price=exit_price_net,
                     reason=ExitReason.TRAILING_FLOOR_HIT
                     if trade.trailing_activated
                     else ExitReason.FLOOR_HIT,
+                    total_commission=commissions_paid,
                 ), j)
 
             # 2) Ladder 2 (deeper) checked BEFORE Ladder 1 because
@@ -144,15 +155,23 @@ class BacktestSimulator:
             if (not trade.ladder2_filled
                     and trade.ladder2_price is not None
                     and bar.low <= trade.ladder2_price):
+                fill_px = self._config.cost_model.buy_fill(trade.ladder2_price)
                 trade = self._fill_ladder(trade, action_2=True,
-                                          fill_price=trade.ladder2_price,
+                                          fill_price=fill_px,
                                           fill_qty=ladder2_qty)
+                commissions_paid += self._config.cost_model.commission(
+                    ladder2_qty
+                )
             if (not trade.ladder1_filled
                     and trade.ladder1_price is not None
                     and bar.low <= trade.ladder1_price):
+                fill_px = self._config.cost_model.buy_fill(trade.ladder1_price)
                 trade = self._fill_ladder(trade, action_2=False,
-                                          fill_price=trade.ladder1_price,
+                                          fill_price=fill_px,
                                           fill_qty=ladder1_qty)
+                commissions_paid += self._config.cost_model.commission(
+                    ladder1_qty
+                )
 
             # 3) Trailing activation (compounded per D-0008). Round to
             #    match trade.models.activate_trailing's internal rounding.
@@ -186,10 +205,15 @@ class BacktestSimulator:
 
         # End of data reached without exit -- close at last close.
         last_bar = bars[-1]
+        exit_price_net = self._config.cost_model.sell_fill(last_bar.close)
+        commissions_paid += self._config.cost_model.commission(
+            trade.total_shares
+        )
         return (self._exit_trade(
             symbol, trade, entry_bar.bar_date, entry_price,
-            exit_date=last_bar.bar_date, exit_price=last_bar.close,
+            exit_date=last_bar.bar_date, exit_price=exit_price_net,
             reason=ExitReason.END_OF_PERIOD,
+            total_commission=commissions_paid,
         ), len(bars) - 1)
 
     def _fill_ladder(self, trade: Trade, *, action_2: bool,
@@ -214,6 +238,7 @@ class BacktestSimulator:
     def _exit_trade(
         self, symbol: str, trade: Trade, entry_date: date, entry_price: float,
         *, exit_date: date, exit_price: float, reason: ExitReason,
+        total_commission: float = 0.0,
     ) -> BacktestTrade:
         return BacktestTrade(
             symbol=symbol,
@@ -231,4 +256,5 @@ class BacktestSimulator:
             weighted_avg_entry_price=trade.weighted_avg_entry_price or entry_price,
             trailing_activated=trade.trailing_activated,
             trailing_peak_threshold=trade.trailing_current_threshold,
+            total_commission=total_commission,
         )

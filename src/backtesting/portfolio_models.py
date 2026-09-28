@@ -11,7 +11,7 @@ from datetime import date
 from enum import Enum
 from typing import Dict, Optional, Tuple
 
-from backtesting.models import BacktestTrade, ExitReason
+from backtesting.models import BacktestTrade, ExitReason, TransactionCostModel
 
 
 class RejectionReason(str, Enum):
@@ -43,6 +43,9 @@ class PortfolioBacktestConfig:
     override_initial_qty: Optional[int] = None
     override_ladder1_qty: Optional[int] = None
     override_ladder2_qty: Optional[int] = None
+    cost_model: TransactionCostModel = field(
+        default_factory=lambda: TransactionCostModel()
+    )
 
 
 @dataclass(frozen=True)
