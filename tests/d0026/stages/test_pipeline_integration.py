@@ -92,6 +92,82 @@ class TestPipelineIntegration(unittest.TestCase):
         self.assertTrue(outcome.snapshot.is_empty)
         self.assertEqual(len(outcome.snapshot.symbols), 0)
 
+    def test_pipeline_with_enricher_produces_non_empty_snapshot(self):
+        """B23: with a feature enricher wired, fully-featured
+        candidates flow through all stages and land in the snapshot as
+        real SnapshotSymbolEntry rows."""
+        from d0026.models import (
+            AdjustmentConvention, DailySecurityFeatures, MarketDataBar,
+            UniverseCandidate,
+        )
+
+        def enricher(candidate: UniverseCandidate, as_of_date, regime_state):
+            ticker = candidate.raw.ticker
+            security_id = f"sec-{ticker}"
+            # Different momentum per symbol to produce a stable ranking.
+            mom_by_ticker = {"AAPL": 0.10, "TSLA": 0.07, "SPY": 0.03}
+            # Each candidate in its own sector so the concentration
+            # stage doesn't drop 2 of 3 for over-representation.
+            sector_by_ticker = {"AAPL": "tech", "TSLA": "auto",
+                                "SPY": "index"}
+            source_ref = f"sector={sector_by_ticker[ticker]}"
+            bar = MarketDataBar(
+                security_id=security_id, ticker_as_of_date=ticker,
+                bar_date=as_of_date, open=100.0, high=102.0, low=98.0,
+                close=100.0, volume=5_000_000.0,
+                adjustment=AdjustmentConvention.SPLIT_ADJUSTED,
+                source_reference=source_ref,
+            )
+            features = DailySecurityFeatures(
+                security_id=security_id, feature_date=as_of_date,
+                liquidity_measure=10_000_000.0, atr_measure=2.0,
+                momentum_measure=mom_by_ticker[ticker],
+                execution_quality_proxy=0.001,
+                execution_quality_proxy_is_true_quote=True,
+                warm_up_sufficient=True,
+                source_reference=source_ref,
+            )
+            return UniverseCandidate(
+                raw=candidate.raw,
+                identity_resolution=candidate.identity_resolution,
+                bar=bar, features=features,
+            )
+
+        provider = _StubProvider(("AAPL", "TSLA", "SPY"))
+        # Permissive config to keep all three candidates through the
+        # percentage-based filters; the point of this test is to
+        # verify the SYMBOLS-POPULATION wiring, not to re-test the
+        # per-stage filter logic (which lives in test_stages.py).
+        permissive = UniverseSelectionConfig(
+            min_volume_percentile=1.0,
+            drop_bottom_price_percentile=0.0,
+            min_market_cap_percentile=1.0,
+            min_completeness_fraction=0.5,
+            min_spread_tightness_percentile=1.0,
+            min_trend_percentile=1.0,
+            top_n=10,
+        )
+        pipeline = UniversePipeline(
+            provider=provider,
+            identity_resolver=_StubResolver(),
+            stage_evaluators=default_percentage_evaluators(permissive),
+            snapshot_repository=InMemorySnapshotRepository(),
+            audit_sink=_MemSink(),
+            selection_version="test-v1",
+            universe_source_version="stub",
+            identity_mapping_version="stub",
+            feature_enricher=enricher,
+        )
+        outcome = pipeline.run(DATE, self._regime())
+        self.assertIsInstance(outcome, SnapshotOutcome)
+        self.assertFalse(outcome.snapshot.is_empty,
+                         msg=f"expected non-empty; got {outcome.snapshot}")
+        # All three make Top-N. Ranking orders by momentum (AAPL top).
+        tickers = tuple(s.ticker_as_of_date for s in outcome.snapshot.symbols)
+        self.assertEqual(len(outcome.snapshot.symbols), 3)
+        self.assertEqual(tickers[0], "AAPL")
+        self.assertEqual(outcome.snapshot.symbols[0].rank, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

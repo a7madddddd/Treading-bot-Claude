@@ -21,7 +21,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Dict, Mapping, Tuple
+from typing import Callable, Dict, Mapping, Optional, Tuple
 
 from .failure import CrashCategory, CrashOutcome, PipelineOutcome, SnapshotOutcome
 from .identity import IdentityResolver, ResolutionOutcome
@@ -44,6 +44,7 @@ from .observability import (
     SnapshotPublishedEvent,
 )
 from .provider import UniverseSourceProvider
+from .publish import build_snapshot_symbols
 from .repository import SnapshotRepository
 from .snapshot import ApprovedUniverseSnapshot, SnapshotSymbolEntry
 
@@ -159,7 +160,17 @@ class UniversePipeline:
         selection_version: str,
         universe_source_version: str,
         identity_mapping_version: str,
+        feature_enricher: Optional[Callable] = None,
     ) -> None:
+        """`feature_enricher` (optional): a callable that takes a
+        resolved UniverseCandidate and returns a new UniverseCandidate
+        with `bar` and/or `features` populated. Runs AFTER identity
+        resolution and BEFORE the eight stage evaluators. When None,
+        candidates flow into the stages with bar=None, features=None
+        (Stage A/B will then reject them all as MISSING_MARKET_DATA
+        -- a valid EMPTY outcome, no crash). Signature:
+            (UniverseCandidate, date, RegimeState) -> UniverseCandidate.
+        """
         missing = set(ORDERED_CANDIDATE_STAGES) - set(stage_evaluators)
         if missing:
             raise ValueError(f"missing stage evaluators for: {sorted(s.value for s in missing)}")
@@ -171,6 +182,7 @@ class UniversePipeline:
         self._selection_version = selection_version
         self._universe_source_version = universe_source_version
         self._identity_mapping_version = identity_mapping_version
+        self._feature_enricher = feature_enricher
 
     def run(self, as_of_date: date, regime_state: RegimeState) -> PipelineOutcome:
         now = datetime.utcnow()
@@ -271,6 +283,10 @@ class UniversePipeline:
             # RESOLVED (any confidence tier, including PROVISIONAL) flows
             # through — a provisional identity is a normal, expected,
             # fully auditable tier, not a rejection reason by itself.
+            if self._feature_enricher is not None:
+                candidate = self._feature_enricher(
+                    candidate, as_of_date, regime_state,
+                )
             candidates += (candidate,)
 
         for stage in ORDERED_CANDIDATE_STAGES:
@@ -290,16 +306,15 @@ class UniversePipeline:
             all_rejections += result.rejections
             candidates = result.survivors
 
-        # With the stub evaluators this codebase ships
-        # (NotCalibratedStageEvaluator), reaching this point with a
-        # non-empty `candidates` tuple is not possible: the first stage
-        # to receive at least one candidate raises CalibrationRequiredError
-        # rather than deciding anything, which the caller converts to a
-        # CrashOutcome. Only a genuinely empty candidate pool (no raw
-        # candidates from the provider, or every raw candidate rejected
-        # during identity resolution before any stage runs) can reach
-        # here — which is exactly the legitimate EMPTY outcome, produced
-        # without any stage having to exercise uncalibrated judgment.
+        # Under the percentage-only D-0048 evaluators, candidates
+        # surviving to this point form the final ranked pool (Ranking
+        # ordered them descending; TopN cut to at most `top_n`).
+        # Convert survivors into SelectedCandidateEntry + evidence-
+        # classified SnapshotSymbolEntry so the published snapshot
+        # actually contains the selected symbols. Under
+        # NotCalibratedStageEvaluator (pre-D-0048 fallback) this
+        # section is unreachable because those stubs raise before
+        # returning a non-empty survivor pool.
         is_empty = len(candidates) == 0
         selected: Tuple[SelectedCandidateEntry, ...] = ()
         symbols: Tuple[SnapshotSymbolEntry, ...] = ()
@@ -309,6 +324,23 @@ class UniversePipeline:
                 "no candidates survived to Top-N"
                 if raw_candidates
                 else "provider returned no raw candidates for this date"
+            )
+        else:
+            symbols = build_snapshot_symbols(
+                candidates, regime_state=regime_state,
+                as_of_date=as_of_date,
+            )
+            if not symbols:
+                is_empty = True
+                empty_reason = (
+                    "all Top-N survivors were routed away by the "
+                    "post-pipeline classification layer"
+                )
+            selected = tuple(
+                SelectedCandidateEntry(
+                    candidate=c, rank=i + 1, score_summary=(),
+                )
+                for i, c in enumerate(candidates)
             )
 
         rejection_counts: Dict[str, int] = {}
