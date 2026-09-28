@@ -84,6 +84,9 @@ class PortfolioMetrics:
     peak_equity: float
     total_rejections: int
     rejection_counts: Tuple[Tuple[str, int], ...] = field(default_factory=tuple)
+    cagr: float = 0.0
+    annualized_sharpe: float = 0.0
+    trading_days_covered: int = 0
 
 
 @dataclass(frozen=True)

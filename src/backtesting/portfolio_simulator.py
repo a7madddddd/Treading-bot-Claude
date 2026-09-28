@@ -34,7 +34,9 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time, timezone
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
-from backtesting.metrics import _max_drawdown, _sharpe
+from backtesting.metrics import (
+    _max_drawdown, _sharpe, compute_annualized_sharpe, compute_cagr,
+)
 from backtesting.models import Bar, BacktestTrade, ExitReason
 from backtesting.portfolio_models import (
     EquityPoint, PortfolioBacktestConfig, PortfolioBacktestResult,
@@ -448,6 +450,23 @@ class PortfolioSimulator:
         returns_per_trade = [t.return_fraction() for t in completed]
         sharpe = _sharpe(returns_per_trade)
 
+        # Annualized metrics (B27c): use the equity-curve span to
+        # compute CAGR and annualized Sharpe. Trading-day span is
+        # inclusive of both endpoints.
+        span_days = 0
+        start_dt = end_dt = None
+        if equity_curve:
+            start_dt = equity_curve[0].bar_date
+            end_dt = equity_curve[-1].bar_date
+            span_days = len(equity_curve)
+        cagr_val = compute_cagr(initial, final_equity, start_dt, end_dt)
+        if span_days > 1 and completed:
+            trades_per_year = len(completed) / (span_days / 252.0)
+        else:
+            trades_per_year = 0.0
+        annualized = compute_annualized_sharpe(returns_per_trade,
+                                               trades_per_year)
+
         counts_map: Dict[str, int] = {}
         for r in rejections:
             counts_map[r.reason.value] = counts_map.get(r.reason.value, 0) + 1
@@ -461,6 +480,9 @@ class PortfolioSimulator:
             sharpe_ratio=sharpe, peak_equity=peak,
             total_rejections=len(rejections),
             rejection_counts=tuple(sorted(counts_map.items())),
+            cagr=cagr_val,
+            annualized_sharpe=annualized,
+            trading_days_covered=span_days,
         )
 
 
@@ -496,5 +518,6 @@ def _empty_result(initial_cash: float) -> PortfolioBacktestResult:
             profit_factor=0.0, max_drawdown=0.0,
             max_drawdown_fraction=0.0, sharpe_ratio=0.0,
             peak_equity=initial_cash, total_rejections=0,
+            cagr=0.0, annualized_sharpe=0.0, trading_days_covered=0,
         ),
     )
