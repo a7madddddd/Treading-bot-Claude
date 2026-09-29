@@ -119,10 +119,22 @@ class PortfolioSimulator:
                     last_exit_by_symbol[sym] = d
 
             # 3. Consider new entries.
+            approved_today = None
+            if self._config.universe_prefilter is not None:
+                approved_today = self._config.universe_prefilter.approved_symbols_on(d)
             for sym in sorted(symbols_today):
                 if sym in positions:
                     continue
                 if not self._past_cooldown(sym, d, last_exit_by_symbol):
+                    continue
+                if approved_today is not None and sym not in approved_today:
+                    rejections.append(RejectionRecord(
+                        bar_date=d, symbol=sym,
+                        reason=RejectionReason.NOT_IN_APPROVED_UNIVERSE,
+                        detail=(
+                            f"{sym} not in D-0026 approved universe for {d}"
+                        ),
+                    ))
                     continue
                 bar = bars_index[sym][d]
                 entry_qty = (

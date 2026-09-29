@@ -21,6 +21,7 @@ class RejectionReason(str, Enum):
     CONCURRENT_TRADES = "concurrent_trades"
     NEW_TRADES_TODAY = "new_trades_today"
     INSUFFICIENT_CASH = "insufficient_cash"
+    NOT_IN_APPROVED_UNIVERSE = "not_in_approved_universe"
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,7 @@ class PortfolioBacktestConfig:
     cost_model: TransactionCostModel = field(
         default_factory=lambda: TransactionCostModel()
     )
+    universe_prefilter: Optional[object] = None
 
 
 @dataclass(frozen=True)

@@ -53,6 +53,9 @@ def main() -> int:
     p.add_argument("--years", type=float, default=3.0)
     p.add_argument("--initial-cash", type=float, default=50_000.0)
     p.add_argument("--verbose-trades", action="store_true")
+    p.add_argument("--prefilter", action="store_true",
+                   help="Apply D-0026 D-0048 pre-filter (B27d)")
+    p.add_argument("--top-n", type=int, default=10)
     args = p.parse_args()
 
     key = _require_env("ALPACA_API_KEY_ID")
@@ -82,7 +85,20 @@ def main() -> int:
         bars_by_symbol[sym] = bars
         print(f"  {sym}: {len(bars)} bars")
 
-    cfg = PortfolioBacktestConfig(initial_cash=args.initial_cash)
+    prefilter = None
+    if args.prefilter:
+        from backtesting.prefilter import BacktestUniversePrefilter
+        from d0026.config import UniverseSelectionConfig
+        prefilter = BacktestUniversePrefilter(
+            bars_by_symbol=bars_by_symbol,
+            config=UniverseSelectionConfig(top_n=args.top_n),
+        )
+        print(f"  D-0026 pre-filter enabled (top_n={args.top_n})")
+
+    cfg = PortfolioBacktestConfig(
+        initial_cash=args.initial_cash,
+        universe_prefilter=prefilter,
+    )
     print(f"\nRunning portfolio backtest (D-0047 limits applied)...")
     result = PortfolioSimulator(cfg).run(bars_by_symbol)
     m = result.metrics
