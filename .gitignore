@@ -16,10 +16,10 @@ logs/
 
 # Runtime SQLite state (session/proposal/trade DB) -- created at runtime,
 # never source. Contains real broker session data; must not be committed.
+# Trailing wildcard also catches archived snapshots
+# (e.g. paper_session.sqlite.pre-reset-YYYYMMDDTHHMMSSZ).
 *.sqlite
-*.sqlite-journal
-*.sqlite-wal
-*.sqlite-shm
+*.sqlite*
 
 # Common build/artifact dirs (kept broad; refine when a language is chosen)
 node_modules/
