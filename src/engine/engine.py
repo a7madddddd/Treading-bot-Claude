@@ -200,6 +200,10 @@ class Engine:
                         f"for trade {trade_id} is still awaiting Controller approval."
                     ),
                     symbol=proposal.symbol,
+                    interactive_actions=(
+                        ("✅ Approve", f"approve:{proposal.proposal_id}"),
+                        ("❌ Reject", f"reject:{proposal.proposal_id}"),
+                    ),
                 )
                 continue
 
@@ -250,6 +254,10 @@ class Engine:
                 f"for trade {trade_id} ({symbol})."
             ),
             symbol=symbol,
+            interactive_actions=(
+                ("✅ Approve", f"approve:{proposal.proposal_id}"),
+                ("❌ Reject", f"reject:{proposal.proposal_id}"),
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -489,6 +497,10 @@ class Engine:
                 f"{proposal.proposal_id} awaiting Controller approval."
             ),
             symbol=symbol,
+            interactive_actions=(
+                ("✅ Approve", f"approve:{proposal.proposal_id}"),
+                ("❌ Reject", f"reject:{proposal.proposal_id}"),
+            ),
         )
         self._notified.add(("pending_approval", proposal.proposal_id))
 
@@ -595,6 +607,10 @@ class Engine:
             event="proposal_awaiting_approval",
             message=f"New proposal {proposal.proposal_id} ({action.value}) for trade {trade_id} awaiting Controller approval.",
             symbol=proposal.symbol,
+            interactive_actions=(
+                ("✅ Approve", f"approve:{proposal.proposal_id}"),
+                ("❌ Reject", f"reject:{proposal.proposal_id}"),
+            ),
         )
         self._notified.add(("pending_approval", proposal.proposal_id))
 
@@ -675,17 +691,25 @@ class Engine:
         event: str,
         message: str,
         symbol: Optional[str] = None,
+        interactive_actions: tuple = (),
     ) -> None:
         dedup_key = (kind, key)
         if dedup_key in self._notified:
             return
         self._notified.add(dedup_key)
-        self._notify(level=level, event=event, message=message, symbol=symbol)
+        self._notify(
+            level=level, event=event, message=message, symbol=symbol,
+            interactive_actions=interactive_actions,
+        )
 
     def _notify(
-        self, *, level: NotificationLevel, event: str, message: str, symbol: Optional[str] = None
+        self, *, level: NotificationLevel, event: str, message: str,
+        symbol: Optional[str] = None, interactive_actions: tuple = (),
     ) -> None:
-        self._notifier.send(NotificationEvent(level=level, event=event, message=message, symbol=symbol))
+        self._notifier.send(NotificationEvent(
+            level=level, event=event, message=message, symbol=symbol,
+            interactive_actions=interactive_actions,
+        ))
 
     # ------------------------------------------------------------------
     # Real-clock composition. Every method above is a plain function of

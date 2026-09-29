@@ -42,6 +42,11 @@ class NotificationEvent:
     symbol: Optional[str] = None
     timestamp: Optional[datetime] = None
     extra: Tuple[Tuple[str, str], ...] = field(default_factory=tuple)
+    # Optional inline buttons. Each tuple = (visible_label, callback_data).
+    # Callback data must match `_parse_callback_data` in
+    # `telegram_decision.py`: "<action>:<proposal_id>" where action is
+    # one of approve/reject/confirm_l2.
+    interactive_actions: Tuple[Tuple[str, str], ...] = field(default_factory=tuple)
 
     def effective_timestamp(self) -> datetime:
         return self.timestamp if self.timestamp is not None else datetime.now(timezone.utc)

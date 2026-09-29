@@ -121,7 +121,18 @@ class TelegramNotificationService(INotificationService):
 
     def send(self, event: NotificationEvent) -> NotificationResult:
         url = f"{_TELEGRAM_API_BASE}/bot{self._bot_token}/sendMessage"
-        payload = json.dumps({"chat_id": self._chat_id, "text": self._format_text(event)}).encode("utf-8")
+        body: dict = {"chat_id": self._chat_id, "text": self._format_text(event)}
+        if event.interactive_actions:
+            # Telegram inline keyboard: one row per action pair. Each button
+            # carries a callback_data of the form "<action>:<proposal_id>",
+            # which `TelegramDecisionSource._parse_callback_data` accepts.
+            body["reply_markup"] = {
+                "inline_keyboard": [[
+                    {"text": label, "callback_data": callback_data}
+                    for (label, callback_data) in event.interactive_actions
+                ]]
+            }
+        payload = json.dumps(body).encode("utf-8")
         headers = {"Content-Type": "application/json"}
 
         last_error: Optional[str] = None
