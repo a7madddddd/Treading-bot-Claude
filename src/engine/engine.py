@@ -208,6 +208,32 @@ class Engine:
                 continue
 
             if proposal.approval_state is ApprovalState.APPROVED:
+                # Same live-observed gap as in _apply_decision: an
+                # Initial Entry approved before a process crash never
+                # got a broker order (its per-cycle submission path is
+                # gated behind ACTIVE status, which it does not yet
+                # have). On startup, retry the submission if no
+                # execution record exists yet. Ladders are submitted
+                # by _process_trade at the next tick as before.
+                if (
+                    proposal.proposed_action is TradeAction.INITIAL_ENTRY
+                    and self._execution_repo.get_by_proposal_id(proposal.proposal_id) is None
+                ):
+                    try:
+                        price = self._market_data.get_last_trade(proposal.symbol)
+                    except MarketDataUnavailableError:
+                        # Leave APPROVED; next reconciliation tick with
+                        # working market data will retry via the same
+                        # gap-fix in _apply_decision (queue drain) OR
+                        # future recovery ticks. Not fatal.
+                        continue
+                    self._submit_approved(
+                        proposal.proposal_id,
+                        current_price=price,
+                        active_floor_price=proposal.floor_trigger,
+                        now=now,
+                    )
+                    continue
                 self._execution_service.recover_if_terminal(proposal.proposal_id, now=now)
                 self._maybe_notify_ladder2_pending_confirmation(proposal.proposal_id, now=now)
 
@@ -435,6 +461,48 @@ class Engine:
                 event="decision_conflict",
                 message=f"Controller decision for {decision.proposal_id} could not be recorded: {exc}",
                 symbol=proposal.symbol,
+            )
+            return
+
+        # For an Initial Entry approval, submit to the broker immediately.
+        # The per-cycle _process_trade loop skips AWAITING_INITIAL_FILL
+        # trades (see the guard there), so nothing else in this file
+        # would ever fire submit_approved_proposal for an Initial Entry
+        # -- the proposal would sit APPROVED-but-unsubmitted forever
+        # (a real bug observed live in the 2026-09-29 paper session).
+        # Ladder approvals continue to be submitted by _process_trade at
+        # the next tick, which also revalidates the trigger against the
+        # current price and D-0007's ±0.5% band.
+        if approved and proposal.proposed_action is TradeAction.INITIAL_ENTRY:
+            try:
+                price = self._market_data.get_last_trade(proposal.symbol)
+            except MarketDataUnavailableError as exc:
+                self._notify(
+                    level=NotificationLevel.CRITICAL,
+                    event="market_data_unavailable",
+                    message=(
+                        f"Could not fetch current price for {proposal.symbol} to submit "
+                        f"approved Initial Entry proposal {proposal.proposal_id}: {exc}. "
+                        f"Proposal remains APPROVED; submission will be retried on the next "
+                        f"reconciliation tick that has market data."
+                    ),
+                    symbol=proposal.symbol,
+                )
+                return
+            # An INITIAL_ENTRY has no prior position and therefore no
+            # PRIOR active floor -- but Controller-approved D-0007
+            # revalidation still requires a non-None floor for every
+            # submission (see tests/proposals/test_revalidation.py's
+            # TestD2UnknownFloorBlocks). The proposal itself already
+            # carries the floor level this trade WILL have once it
+            # opens (proposal.floor_trigger = entry * (1 + floor_pct)),
+            # which is the semantically correct value to revalidate
+            # the entry price against.
+            self._submit_approved(
+                proposal.proposal_id,
+                current_price=price,
+                active_floor_price=proposal.floor_trigger,
+                now=now,
             )
 
     # ------------------------------------------------------------------

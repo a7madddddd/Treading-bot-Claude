@@ -281,6 +281,40 @@ class TestDecisionIntakeAndSubmission(unittest.TestCase):
         engine.run_trigger_check(now=_now() + timedelta(seconds=2))
         self.assertEqual(broker.submit_calls, [execution_repo.get_by_proposal_id(proposal.proposal_id).execution.client_order_id])
 
+    def test_approve_initial_entry_submits_on_the_reconciliation_tick(self):
+        """Regression for a live-observed bug in the 2026-09-29 paper
+        session: an Initial Entry proposal, once approved via Telegram,
+        was recorded APPROVED in the proposal store but never reached
+        the broker because the per-cycle _process_trade loop skips
+        AWAITING_INITIAL_FILL trades. The fix submits an INITIAL_ENTRY
+        immediately from _apply_decision (the same reconciliation tick
+        that drains the decision queue) so the trade actually reaches
+        Alpaca."""
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        watchlist = StaticWatchlistSource(("TSLA",))
+        engine, broker, market_data, decisions, notifier, exec_service = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn, watchlist=watchlist
+        )
+        market_data.set_price("TSLA", 100.0)
+        engine._lock.acquire(now=_now())
+
+        engine.run_trigger_check(now=_now())
+        trades = trade_repo.list_for_symbol("TSLA")
+        self.assertEqual(len(trades), 1)
+        trade_id = trades[0].trade.trade_id
+        proposal = [p for p in proposal_repo.list_for_trade(trade_id) if p.proposed_action is TradeAction.INITIAL_ENTRY][0]
+
+        # Controller approves. One reconciliation tick must both record
+        # the decision AND submit the order to the broker.
+        decisions.submit(ControllerDecision(proposal_id=proposal.proposal_id, kind=DecisionKind.APPROVE, decided_by="controller"))
+        engine.run_reconciliation_tick(now=_now() + timedelta(seconds=1))
+
+        approved = proposal_repo.get(proposal.proposal_id)
+        self.assertEqual(approved.approval_state, ApprovalState.APPROVED)
+        exec_record = execution_repo.get_by_proposal_id(proposal.proposal_id)
+        self.assertIsNotNone(exec_record, "Initial Entry approval must reach the broker in the same tick")
+        self.assertEqual(broker.submit_calls, [exec_record.execution.client_order_id])
+
     def test_reject_decision_prevents_submission(self):
         trade_repo, proposal_repo, execution_repo, conn = _repos()
         _active_trade(trade_repo, price=100.0)
