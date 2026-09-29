@@ -320,11 +320,66 @@ class TelegramDecisionSource(PendingDecisionSource):
             logger.info("Telegram callback dropped: unrecognized data payload")
             return None
         kind, proposal_id = parsed
+        # Dismiss the buttons on the source message so the same choice
+        # cannot be re-clicked. Best-effort: any transport failure is
+        # swallowed so a network hiccup here never blocks the decision
+        # that has already been made.
+        self._dismiss_buttons_after_click(callback, decision_label=kind.name)
         return ControllerDecision(
             proposal_id=proposal_id,
             kind=kind,
             decided_by=str(sender_id),
         )
+
+    def _dismiss_buttons_after_click(
+        self, callback: Mapping[str, object], *, decision_label: str
+    ) -> None:
+        callback_id = callback.get("id")
+        message = callback.get("message")
+        chat_id: Optional[object] = None
+        message_id: Optional[object] = None
+        if isinstance(message, Mapping):
+            chat = message.get("chat")
+            if isinstance(chat, Mapping):
+                chat_id = chat.get("id")
+            message_id = message.get("message_id")
+
+        headers = {"Content-Type": "application/json"}
+
+        # 1) Acknowledge the callback (removes the loading spinner on
+        #    the Controller's client, and shows a short toast).
+        if isinstance(callback_id, str) and callback_id:
+            try:
+                ack_url = f"{_TELEGRAM_API_BASE}/bot{self._bot_token}/answerCallbackQuery"
+                ack_body = json.dumps({
+                    "callback_query_id": callback_id,
+                    "text": f"Recorded: {decision_label}",
+                }).encode("utf-8")
+                self._transport(ack_url, ack_body, headers, self._http_timeout_seconds)
+            except Exception as exc:  # noqa: BLE001 - best-effort
+                logger.info(
+                    "answerCallbackQuery best-effort failed (%s: %s)",
+                    type(exc).__name__, exc,
+                )
+
+        # 2) Strip the inline keyboard so re-clicks are impossible.
+        if (
+            isinstance(chat_id, (int, str))
+            and isinstance(message_id, int)
+        ):
+            try:
+                edit_url = f"{_TELEGRAM_API_BASE}/bot{self._bot_token}/editMessageReplyMarkup"
+                edit_body = json.dumps({
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "reply_markup": {"inline_keyboard": []},
+                }).encode("utf-8")
+                self._transport(edit_url, edit_body, headers, self._http_timeout_seconds)
+            except Exception as exc:  # noqa: BLE001 - best-effort
+                logger.info(
+                    "editMessageReplyMarkup best-effort failed (%s: %s)",
+                    type(exc).__name__, exc,
+                )
 
     def _parse_text_message(self, message: Mapping[str, object]) -> Optional[ControllerDecision]:
         sender_id = self._authorized_sender_id(message.get("from"))

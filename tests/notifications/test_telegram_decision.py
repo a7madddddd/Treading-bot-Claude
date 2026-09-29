@@ -24,6 +24,7 @@ class _StubTransport:
         self._queue: List = []
         self._empty_after_queue = empty_after_queue
         self.calls: List[Tuple[str, Optional[bytes]]] = []
+        self.side_effect_calls: List[Tuple[str, Optional[bytes]]] = []
         self._lock = threading.Lock()
 
     def queue(self, response: TransportResponse) -> None:
@@ -36,6 +37,22 @@ class _StubTransport:
 
     def __call__(self, url: str, data: Optional[bytes], headers: Mapping[str, str], timeout: float) -> TransportResponse:
         with self._lock:
+            # Best-effort side-effect calls (answerCallbackQuery,
+            # editMessageReplyMarkup) fired after a valid button click
+            # are not part of the getUpdates receive contract these
+            # tests exercise -- succeed them silently and do NOT
+            # append them to `calls` so existing offset assertions
+            # remain based on getUpdates calls only.
+            is_side_effect = (
+                "/answerCallbackQuery" in url
+                or "/editMessageReplyMarkup" in url
+            )
+            if is_side_effect:
+                self.side_effect_calls.append((url, data))
+                return TransportResponse(
+                    status_code=200,
+                    body=b'{"ok": true, "result": true}',
+                )
             self.calls.append((url, data))
             if self._queue:
                 nxt = self._queue.pop(0)
