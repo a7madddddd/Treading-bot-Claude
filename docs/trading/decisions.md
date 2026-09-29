@@ -2749,3 +2749,163 @@ Any change to these values is itself a new Controller decision.
   provider and feature enricher.
 - Backtesting becomes an OPTIONAL follow-up bounded by cost/benefit,
   not a prerequisite.
+
+## D-0049 — Controller override on D-0045: jump directly to Session 3; live-observed bug fixes from that jump
+
+**Date:** 2026-09-29
+**Type:** Controller operational decision plus three bug fixes uncovered
+by that decision's live run.
+**Supersedes:** D-0045 §3-5 staged rollout (Session 1 alone → Session
+2 → Session 3).
+**Does NOT change:** approved strategy math (D-0004, D-0008), D-0007
+revalidation semantics, D-0047 risk limits, D-0048 pipeline
+percentages, paper-only constraint, or the approval workflow itself.
+
+### Context
+
+D-0045 (2026-09-27) approved a three-stage rollout for real-case paper
+session testing: Session 1 = TSLA alone, Session 2 = TSLA + AAPL,
+Session 3 = TSLA + AAPL + SPY. The stated purpose of the staging was
+to isolate any failure to the smallest possible symbol set first and
+then widen once each stage passed clean.
+
+Between D-0045 and today, the Alpaca paper account was reset (new
+account `PA38G7QYMDHV`, cash restored to $100,000). Broker dry-run
+today: 7/7 PASS. Full test suite still 1092/1092 PASS on branch
+`claude/youthful-goodall-4cr0ei`.
+
+### Controller decision
+
+The Controller elected to skip Session 1 and Session 2 and launch
+Session 3 directly. The Controller's stated reason (paraphrased): the
+incremental value of the two earlier stages is now low given the
+volume of code verification completed since D-0045 -- B25b portfolio
+simulator, B26 HTTP retry, B27a-d backtesting extensions, B28 retry
+integration tests, B29 persistent scheduler daemon, and B30 sector
+data source -- and the clean broker dry-run on the reset account.
+
+### What was launched, and the three bugs the launch surfaced
+
+Launch command (with two inline env overrides -- see D-0049-A):
+
+```
+ALPACA_BASE_URL=https://paper-api.alpaca.markets \
+TELEGRAM_ADMIN_USER_IDS=8888859393 \
+PYTHONPATH=src python scripts/run_paper_session.py \
+  --symbols TSLA,AAPL,SPY --max-hours 7 --universe-mode static
+```
+
+The run exercised the approval loop end-to-end for the first time.
+Three bugs surfaced live, each of which had never been exercised
+before by any test:
+
+**Bug 1 -- proposal_awaiting_approval notifications had no buttons.**
+The Telegram messages were plain text; the Controller could only
+respond by typing `/approve <full-proposal-id>` or
+`/reject <full-proposal-id>` as a fresh message. Reply-to did not
+carry the id through the existing text-command regex. Fixed in commit
+`2cf19f0` -- added an optional `interactive_actions` tuple to
+`NotificationEvent`, wired it through the engine's `_notify_once` /
+`_notify` helpers, and populated it at all four
+`proposal_awaiting_approval` emission sites.
+`TelegramNotificationService.send()` attaches an `inline_keyboard`
+`reply_markup` when `interactive_actions` is non-empty.
+
+**Bug 2 -- the buttons kept working after a click.** After adding the
+buttons, the Controller pressed Approve for TSLA once; the click was
+recorded correctly, but the buttons remained on the message, so a
+second click on the same button generated a duplicate decision which
+the proposal repository rejected with a CRITICAL `decision_conflict`
+notification (a real observed event). Fixed in commit `f1729e8` --
+`TelegramDecisionSource._parse_callback` now fires two best-effort
+Telegram side-effect calls after a valid callback: `answerCallbackQuery`
+acknowledges the click on the client (removes the loading spinner,
+shows a short "Recorded: APPROVE" toast) and `editMessageReplyMarkup`
+with an empty `inline_keyboard` strips the buttons so re-clicks are
+impossible. Both are best-effort: any transport failure is swallowed
+and logged at INFO; the Controller's decision that was successfully
+parsed is still enqueued regardless.
+
+**Bug 3 -- an Initial Entry approval never reached the broker.** After
+Bug 1 and Bug 2 were fixed and buttons worked, TSLA and SPY were
+approved via the buttons; their `approval_state` moved to `approved`
+in the DB, but `/v2/orders` on Alpaca returned zero orders and
+`trades.initial_order_id` stayed None. Root cause: no code path in the
+engine submitted an Initial Entry approval. `_apply_decision` only
+recorded state, never called `submit_approved_proposal`; the per-cycle
+`_process_trade` loop that submits Ladder approvals at the next :30
+tick returned early for AWAITING_INITIAL_FILL trades ("Initial Entry
+proposal/approval/submission/reconciliation flow is handled by
+`_check_watchlist()`/`start_trade()` and the normal Proposal/Execution
+machinery, not by this per-cycle Ladder/Floor loop" -- but no such
+machinery existed for Initial Entry); `_recover_trade`'s APPROVED
+branch called `recover_if_terminal`, which is a no-op when no execution
+record exists yet. Nothing enforced this end-to-end because the
+existing decision-submission test covered only LADDER_1. Fixed in
+commit `06d76e3` -- `_apply_decision` now submits an INITIAL_ENTRY
+approval to the broker on the same reconciliation tick that drains the
+decision queue; `_recover_trade`'s APPROVED branch handles the same
+gap on engine startup after a crash. Both use `proposal.floor_trigger`
+as `active_floor_price` (semantically correct: the level the trade
+will have once it opens; also satisfies the Controller-approved D-0007
+contract in `TestD2UnknownFloorBlocks` that a non-None floor is
+required for every submission). A regression test
+(`test_approve_initial_entry_submits_on_the_reconciliation_tick`) was
+added.
+
+### D-0049-A -- ALPACA_BASE_URL normalization (RESOLVED)
+
+Pre-flight in `scripts/run_paper_session.py` failed with HTTP 404 on
+the first launch attempt because the cloud environment's
+`ALPACA_BASE_URL` was set to `https://paper-api.alpaca.markets/v2`
+(with `/v2` suffix), and `_alpaca_get()` does
+`base_url.rstrip("/") + path` where `path` is already `/v2/account`,
+producing the double-`/v2` URL. Today's live launches used an inline
+env override for that process only.
+
+Resolved 2026-09-29 by the Controller: the cloud environment's
+`ALPACA_BASE_URL` was normalized to `https://paper-api.alpaca.markets`
+(without `/v2`), matching the example in `CLAUDE.md §11`. Future
+launches read the correct value from the environment and no longer
+need the inline override.
+
+`scripts/verification/broker_dry_run.py` was unaffected throughout
+because it uses `AlpacaBrokerClient`, which has its own URL handling
+that tolerated the `/v2` suffix.
+
+### Trading-behavior impact
+
+None. This decision changes only which symbol set the first real-case
+session runs on and fixes three engine/notification bugs that would
+have blocked ANY real-case session regardless of symbol set. It does
+not touch:
+
+- The approved trading strategy (`docs/trading/strategy.md`)
+- The execution workflow (`docs/trading/execution.md`)
+- Risk limits (D-0047)
+- Universe pipeline (D-0048)
+- Approval transport (D-0025)
+- D-0007 revalidation semantics
+
+### Consequences
+
+- Updates B18 in `pre-apply-checklist.md` from "IN PROGRESS staged
+  (1 → 2 → 3)" to "IN PROGRESS -- Controller override to Session 3
+  directly (D-0049); button surface + Initial Entry submission gap
+  fixed; first end-to-end fill still to be observed in a follow-up
+  session".
+- Full suite grew from 1092/1092 PASS to 1093/1093 PASS with the
+  addition of `test_approve_initial_entry_submits_on_the_reconciliation_tick`.
+- `NotificationEvent` gained an optional `interactive_actions` field;
+  every existing caller that omits it produces the same plain-text
+  notification as before.
+- `TelegramNotificationService.send()` and
+  `TelegramDecisionSource._parse_callback` gained interactive-button
+  handling.
+- The first live data point about how the engine behaves across three
+  symbols on real Alpaca IEX quotes is now Session 3, not Session 1.
+- B17 (durable always-on host) remains deferred per D-0045 for the
+  same reason as before -- today's session died mid-day when the cloud
+  container was restarted, which is a live reminder that B17 needs
+  answering before daily unattended operation is credible; still not
+  a blocker for continuing bounded real-case testing.
