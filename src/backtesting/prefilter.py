@@ -53,6 +53,7 @@ from d0026.models import (
     ORDERED_CANDIDATE_STAGES, PipelineStage, RawCandidateRef,
     RegimeLabel, RegimeState, UniverseCandidate,
 )
+from d0026.sector_provider import SectorProvider, sector_fragment
 from d0026.stages import default_percentage_evaluators
 
 
@@ -70,10 +71,16 @@ class BacktestUniversePrefilter:
     Determinism: given the same bars_by_symbol and config, the
     approved set for any date is deterministic. Symbol ordering
     passed into stages is alphabetical.
+
+    `sector_provider` (optional): when supplied, each candidate's
+    features.source_reference gets a `sector=<name>` fragment so
+    stage G Concentration can enforce the D-0048 sector cap. When
+    None, stage G falls back to its fail-open no-op path.
     """
 
     bars_by_symbol: Mapping[str, Sequence[Bar]]
     config: UniverseSelectionConfig
+    sector_provider: Optional[SectorProvider] = None
 
     def approved_symbols_on(self, as_of_date: date) -> FrozenSet[str]:
         candidates = self._build_candidates(as_of_date)
@@ -120,6 +127,10 @@ class BacktestUniversePrefilter:
             momentum = _return_over(history, _MOMENTUM_LOOKBACK)
             exec_q = _mean_range_over_vwap(history[-_EXEC_QUALITY_WINDOW:])
 
+            sector = (self.sector_provider.sector_of(sym)
+                      if self.sector_provider is not None else None)
+            frag = sector_fragment(sector)
+            source_ref = ("backtest; " + frag) if frag else "backtest"
             features = DailySecurityFeatures(
                 security_id=market_bar.security_id,
                 feature_date=as_of_date,
@@ -129,7 +140,7 @@ class BacktestUniversePrefilter:
                 execution_quality_proxy=exec_q,
                 execution_quality_proxy_is_true_quote=False,
                 warm_up_sufficient=True,
-                source_reference="backtest",
+                source_reference=source_ref,
             )
             identity_id = f"bt-{sym}"
             resolution = IdentityResolution(

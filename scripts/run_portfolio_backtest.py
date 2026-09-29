@@ -89,11 +89,14 @@ def main() -> int:
     if args.prefilter:
         from backtesting.prefilter import BacktestUniversePrefilter
         from d0026.config import UniverseSelectionConfig
+        from d0026.sector_provider import load_default_sector_provider
         prefilter = BacktestUniversePrefilter(
             bars_by_symbol=bars_by_symbol,
             config=UniverseSelectionConfig(top_n=args.top_n),
+            sector_provider=load_default_sector_provider(),
         )
-        print(f"  D-0026 pre-filter enabled (top_n={args.top_n})")
+        print(f"  D-0026 pre-filter enabled (top_n={args.top_n}, "
+              f"sector-cap ON)")
 
     cfg = PortfolioBacktestConfig(
         initial_cash=args.initial_cash,
