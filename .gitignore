@@ -14,6 +14,13 @@ Thumbs.db
 logs/
 *.log
 
+# Runtime SQLite state (session/proposal/trade DB) -- created at runtime,
+# never source. Contains real broker session data; must not be committed.
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
 # Common build/artifact dirs (kept broad; refine when a language is chosen)
 node_modules/
 dist/
