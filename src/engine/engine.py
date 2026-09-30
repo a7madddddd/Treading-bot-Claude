@@ -606,6 +606,48 @@ class Engine:
             )
             return
 
+        # For a REJECTED Initial Entry, mark the Trade as ABANDONED so
+        # the symbol is available on the next watchlist tick. A Trade
+        # row is created at proposal-generation time before Controller
+        # approval; if it stays in AWAITING_INITIAL_FILL after the
+        # rejection, _check_watchlist's "already has an open trade for
+        # this symbol" guard permanently locks the symbol out (a
+        # live-observed 2026-09-30 audit finding).
+        if (
+            not approved
+            and proposal.proposed_action is TradeAction.INITIAL_ENTRY
+        ):
+            trade_record = self._trade_repo.get(proposal.trade_id)
+            if trade_record is not None:
+                trade = trade_record.trade
+                # Only abandon if the trade is still fresh (never
+                # reconciled). A rejection arriving for a
+                # somehow-already-reconciled trade is odd but not
+                # dangerous -- ignore it and leave the trade alone.
+                if not trade.initial_order_reconciled:
+                    try:
+                        self._trade_repo.update(
+                            trade.abandon_before_fill(now=now),
+                            expected_revision=trade_record.revision,
+                            transition="rejected_before_fill",
+                            now=now,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        # Shielded like the submission path -- a repo
+                        # write failure here must never crash the
+                        # engine.
+                        self._notify(
+                            level=NotificationLevel.CRITICAL,
+                            event="abandon_failed",
+                            message=(
+                                f"Could not mark {proposal.trade_id} as ABANDONED after "
+                                f"rejection of {proposal.proposal_id}: {exc}. "
+                                f"Symbol may be blocked from new proposals until DB is cleaned."
+                            ),
+                            symbol=proposal.symbol,
+                        )
+            return
+
         # For an Initial Entry approval, submit to the broker immediately.
         # The per-cycle _process_trade loop skips AWAITING_INITIAL_FILL
         # trades (see the guard there), so nothing else in this file

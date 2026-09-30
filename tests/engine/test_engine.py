@@ -363,6 +363,51 @@ class TestDecisionIntakeAndSubmission(unittest.TestCase):
         self.assertEqual(rejected.approval_state, ApprovalState.REJECTED)
         self.assertEqual(broker.submit_calls, [])
 
+    def test_reject_initial_entry_frees_symbol_for_next_watchlist_tick(self):
+        """Regression for 2026-09-30 Bug #3: an Initial Entry proposal
+        rejected by the Controller left the Trade row in
+        AWAITING_INITIAL_FILL status forever, so _check_watchlist's
+        "already has an open trade for this symbol" guard permanently
+        skipped the symbol. On the fix, a rejected Initial Entry is
+        transitioned to ABANDONED and the next watchlist pass MUST
+        produce a fresh proposal for the same symbol."""
+        from engine.watchlist import StaticWatchlistSource
+        from trade.models import describe_status
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        watchlist = StaticWatchlistSource(("TSLA",))
+        engine, broker, market_data, decisions, notifier, exec_service = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn, watchlist=watchlist
+        )
+        market_data.set_price("TSLA", 100.0)
+        engine._lock.acquire(now=_now())
+
+        # First tick: create the Initial Entry proposal.
+        engine.run_trigger_check(now=_now())
+        trades = trade_repo.list_for_symbol("TSLA")
+        self.assertEqual(len(trades), 1)
+        trade_id_before = trades[0].trade.trade_id
+        first_proposal = [p for p in proposal_repo.list_for_trade(trade_id_before)
+                          if p.proposed_action is TradeAction.INITIAL_ENTRY][0]
+
+        # Controller rejects.
+        decisions.submit(ControllerDecision(
+            proposal_id=first_proposal.proposal_id,
+            kind=DecisionKind.REJECT,
+            decided_by="controller",
+        ))
+        engine.run_reconciliation_tick(now=_now() + timedelta(seconds=1))
+
+        # Trade must now be ABANDONED, not still AWAITING_INITIAL_FILL.
+        after = trade_repo.get(trade_id_before)
+        self.assertEqual(describe_status(after.trade), "ABANDONED")
+
+        # Next watchlist tick MUST produce a brand-new INITIAL_ENTRY
+        # proposal for the same symbol under a new trade_id.
+        engine.run_trigger_check(now=_now() + timedelta(seconds=2))
+        trades_after = trade_repo.list_for_symbol("TSLA")
+        self.assertEqual(len(trades_after), 2,
+            "watchlist must open a new trade after rejection frees the symbol")
+
     def test_decision_for_unknown_proposal_is_notified_not_raised(self):
         trade_repo, proposal_repo, execution_repo, conn = _repos()
         engine, broker, market_data, decisions, notifier, exec_service = _make_engine(

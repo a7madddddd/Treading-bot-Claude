@@ -273,6 +273,35 @@ class Trade:
             weighted_avg_entry_price=fill_price,
         )
 
+    def abandon_before_fill(self, *, now: datetime) -> "Trade":
+        """Explicitly mark a Trade as ABANDONED because its Initial
+        Entry proposal was Controller-rejected before any order was
+        submitted. Semantically identical to
+        `freeze_initial_reference(order_status=CANCELLED,
+        filled_shares=0, ...)` -- both produce the D-0010 zero-fill
+        terminal state that describe_status labels ABANDONED -- but
+        the intent (rejection, not a broker cancellation) is worth
+        making explicit at the call site.
+
+        This is required because Trade rows are created eagerly by
+        _start_new_trade at proposal time (before Controller approval)
+        and would otherwise remain in AWAITING_INITIAL_FILL forever,
+        making _check_watchlist skip the symbol permanently -- a
+        live-observed 2026-09-30 audit finding."""
+
+        if self.initial_order_reconciled:
+            raise TradeStateError(
+                f"trade {self.trade_id!r} is already reconciled -- "
+                "abandon_before_fill may only run on a fresh, never-filled trade"
+            )
+        return replace(
+            self,
+            initial_order_status=InitialOrderStatus.CANCELLED,
+            initial_order_reconciled=True,
+            initial_filled_shares=0,
+            freeze_timestamp=now,
+        )
+
     def record_ladder_fill(
         self,
         action: TradeAction,
