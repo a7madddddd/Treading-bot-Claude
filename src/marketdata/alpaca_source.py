@@ -149,40 +149,54 @@ class AlpacaMarketDataSource(MarketDataSource):
 
     def get_previous_close(self, symbol: str) -> Optional[float]:
         """Fetches the previous trading day's official close for
-        `symbol` from Alpaca's daily-bar endpoint. Returns None on any
-        failure (per MarketDataSource contract). Never raises."""
+        `symbol`. Delegates to get_price_context so both endpoints
+        agree on one authoritative source (Alpaca's snapshot API)."""
+        ctx = self.get_price_context(symbol)
+        if not ctx:
+            return None
+        v = ctx.get("previous_close")
+        return v if isinstance(v, (int, float)) and v > 0 else None
+
+    def get_price_context(self, symbol: str) -> Optional[dict]:
+        """Fetches previous close and today's daily-bar aggregates
+        (open, high, low, volume) via Alpaca's snapshot endpoint.
+        Returns None on any failure (per MarketDataSource contract).
+        Never raises."""
         try:
             _validate_symbol(symbol)
-            path = "/v2/stocks/{sym}/bars?{qs}".format(
+            path = "/v2/stocks/{sym}/snapshot?{qs}".format(
                 sym=urllib.parse.quote(symbol, safe=""),
-                qs=urllib.parse.urlencode({
-                    "timeframe": "1Day",
-                    "limit": 2,
-                    "feed": self._config.feed,
-                    "adjustment": "raw",
-                }),
+                qs=urllib.parse.urlencode({"feed": self._config.feed}),
             )
             status, payload = self._request("GET", path)
             if not (200 <= status < 300):
                 return None
             obj = json.loads(payload.decode("utf-8"))
-            bars = obj.get("bars") if isinstance(obj, dict) else None
-            if not isinstance(bars, list) or len(bars) == 0:
+            if not isinstance(obj, dict):
                 return None
-            # Take the earliest of the returned bars -- when limit=2 is
-            # honored during market hours this is the prior trading day
-            # (bars[0]); when only one bar is returned (fresh
-            # post-close), that single bar IS the prior close.
-            candidate = bars[0]
-            if not isinstance(candidate, dict):
-                return None
-            raw = candidate.get("c")
-            if raw is None:
-                return None
-            close = float(raw)
-            if close <= 0:
-                return None
-            return close
+
+            out: dict = {}
+            prev_bar = obj.get("prevDailyBar")
+            if isinstance(prev_bar, dict):
+                c = prev_bar.get("c")
+                if isinstance(c, (int, float)) and c > 0:
+                    out["previous_close"] = float(c)
+
+            day_bar = obj.get("dailyBar")
+            if isinstance(day_bar, dict):
+                for src_key, out_key in (
+                    ("o", "today_open"),
+                    ("h", "today_high"),
+                    ("l", "today_low"),
+                ):
+                    v = day_bar.get(src_key)
+                    if isinstance(v, (int, float)) and v > 0:
+                        out[out_key] = float(v)
+                vol = day_bar.get("v")
+                if isinstance(vol, (int, float)) and vol >= 0:
+                    out["today_volume"] = int(vol)
+
+            return out or None
         except Exception:  # noqa: BLE001 - best-effort, never raises
             return None
 

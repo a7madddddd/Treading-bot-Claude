@@ -52,3 +52,20 @@ class MarketDataSource(ABC):
         return None on any failure rather than raise: a missing prior
         close must never block a proposal."""
         return None
+
+    def get_price_context(self, symbol: str) -> Optional[dict]:
+        """Best-effort: a dict of price-context fields for enriching
+        Controller notifications. When available, may contain any of:
+
+          - "previous_close": float, prior trading day's official close
+          - "today_open":     float, today's open (from the daily bar)
+          - "today_high":     float, session-so-far high
+          - "today_low":      float, session-so-far low
+          - "today_volume":   int,   session-so-far volume
+
+        Same guarantees as get_previous_close: enrichment-only, never
+        feeds a trigger/execution decision; a concrete implementation
+        MUST return None on any failure rather than raise. Returning
+        None is always safe -- callers gracefully omit the enrichment.
+        Default implementation returns None."""
+        return None

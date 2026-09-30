@@ -60,7 +60,7 @@ from __future__ import annotations
 import time as _time_module
 import uuid
 from datetime import datetime, timezone
-from typing import Callable, Optional, Set, Tuple
+from typing import Callable, List, Optional, Set, Tuple
 
 from execution.broker_client import BrokerSubmissionAmbiguousError
 from execution.repository import OrderExecutionRepository
@@ -103,9 +103,53 @@ from -1% up through -0.5% and beyond, while never accepting a price
 worse than 1% below the trigger-time price."""
 
 
+def _format_price_context_block(
+    buy_price: float, price_context: Optional[dict]
+) -> str:
+    """Formats the 'Price context' block appended above the Buy price
+    line in an Initial Entry notification. Skips any field that is
+    absent from `price_context`. Returns an empty string if there is
+    nothing worth showing."""
+
+    if not isinstance(price_context, dict) or not price_context:
+        return ""
+
+    lines: List[str] = []
+    prev = price_context.get("previous_close")
+    if isinstance(prev, (int, float)) and prev > 0:
+        change = buy_price - prev
+        pct = (change / prev) * 100.0
+        arrow = "▲" if change > 0 else ("▼" if change < 0 else "•")
+        lines.append(f"  Previous close: ${prev:,.2f}")
+        lines.append(
+            f"  Change now:     {arrow} ${change:+,.2f}  ({pct:+.2f}%)"
+        )
+
+    hi = price_context.get("today_high")
+    lo = price_context.get("today_low")
+    if (
+        isinstance(hi, (int, float)) and hi > 0
+        and isinstance(lo, (int, float)) and lo > 0
+    ):
+        lines.append(f"  Today range:    ${lo:,.2f} - ${hi:,.2f}")
+
+    op = price_context.get("today_open")
+    if isinstance(op, (int, float)) and op > 0:
+        lines.append(f"  Today open:     ${op:,.2f}")
+
+    if not lines:
+        return ""
+    return (
+        "\n"
+        "Price context (why this level now):\n"
+        + "\n".join(lines)
+        + "\n"
+    )
+
+
 def _format_proposal_message(
     proposal, *, recovery: bool = False,
-    previous_close: Optional[float] = None,
+    price_context: Optional[dict] = None,
 ) -> str:
     """Human-readable notification body for a proposal_awaiting_approval
     event. Deliberately shows prices, quantities, dollar cost, and every
@@ -115,10 +159,11 @@ def _format_proposal_message(
     buttons' callback_data still carries the proposal_id, and the
     text-command fallback (/approve <id>) is unchanged.
 
-    `previous_close`, when supplied, is the prior trading day's official
-    close from the market-data source. Used only to enrich the
-    Controller's view with a "why buy at this price now" price-context
-    line -- it never affects any trigger or execution decision.
+    `price_context`, when supplied, is a dict from
+    MarketDataSource.get_price_context (previous_close, today_open,
+    today_high, today_low, today_volume). Any subset may be present;
+    the format helper shows only the fields it received. Enrichment
+    only -- never affects a trigger or execution decision.
     """
 
     symbol = proposal.symbol
@@ -133,17 +178,7 @@ def _format_proposal_message(
         l1 = proposal.ladder_1_trigger
         l2 = proposal.ladder_2_trigger
         fl = proposal.floor_trigger
-        context_block = ""
-        if previous_close is not None and previous_close > 0:
-            change = buy_price - previous_close
-            pct = (change / previous_close) * 100.0
-            arrow = "▲" if change > 0 else ("▼" if change < 0 else "•")
-            context_block = (
-                f"\n"
-                f"Price context (why this level now):\n"
-                f"  Previous close: ${previous_close:,.2f}\n"
-                f"  Change now:     {arrow} ${change:+,.2f}  ({pct:+.2f}%)\n"
-            )
+        context_block = _format_price_context_block(buy_price, price_context)
         return (
             f"{prefix}🎯 {symbol} — Initial Entry\n"
             f"{context_block}"
@@ -296,8 +331,8 @@ class Engine:
                     message=_format_proposal_message(
                         proposal,
                         recovery=True,
-                        previous_close=(
-                            self._safe_previous_close(proposal.symbol)
+                        price_context=(
+                            self._safe_price_context(proposal.symbol)
                             if proposal.proposed_action is TradeAction.INITIAL_ENTRY
                             else None
                         ),
@@ -380,7 +415,7 @@ class Engine:
             event="proposal_awaiting_approval",
             message=_format_proposal_message(
                 proposal, recovery=True,
-                previous_close=self._safe_previous_close(symbol),
+                price_context=self._safe_price_context(symbol),
             ),
             symbol=symbol,
             interactive_actions=(
@@ -665,7 +700,7 @@ class Engine:
             event="proposal_awaiting_approval",
             message=_format_proposal_message(
                 proposal,
-                previous_close=self._safe_previous_close(symbol),
+                price_context=self._safe_price_context(symbol),
             ),
             symbol=symbol,
             interactive_actions=(
@@ -675,12 +710,12 @@ class Engine:
         )
         self._notified.add(("pending_approval", proposal.proposal_id))
 
-    def _safe_previous_close(self, symbol: str) -> Optional[float]:
-        """Best-effort wrapper around MarketDataSource.get_previous_close.
-        Never raises: a failure just means the price-context line is
+    def _safe_price_context(self, symbol: str) -> Optional[dict]:
+        """Best-effort wrapper around MarketDataSource.get_price_context.
+        Never raises: a failure just means the price-context block is
         omitted from the notification (per contract)."""
         try:
-            return self._market_data.get_previous_close(symbol)
+            return self._market_data.get_price_context(symbol)
         except Exception:  # noqa: BLE001 - never block a proposal on this
             return None
 
