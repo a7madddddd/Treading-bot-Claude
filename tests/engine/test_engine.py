@@ -281,6 +281,36 @@ class TestDecisionIntakeAndSubmission(unittest.TestCase):
         engine.run_trigger_check(now=_now() + timedelta(seconds=2))
         self.assertEqual(broker.submit_calls, [execution_repo.get_by_proposal_id(proposal.proposal_id).execution.client_order_id])
 
+    def test_approve_ladder1_submits_on_the_same_reconciliation_tick(self):
+        """Regression for 2026-09-30 Bug #4: a Controller approval for a
+        LADDER_1 proposal used to be recorded on the reconciliation tick
+        but its broker submission was deferred to the NEXT D-0021 :30
+        tick (up to ~60 min later). In practice every Ladder approval
+        expired under D-0007's 5-minute window before submission ever
+        ran. This test asserts the broker sees the submit call on the
+        same reconciliation tick that drains the decision, mirroring
+        the INITIAL_ENTRY path -- no run_trigger_check between."""
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        _active_trade(trade_repo, price=100.0)
+        engine, broker, market_data, decisions, notifier, exec_service = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn
+        )
+        market_data.set_price("TSLA", 94.6)
+        engine._lock.acquire(now=_now())
+
+        engine.run_trigger_check(now=_now())  # creates the LADDER_1 proposal
+        proposal = [p for p in proposal_repo.list_for_trade("T-1") if p.proposed_action is TradeAction.LADDER_1][0]
+
+        decisions.submit(ControllerDecision(proposal_id=proposal.proposal_id, kind=DecisionKind.APPROVE, decided_by="controller"))
+        engine.run_reconciliation_tick(now=_now() + timedelta(seconds=1))
+
+        # Broker must have received the submission on this reconciliation
+        # tick, NOT wait for a subsequent run_trigger_check call.
+        exec_record = execution_repo.get_by_proposal_id(proposal.proposal_id)
+        self.assertIsNotNone(exec_record,
+            "LADDER_1 approval must reach the broker in the same reconciliation tick")
+        self.assertEqual(broker.submit_calls, [exec_record.execution.client_order_id])
+
     def test_approve_initial_entry_submits_on_the_reconciliation_tick(self):
         """Regression for a live-observed bug in the 2026-09-29 paper
         session: an Initial Entry proposal, once approved via Telegram,

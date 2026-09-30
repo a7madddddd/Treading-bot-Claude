@@ -646,6 +646,58 @@ class Engine:
                 active_floor_price=proposal.floor_trigger,
                 now=now,
             )
+            return
+
+        # For a LADDER approval, submit immediately too -- the per-cycle
+        # _process_trade loop only submits on D-0021 :30 ticks, so a
+        # Controller approval at (say) 10:45 would sit unsubmitted until
+        # 11:30. That 45-minute wait guarantees D-0007's 5-minute /
+        # +/-0.5% window expires before submission ever runs, and every
+        # legitimate Ladder approval gets refused as EXPIRED / PRICE_DRIFT.
+        # Ladder pricing is anchored on the trade's frozen original entry
+        # and its already-computed trigger, so we still need the live
+        # price to satisfy D-0007's band check plus the active floor
+        # from the trade itself (an existing position always has a
+        # concrete original floor).
+        if approved and proposal.proposed_action in _LADDER_ACTIONS:
+            trade_record = self._trade_repo.get(proposal.trade_id)
+            if trade_record is None:
+                # Genuinely broken state; the shield above already
+                # handles unknown-proposal, but a missing trade is
+                # different and worth its own CRITICAL notification.
+                self._notify(
+                    level=NotificationLevel.CRITICAL,
+                    event="decision_missing_trade",
+                    message=(
+                        f"Approved LADDER {proposal.proposal_id} references trade "
+                        f"{proposal.trade_id} which is missing from the repository. "
+                        f"Submission skipped; investigate the state store."
+                    ),
+                    symbol=proposal.symbol,
+                )
+                return
+            trade = trade_record.trade
+            try:
+                price = self._market_data.get_last_trade(proposal.symbol)
+            except MarketDataUnavailableError as exc:
+                self._notify(
+                    level=NotificationLevel.CRITICAL,
+                    event="market_data_unavailable",
+                    message=(
+                        f"Could not fetch current price for {proposal.symbol} to submit "
+                        f"approved LADDER proposal {proposal.proposal_id}: {exc}. "
+                        f"Proposal remains APPROVED; the per-cycle _process_trade path "
+                        f"will retry on the next :30 tick with a fresh price."
+                    ),
+                    symbol=proposal.symbol,
+                )
+                return
+            self._submit_approved(
+                proposal.proposal_id,
+                current_price=price,
+                active_floor_price=trade.active_floor_price,
+                now=now,
+            )
 
     # ------------------------------------------------------------------
     # Trigger detection (D-0021-gated cadence)
