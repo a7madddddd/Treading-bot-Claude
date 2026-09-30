@@ -67,6 +67,7 @@ class LivePortfolioSnapshotBuilder:
         transport: HttpTransport = _urllib_transport,
         timeout_seconds: float = 10.0,
         now_fn: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        retry_policy=None,  # Optional common.http_retry.RetryPolicy
     ) -> None:
         if not broker_base_url or not broker_key_id or not broker_secret_key:
             raise ValueError("broker credentials required")
@@ -74,6 +75,13 @@ class LivePortfolioSnapshotBuilder:
         self._key = broker_key_id
         self._secret = broker_secret_key
         self._conn = sqlite_conn
+        # Wrap with retry when supplied. B26 already provides the same
+        # opt-in wrapping on the Alpaca broker/market-data clients;
+        # this closes the "risk snapshot fails on transient 429/5xx"
+        # gap the 2026-09-30 audit flagged as Bug #1.
+        if retry_policy is not None:
+            from common.http_retry import with_retry
+            transport = with_retry(transport, policy=retry_policy)
         self._transport = transport
         self._timeout = timeout_seconds
         self._now_fn = now_fn

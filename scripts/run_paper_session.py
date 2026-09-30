@@ -207,12 +207,20 @@ def main() -> int:
     proposal_repo = SqliteProposalRepository(conn)
     execution_repo = SqliteOrderExecutionRepository(conn)
 
+    # Shared HTTP retry policy for every Alpaca client. Without this
+    # wiring B26's retry code was dormant in production and any 429 /
+    # 5xx blip from Alpaca would fail an approval / risk check on the
+    # first try (Bug #1 from the 2026-09-30 audit).
+    from common.http_retry import RetryPolicy
+    retry_policy = RetryPolicy(max_attempts=3, base_backoff_seconds=1.0)
+
     broker = AlpacaBrokerClient(
         base_url=base_url, key_id=key_id, secret_key=secret,
-        timeout_seconds=15.0,
+        timeout_seconds=15.0, retry_policy=retry_policy,
     )
     market_data = AlpacaMarketDataSource(
         key_id=key_id, secret_key=secret, timeout_seconds=10.0,
+        retry_policy=retry_policy,
     )
     notifier = TelegramNotificationService(
         bot_token=bot_token, chat_id=chat_id,
@@ -228,6 +236,7 @@ def main() -> int:
     snapshot_builder = LivePortfolioSnapshotBuilder(
         broker_base_url=base_url, broker_key_id=key_id,
         broker_secret_key=secret, sqlite_conn=conn,
+        retry_policy=retry_policy,
     )
     risk_enforcer = PortfolioRiskEnforcer(
         limits=PortfolioRiskLimits(),  # D-0047 defaults

@@ -220,6 +220,53 @@ class TestSnapshotBuilder(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             builder()
 
+    def test_retry_policy_recovers_from_transient_429(self):
+        """Regression for 2026-09-30 Bug #1: LivePortfolioSnapshotBuilder
+        did not accept a retry_policy, so a transient Alpaca 429 during
+        the D-0047 risk check would fail a legitimate approval on the
+        first try. On the fix, the builder wraps its transport with
+        common.http_retry.with_retry when a policy is supplied."""
+        from common.http_retry import RetryPolicy
+
+        base = "https://paper-api.alpaca.markets"
+        # Two-shot account transport: 429 first, then the real body.
+        account_sequence = [
+            HttpResponse(429, b'{"error":"rate limited"}'),
+            _account_body(),
+        ]
+
+        def account_transport_url(url):
+            def _once(*args, **kwargs):
+                return account_sequence.pop(0)
+            return _once
+
+        # Custom stub that swaps the account URL for a sequence.
+        class _Seq:
+            def __init__(self):
+                self.calls = 0
+
+            def __call__(self, url, headers, timeout):
+                self.calls += 1
+                if url.endswith("/v2/account"):
+                    return account_sequence.pop(0)
+                return _positions_body([])
+
+        transport = _Seq()
+        sleeps = []
+        builder = LivePortfolioSnapshotBuilder(
+            broker_base_url=base, broker_key_id="k", broker_secret_key="s",
+            sqlite_conn=self.conn, transport=transport,
+            retry_policy=RetryPolicy(max_attempts=3, base_backoff_seconds=0.01),
+        )
+        # Manually swap the wrapped transport's sleep_fn: since
+        # with_retry accepts sleep_fn via keyword, we'd need to plumb
+        # it through. For the test we accept tiny real sleeps
+        # (0.01s * 1 = 0.01s), keeping the test fast.
+        snap = builder()
+        self.assertAlmostEqual(snap.equity_current, 50000.0)
+        # Two account attempts (429 then 200) + one positions call.
+        self.assertEqual(transport.calls, 3)
+
 
 class TestMarketDayOpen(unittest.TestCase):
     def test_utc_night_before_still_maps_to_next_day(self):
