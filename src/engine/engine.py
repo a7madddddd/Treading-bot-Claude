@@ -887,6 +887,23 @@ class Engine:
                 event="broker_rejected",
                 message=f"Broker rejected submission for {proposal_id}: {exc}",
             )
+        except Exception as exc:  # noqa: BLE001 - engine main-loop shield
+            # Defensive final catch: any other error from the execution
+            # path (e.g. an ExecutionServiceError subclass we did not
+            # anticipate, or a bug during a repo write) must surface as
+            # a CRITICAL notification, never as a main-loop crash.
+            # Without this, a single misbehaving proposal takes down
+            # the whole session and every other symbol along with it
+            # -- a real live 2026-09-30 failure mode.
+            self._notify(
+                level=NotificationLevel.CRITICAL,
+                event="submission_unexpected_error",
+                message=(
+                    f"Unexpected error submitting {proposal_id} "
+                    f"({type(exc).__name__}): {exc}. Engine keeps running; "
+                    f"reconciliation will retry as appropriate."
+                ),
+            )
 
     # ------------------------------------------------------------------
     # Ladder 2 partial-fill confirmation notification (shared by
