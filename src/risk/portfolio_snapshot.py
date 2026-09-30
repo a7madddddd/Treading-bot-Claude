@@ -121,17 +121,32 @@ class LivePortfolioSnapshotBuilder:
         )
 
     def _count_open_trades(self) -> int:
+        # Only trades that have an actual broker order attached count as
+        # "open" -- a trade row whose initial_order_id is still NULL
+        # represents a proposal that has not yet been approved and
+        # submitted; it holds no capital and has no position at the
+        # broker, so counting it against the D-0047 concurrent-trades
+        # cap incorrectly blocks the FIRST approval when the watchlist
+        # is longer than the cap (a real bug observed in the
+        # 2026-09-30 paper session where a 10-symbol watchlist made
+        # every approval fail with "already 10 open trades, cap is 5").
         row = self._conn.execute(
             "SELECT COUNT(*) FROM trades "
-            "WHERE initial_order_status IN "
+            "WHERE initial_order_id IS NOT NULL "
+            "AND initial_order_status IN "
             "('pending', 'partially_filled', 'filled')"
         ).fetchone()
         return int(row[0]) if row else 0
 
     def _count_new_trades_today(self, now_utc: datetime) -> int:
+        # Same fix rationale as _count_open_trades: only trades that
+        # actually reached the broker count as "new trades opened
+        # today". A proposal row that never got past Controller
+        # approval is not a trade that was opened.
         cutoff = _us_market_day_open_utc(now_utc)
         row = self._conn.execute(
-            "SELECT COUNT(*) FROM trades WHERE created_at >= ?",
+            "SELECT COUNT(*) FROM trades "
+            "WHERE created_at >= ? AND initial_order_id IS NOT NULL",
             (cutoff.isoformat(),),
         ).fetchone()
         return int(row[0]) if row else 0

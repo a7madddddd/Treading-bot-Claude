@@ -48,11 +48,19 @@ class TestSnapshotBuilder(unittest.TestCase):
         bootstrap_schema(self.conn)
         self.addCleanup(self.conn.close)
 
-    def _insert_trade(self, trade_id, symbol, created_at_iso, status="filled"):
+    def _insert_trade(self, trade_id, symbol, created_at_iso, status="filled",
+                      initial_order_id=None):
+        # Post-2026-09-30 fix: the risk counters only count trades whose
+        # initial_order_id is not NULL (i.e., an order actually reached
+        # the broker) -- see LivePortfolioSnapshotBuilder._count_open_trades.
+        # By default a test row carries a non-NULL order id so trades
+        # inserted here behave like "opened" ones for count purposes.
+        if initial_order_id is None:
+            initial_order_id = f"broker-order-{trade_id}"
         self.conn.execute(
             "INSERT INTO trades (trade_id, symbol, created_at, "
-            "initial_order_status) VALUES (?, ?, ?, ?)",
-            (trade_id, symbol, created_at_iso, status),
+            "initial_order_status, initial_order_id) VALUES (?, ?, ?, ?, ?)",
+            (trade_id, symbol, created_at_iso, status, initial_order_id),
         )
 
     def test_reads_equity_and_positions(self):
