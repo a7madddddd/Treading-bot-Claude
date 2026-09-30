@@ -178,7 +178,7 @@ class AlpacaBrokerClient(BrokerClient):
             "side": side,
             "type": "limit",
             "time_in_force": "day",
-            "limit_price": f"{float(limit_price):.4f}",
+            "limit_price": _format_alpaca_limit_price(limit_price),
             "client_order_id": client_order_id,
         }
         try:
@@ -444,3 +444,23 @@ def _validate_client_order_id(client_order_id: str) -> None:
 def _validate_symbol(symbol: str) -> None:
     if not isinstance(symbol, str) or not symbol or not symbol.isupper():
         raise ValueError(f"symbol must be a non-empty uppercase string, got {symbol!r}")
+
+
+def _format_alpaca_limit_price(limit_price: float) -> str:
+    """Alpaca's SEC-compliant sub-penny rule: an order priced at $1.00
+    or higher must have exactly 2 decimals; below $1.00, up to 4. A
+    tighter precision earns HTTP 422:
+
+        "invalid limit_price 768.185. sub-penny increment does not
+         fulfill minimum pricing criteria"
+
+    (real error observed in the 2026-09-30 paper session against SPY.)
+
+    This helper is deliberately Alpaca-specific -- the wider system
+    keeps 4-decimal precision on its internal price fields (D-0009,
+    strategy.md), and only the value that actually crosses the wire
+    to Alpaca gets truncated here."""
+    price = float(limit_price)
+    if price >= 1.0:
+        return f"{price:.2f}"
+    return f"{price:.4f}"

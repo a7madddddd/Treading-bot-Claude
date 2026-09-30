@@ -62,7 +62,11 @@ import uuid
 from datetime import datetime, timezone
 from typing import Callable, List, Optional, Set, Tuple
 
-from execution.broker_client import BrokerSubmissionAmbiguousError
+from execution.broker_client import (
+    BrokerClientError,
+    BrokerCommunicationError,
+    BrokerSubmissionAmbiguousError,
+)
 from execution.repository import OrderExecutionRepository
 from execution.service import (
     ExecutionAlreadyResolvedError,
@@ -855,6 +859,33 @@ class Engine:
                 level=NotificationLevel.CRITICAL,
                 event="submission_ambiguous",
                 message=f"Submission for {proposal_id} had an ambiguous outcome: {exc}. Will resolve via reconciliation.",
+            )
+        except BrokerCommunicationError as exc:
+            # Network / transport failure talking to the broker: surface
+            # the failure, keep the execution row in SUBMITTED_UNKNOWN so
+            # reconciliation can resolve it, and never crash the main
+            # loop.
+            self._notify(
+                level=NotificationLevel.CRITICAL,
+                event="broker_communication_error",
+                message=f"Broker communication failure for {proposal_id}: {exc}. Reconciliation will resolve.",
+            )
+        except BrokerClientError as exc:
+            # Definite broker-side rejection (HTTP 4xx/5xx that the
+            # broker processed enough to reject) -- e.g. an invalid
+            # limit price, an unknown symbol, or an account block.
+            # Surface it, do NOT retry automatically, and keep the main
+            # loop alive so other proposals can still be handled.
+            # A real live example (2026-09-30): Alpaca rejected an
+            # Initial Entry limit price with sub-penny precision --
+            # AlpacaBrokerClient now formats the price to Alpaca's
+            # SEC-compliant precision so this specific case no longer
+            # happens, but other 4xx rejections remain possible and
+            # must never crash the engine.
+            self._notify(
+                level=NotificationLevel.CRITICAL,
+                event="broker_rejected",
+                message=f"Broker rejected submission for {proposal_id}: {exc}",
             )
 
     # ------------------------------------------------------------------

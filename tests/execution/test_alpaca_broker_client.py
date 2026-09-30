@@ -309,7 +309,8 @@ class TestSubmitOrder(unittest.TestCase):
         self.assertEqual(body["side"], "buy")
         self.assertEqual(body["type"], "limit")
         self.assertEqual(body["client_order_id"], "C-1")
-        self.assertEqual(body["limit_price"], "101.2500")
+        # Alpaca's sub-penny rule: prices >= $1.00 must be exactly 2 decimals.
+        self.assertEqual(body["limit_price"], "101.25")
 
 
 # ---- get_order_by_client_order_id --------------------------------------
