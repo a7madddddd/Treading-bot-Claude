@@ -147,6 +147,45 @@ class AlpacaMarketDataSource(MarketDataSource):
             )
         return price
 
+    def get_previous_close(self, symbol: str) -> Optional[float]:
+        """Fetches the previous trading day's official close for
+        `symbol` from Alpaca's daily-bar endpoint. Returns None on any
+        failure (per MarketDataSource contract). Never raises."""
+        try:
+            _validate_symbol(symbol)
+            path = "/v2/stocks/{sym}/bars?{qs}".format(
+                sym=urllib.parse.quote(symbol, safe=""),
+                qs=urllib.parse.urlencode({
+                    "timeframe": "1Day",
+                    "limit": 2,
+                    "feed": self._config.feed,
+                    "adjustment": "raw",
+                }),
+            )
+            status, payload = self._request("GET", path)
+            if not (200 <= status < 300):
+                return None
+            obj = json.loads(payload.decode("utf-8"))
+            bars = obj.get("bars") if isinstance(obj, dict) else None
+            if not isinstance(bars, list) or len(bars) == 0:
+                return None
+            # Take the earliest of the returned bars -- when limit=2 is
+            # honored during market hours this is the prior trading day
+            # (bars[0]); when only one bar is returned (fresh
+            # post-close), that single bar IS the prior close.
+            candidate = bars[0]
+            if not isinstance(candidate, dict):
+                return None
+            raw = candidate.get("c")
+            if raw is None:
+                return None
+            close = float(raw)
+            if close <= 0:
+                return None
+            return close
+        except Exception:  # noqa: BLE001 - best-effort, never raises
+            return None
+
     # ---- transport internals ------------------------------------------
 
     _AMBIGUOUS_NETWORK_EXCEPTIONS = (

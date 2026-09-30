@@ -18,6 +18,7 @@ them.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Optional
 
 
 class MarketDataError(RuntimeError):
@@ -40,3 +41,14 @@ class MarketDataSource(ABC):
         price could not be obtained -- never returns a stale, cached,
         or fabricated value silently."""
         raise NotImplementedError
+
+    def get_previous_close(self, symbol: str) -> Optional[float]:
+        """Best-effort: the official close of the previous trading day.
+        Used only for enriching Controller notifications with historical
+        context (see engine._format_proposal_message) -- never fed into
+        any trigger, D-0007 revalidation, or execution decision. Default
+        implementation returns None so an implementation may skip it
+        without breaking any consumer. Concrete implementations must
+        return None on any failure rather than raise: a missing prior
+        close must never block a proposal."""
+        return None

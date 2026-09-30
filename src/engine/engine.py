@@ -104,7 +104,8 @@ worse than 1% below the trigger-time price."""
 
 
 def _format_proposal_message(
-    proposal, *, recovery: bool = False
+    proposal, *, recovery: bool = False,
+    previous_close: Optional[float] = None,
 ) -> str:
     """Human-readable notification body for a proposal_awaiting_approval
     event. Deliberately shows prices, quantities, dollar cost, and every
@@ -112,7 +113,13 @@ def _format_proposal_message(
     without opening a database or a trade log. IDs (proposal_id,
     trade_id) are intentionally omitted from the visible text; the
     buttons' callback_data still carries the proposal_id, and the
-    text-command fallback (/approve <id>) is unchanged."""
+    text-command fallback (/approve <id>) is unchanged.
+
+    `previous_close`, when supplied, is the prior trading day's official
+    close from the market-data source. Used only to enrich the
+    Controller's view with a "why buy at this price now" price-context
+    line -- it never affects any trigger or execution decision.
+    """
 
     symbol = proposal.symbol
     action = proposal.proposed_action
@@ -126,8 +133,20 @@ def _format_proposal_message(
         l1 = proposal.ladder_1_trigger
         l2 = proposal.ladder_2_trigger
         fl = proposal.floor_trigger
+        context_block = ""
+        if previous_close is not None and previous_close > 0:
+            change = buy_price - previous_close
+            pct = (change / previous_close) * 100.0
+            arrow = "▲" if change > 0 else ("▼" if change < 0 else "•")
+            context_block = (
+                f"\n"
+                f"Price context (why this level now):\n"
+                f"  Previous close: ${previous_close:,.2f}\n"
+                f"  Change now:     {arrow} ${change:+,.2f}  ({pct:+.2f}%)\n"
+            )
         return (
             f"{prefix}🎯 {symbol} — Initial Entry\n"
+            f"{context_block}"
             f"\n"
             f"Buy price: ${buy_price:,.2f}\n"
             f"Quantity:  {qty} shares\n"
@@ -274,7 +293,15 @@ class Engine:
                     key=proposal.proposal_id,
                     level=NotificationLevel.IMPORTANT,
                     event="proposal_awaiting_approval",
-                    message=_format_proposal_message(proposal, recovery=True),
+                    message=_format_proposal_message(
+                        proposal,
+                        recovery=True,
+                        previous_close=(
+                            self._safe_previous_close(proposal.symbol)
+                            if proposal.proposed_action is TradeAction.INITIAL_ENTRY
+                            else None
+                        ),
+                    ),
                     symbol=proposal.symbol,
                     interactive_actions=(
                         ("✅ Approve", f"approve:{proposal.proposal_id}"),
@@ -351,7 +378,10 @@ class Engine:
             key=proposal.proposal_id,
             level=NotificationLevel.IMPORTANT,
             event="proposal_awaiting_approval",
-            message=_format_proposal_message(proposal, recovery=True),
+            message=_format_proposal_message(
+                proposal, recovery=True,
+                previous_close=self._safe_previous_close(symbol),
+            ),
             symbol=symbol,
             interactive_actions=(
                 ("✅ Approve", f"approve:{proposal.proposal_id}"),
@@ -633,7 +663,10 @@ class Engine:
         self._notify(
             level=NotificationLevel.IMPORTANT,
             event="proposal_awaiting_approval",
-            message=_format_proposal_message(proposal),
+            message=_format_proposal_message(
+                proposal,
+                previous_close=self._safe_previous_close(symbol),
+            ),
             symbol=symbol,
             interactive_actions=(
                 ("✅ Approve", f"approve:{proposal.proposal_id}"),
@@ -641,6 +674,15 @@ class Engine:
             ),
         )
         self._notified.add(("pending_approval", proposal.proposal_id))
+
+    def _safe_previous_close(self, symbol: str) -> Optional[float]:
+        """Best-effort wrapper around MarketDataSource.get_previous_close.
+        Never raises: a failure just means the price-context line is
+        omitted from the notification (per contract)."""
+        try:
+            return self._market_data.get_previous_close(symbol)
+        except Exception:  # noqa: BLE001 - never block a proposal on this
+            return None
 
     def _process_trade(self, trade_id: str, *, now: datetime) -> None:
         record = self._trade_repo.get(trade_id)
