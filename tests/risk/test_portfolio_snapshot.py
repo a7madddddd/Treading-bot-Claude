@@ -130,6 +130,61 @@ class TestSnapshotBuilder(unittest.TestCase):
         # pending + partially_filled + filled = 3; cancelled excluded
         self.assertEqual(snap.open_trades, 3)
 
+    def test_open_trades_excludes_proposal_only_shells(self):
+        """Regression for the 2026-09-30 bug where a 10-symbol
+        watchlist created 10 Trade rows at proposal time (before any
+        Controller approval), and every subsequent approval failed the
+        D-0047 concurrent-trades check because those proposal shells
+        counted as open."""
+        now = datetime(2026, 9, 27, 12, 0, tzinfo=timezone.utc)
+        self._insert_trade("submitted", "TSLA", now.isoformat(),
+                           status="pending", submitted=True)
+        self._insert_trade("proposal_only", "NVDA", now.isoformat(),
+                           status="pending", submitted=False)
+        base = "https://paper-api.alpaca.markets"
+        transport = _StubTransport({
+            base + "/v2/account": _account_body(),
+            base + "/v2/positions": _positions_body([]),
+        })
+        builder = LivePortfolioSnapshotBuilder(
+            broker_base_url=base, broker_key_id="k", broker_secret_key="s",
+            sqlite_conn=self.conn, transport=transport, now_fn=lambda: now,
+        )
+        self.assertEqual(builder().open_trades, 1)
+
+    def test_open_trades_excludes_closed_positions(self):
+        """Regression for the 2026-09-30 code-review finding: a Trade
+        that fully filled and then sold out (Floor exit or trailing
+        exit) keeps its initial_order_status='filled' forever. Filtering
+        on status alone would count it against the D-0047 concurrent
+        cap for the rest of the day, blocking new approvals after only a
+        few successful cycles. total_shares=0 with initial_filled_shares
+        NOT NULL is the "position closed" signal."""
+        now = datetime(2026, 9, 27, 12, 0, tzinfo=timezone.utc)
+        self._insert_trade("open_pos", "TSLA", now.isoformat(),
+                           status="filled")
+        self._insert_trade("closed_pos", "AAPL", now.isoformat(),
+                           status="filled")
+        self.conn.execute(
+            "UPDATE trades SET initial_filled_shares = 10, total_shares = 10 "
+            "WHERE trade_id = 'open_pos'"
+        )
+        self.conn.execute(
+            "UPDATE trades SET initial_filled_shares = 10, total_shares = 0 "
+            "WHERE trade_id = 'closed_pos'"
+        )
+        base = "https://paper-api.alpaca.markets"
+        transport = _StubTransport({
+            base + "/v2/account": _account_body(),
+            base + "/v2/positions": _positions_body([]),
+        })
+        builder = LivePortfolioSnapshotBuilder(
+            broker_base_url=base, broker_key_id="k", broker_secret_key="s",
+            sqlite_conn=self.conn, transport=transport, now_fn=lambda: now,
+        )
+        # Only the still-open position counts.
+        self.assertEqual(builder().open_trades, 1)
+
     def test_counts_new_trades_today(self):
         now = datetime(2026, 9, 27, 20, 0, tzinfo=timezone.utc)  # 16:00 ET
         # 5 UTC on 2026-09-27 is 01:00 ET -> today's midnight ET

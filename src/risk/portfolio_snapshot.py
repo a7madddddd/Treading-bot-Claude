@@ -130,10 +130,17 @@ class LivePortfolioSnapshotBuilder:
         # (initial_order_id is defined on the model but never written
         # anywhere in code -- see 2026-09-30 code review). The
         # authoritative signal for "this trade actually reached the
-        # broker" lives in the order_executions table: a row with
-        # side='buy' and a non-NULL broker_order_id means the initial
-        # entry succeeded at submission. Use that as the join key
-        # rather than a stale Trade field.
+        # broker" lives in the order_executions table.
+        #
+        # "Open" here specifically means "currently ties up capital":
+        #   - HAS an initial-entry buy execution that reached the
+        #     broker (broker_order_id IS NOT NULL), AND
+        #   - is not fully closed. A trade is fully closed when its
+        #     initial-entry order has resolved (initial_filled_shares
+        #     is NOT NULL) AND every share subsequently sold out
+        #     (total_shares = 0). initial_order_status stays 'filled'
+        #     after a Floor exit -- filtering only on status would
+        #     wrongly count closed trades against the cap.
         row = self._conn.execute(
             "SELECT COUNT(DISTINCT t.trade_id) "
             "FROM trades t "
@@ -141,7 +148,11 @@ class LivePortfolioSnapshotBuilder:
             "WHERE e.side = 'buy' "
             "  AND e.broker_order_id IS NOT NULL "
             "  AND t.initial_order_status IN "
-            "      ('pending', 'partially_filled', 'filled')"
+            "      ('pending', 'partially_filled', 'filled') "
+            "  AND NOT ( "
+            "    t.initial_filled_shares IS NOT NULL "
+            "    AND t.total_shares = 0 "
+            "  )"
         ).fetchone()
         return int(row[0]) if row else 0
 
