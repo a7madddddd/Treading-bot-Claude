@@ -103,6 +103,85 @@ from -1% up through -0.5% and beyond, while never accepting a price
 worse than 1% below the trigger-time price."""
 
 
+def _format_proposal_message(
+    proposal, *, recovery: bool = False
+) -> str:
+    """Human-readable notification body for a proposal_awaiting_approval
+    event. Deliberately shows prices, quantities, dollar cost, and every
+    downside threshold in plain language -- so the Controller can decide
+    without opening a database or a trade log. IDs (proposal_id,
+    trade_id) are intentionally omitted from the visible text; the
+    buttons' callback_data still carries the proposal_id, and the
+    text-command fallback (/approve <id>) is unchanged."""
+
+    symbol = proposal.symbol
+    action = proposal.proposed_action
+    prefix = "[recovery] " if recovery else ""
+
+    if action is TradeAction.INITIAL_ENTRY:
+        strategy = approved_strategy_rule_set()
+        buy_price = proposal.proposed_entry
+        qty = strategy.initial_qty
+        cost = buy_price * qty
+        l1 = proposal.ladder_1_trigger
+        l2 = proposal.ladder_2_trigger
+        fl = proposal.floor_trigger
+        return (
+            f"{prefix}🎯 {symbol} — Initial Entry\n"
+            f"\n"
+            f"Buy price: ${buy_price:,.2f}\n"
+            f"Quantity:  {qty} shares\n"
+            f"Cost:      ${cost:,.2f}\n"
+            f"\n"
+            f"Downside safeguards (auto-computed from buy price):\n"
+            f"  Ladder 1 buy at: ${l1:,.2f}  (-5%)\n"
+            f"  Ladder 2 buy at: ${l2:,.2f}  (-8%)\n"
+            f"  Auto-sell floor: ${fl:,.2f}  (-10%, protective)"
+        )
+
+    if action in (TradeAction.LADDER_1, TradeAction.LADDER_2):
+        if action is TradeAction.LADDER_1:
+            trigger = proposal.ladder_1_trigger
+            qty = proposal.ladder_1_quantity
+            pct = 5
+            label = "Ladder 1"
+        else:
+            trigger = proposal.ladder_2_trigger
+            qty = proposal.ladder_2_quantity
+            pct = 8
+            label = "Ladder 2"
+        entry_ref = proposal.proposed_entry
+        cost = trigger * qty
+        avg_at = proposal.weighted_avg_entry_at_proposal
+        floor = proposal.active_floor_at_proposal
+        after = ""
+        if avg_at is not None:
+            after = (
+                f"\n"
+                f"Current avg entry: ${avg_at:,.2f}"
+            )
+        if floor is not None:
+            after += (
+                f"\n"
+                f"Active floor: ${floor:,.2f}  (unchanged by this ladder)"
+            )
+        return (
+            f"{prefix}📉 {symbol} — {label} (buy more, price down {pct}%)\n"
+            f"\n"
+            f"Trigger price:  ${trigger:,.2f}\n"
+            f"Reference entry: ${entry_ref:,.2f}\n"
+            f"Change from entry: -{pct}%\n"
+            f"\n"
+            f"Additional buy: {qty} shares\n"
+            f"Cost:           ${cost:,.2f}"
+            f"{after}"
+        )
+
+    # Fallback for any future action -- keep something human-readable
+    # rather than silently omitting the action.
+    return f"{prefix}{symbol} — {action.value} awaiting Controller approval."
+
+
 class Engine:
     def __init__(
         self,
@@ -195,10 +274,7 @@ class Engine:
                     key=proposal.proposal_id,
                     level=NotificationLevel.IMPORTANT,
                     event="proposal_awaiting_approval",
-                    message=(
-                        f"[recovery] Proposal {proposal.proposal_id} ({proposal.proposed_action.value}) "
-                        f"for trade {trade_id} is still awaiting Controller approval."
-                    ),
+                    message=_format_proposal_message(proposal, recovery=True),
                     symbol=proposal.symbol,
                     interactive_actions=(
                         ("✅ Approve", f"approve:{proposal.proposal_id}"),
@@ -275,10 +351,7 @@ class Engine:
             key=proposal.proposal_id,
             level=NotificationLevel.IMPORTANT,
             event="proposal_awaiting_approval",
-            message=(
-                f"[recovery] Re-created the missing Initial Entry proposal {proposal.proposal_id} "
-                f"for trade {trade_id} ({symbol})."
-            ),
+            message=_format_proposal_message(proposal, recovery=True),
             symbol=symbol,
             interactive_actions=(
                 ("✅ Approve", f"approve:{proposal.proposal_id}"),
@@ -560,10 +633,7 @@ class Engine:
         self._notify(
             level=NotificationLevel.IMPORTANT,
             event="proposal_awaiting_approval",
-            message=(
-                f"New trade {trade_id} started for {symbol} (from watchlist); Initial Entry proposal "
-                f"{proposal.proposal_id} awaiting Controller approval."
-            ),
+            message=_format_proposal_message(proposal),
             symbol=symbol,
             interactive_actions=(
                 ("✅ Approve", f"approve:{proposal.proposal_id}"),
@@ -673,7 +743,7 @@ class Engine:
         self._notify(
             level=NotificationLevel.IMPORTANT,
             event="proposal_awaiting_approval",
-            message=f"New proposal {proposal.proposal_id} ({action.value}) for trade {trade_id} awaiting Controller approval.",
+            message=_format_proposal_message(proposal),
             symbol=proposal.symbol,
             interactive_actions=(
                 ("✅ Approve", f"approve:{proposal.proposal_id}"),
