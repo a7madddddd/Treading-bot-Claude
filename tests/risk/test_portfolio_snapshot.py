@@ -49,19 +49,45 @@ class TestSnapshotBuilder(unittest.TestCase):
         self.addCleanup(self.conn.close)
 
     def _insert_trade(self, trade_id, symbol, created_at_iso, status="filled",
-                      initial_order_id=None):
+                      submitted=True):
         # Post-2026-09-30 fix: the risk counters only count trades whose
-        # initial_order_id is not NULL (i.e., an order actually reached
-        # the broker) -- see LivePortfolioSnapshotBuilder._count_open_trades.
-        # By default a test row carries a non-NULL order id so trades
-        # inserted here behave like "opened" ones for count purposes.
-        if initial_order_id is None:
-            initial_order_id = f"broker-order-{trade_id}"
+        # initial-entry buy execution has a non-NULL broker_order_id in
+        # the order_executions table (proof the order actually reached
+        # the broker). By default a test row is "submitted" so it
+        # behaves like an opened trade for count purposes. Pass
+        # submitted=False for the "proposal-only, never submitted"
+        # scenario.
         self.conn.execute(
             "INSERT INTO trades (trade_id, symbol, created_at, "
-            "initial_order_status, initial_order_id) VALUES (?, ?, ?, ?, ?)",
-            (trade_id, symbol, created_at_iso, status, initial_order_id),
+            "initial_order_status) VALUES (?, ?, ?, ?)",
+            (trade_id, symbol, created_at_iso, status),
         )
+        # Every trade needs a matching proposal row (FK reference from
+        # order_executions -> proposals).
+        proposal_id = f"prop-{trade_id}"
+        self.conn.execute(
+            "INSERT INTO proposals (proposal_id, trade_id, proposed_action, "
+            "symbol, candidate_source, current_price_at_proposal, "
+            "proposed_entry, ladder_1_trigger, ladder_1_quantity, "
+            "ladder_2_trigger, ladder_2_quantity, floor_trigger, "
+            "maximum_position, proposal_created_at, assumptions_json, "
+            "risks_json) "
+            "VALUES (?, ?, 'initial_entry', ?, 'fixed_watchlist', "
+            "100.0, 100.0, 95.0, 10, 92.0, 20, 90.0, 40, ?, '[]', '[]')",
+            (proposal_id, trade_id, symbol, created_at_iso),
+        )
+        if submitted:
+            self.conn.execute(
+                "INSERT INTO order_executions (execution_id, proposal_id, "
+                "trade_id, client_order_id, side, broker_order_id, "
+                "requested_qty, status, created_at) VALUES "
+                "(?, ?, ?, ?, 'buy', ?, 10, 'submitted', ?)",
+                (
+                    f"exec-{trade_id}", proposal_id, trade_id,
+                    f"client-{trade_id}", f"broker-{trade_id}",
+                    created_at_iso,
+                ),
+            )
 
     def test_reads_equity_and_positions(self):
         base = "https://paper-api.alpaca.markets"

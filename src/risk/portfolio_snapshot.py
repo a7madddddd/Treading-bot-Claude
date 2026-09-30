@@ -121,32 +121,43 @@ class LivePortfolioSnapshotBuilder:
         )
 
     def _count_open_trades(self) -> int:
-        # Only trades that have an actual broker order attached count as
-        # "open" -- a trade row whose initial_order_id is still NULL
-        # represents a proposal that has not yet been approved and
-        # submitted; it holds no capital and has no position at the
-        # broker, so counting it against the D-0047 concurrent-trades
-        # cap incorrectly blocks the FIRST approval when the watchlist
-        # is longer than the cap (a real bug observed in the
-        # 2026-09-30 paper session where a 10-symbol watchlist made
-        # every approval fail with "already 10 open trades, cap is 5").
+        # A Trade row is created at proposal-generation time before
+        # Controller approval, with initial_order_status='pending' by
+        # default -- so filtering on that status alone (as the
+        # pre-2026-09-30 code did) incorrectly counts proposal-shells
+        # that have no broker order and no capital committed. Trade
+        # itself has no field that reliably signals "submitted"
+        # (initial_order_id is defined on the model but never written
+        # anywhere in code -- see 2026-09-30 code review). The
+        # authoritative signal for "this trade actually reached the
+        # broker" lives in the order_executions table: a row with
+        # side='buy' and a non-NULL broker_order_id means the initial
+        # entry succeeded at submission. Use that as the join key
+        # rather than a stale Trade field.
         row = self._conn.execute(
-            "SELECT COUNT(*) FROM trades "
-            "WHERE initial_order_id IS NOT NULL "
-            "AND initial_order_status IN "
-            "('pending', 'partially_filled', 'filled')"
+            "SELECT COUNT(DISTINCT t.trade_id) "
+            "FROM trades t "
+            "JOIN order_executions e ON e.trade_id = t.trade_id "
+            "WHERE e.side = 'buy' "
+            "  AND e.broker_order_id IS NOT NULL "
+            "  AND t.initial_order_status IN "
+            "      ('pending', 'partially_filled', 'filled')"
         ).fetchone()
         return int(row[0]) if row else 0
 
     def _count_new_trades_today(self, now_utc: datetime) -> int:
-        # Same fix rationale as _count_open_trades: only trades that
-        # actually reached the broker count as "new trades opened
-        # today". A proposal row that never got past Controller
-        # approval is not a trade that was opened.
+        # Same fix rationale as _count_open_trades: only trades whose
+        # initial-entry buy order reached the broker count as "new
+        # trades opened today". A trade whose proposal never got past
+        # Controller approval is not one that was opened.
         cutoff = _us_market_day_open_utc(now_utc)
         row = self._conn.execute(
-            "SELECT COUNT(*) FROM trades "
-            "WHERE created_at >= ? AND initial_order_id IS NOT NULL",
+            "SELECT COUNT(DISTINCT t.trade_id) "
+            "FROM trades t "
+            "JOIN order_executions e ON e.trade_id = t.trade_id "
+            "WHERE t.created_at >= ? "
+            "  AND e.side = 'buy' "
+            "  AND e.broker_order_id IS NOT NULL",
             (cutoff.isoformat(),),
         ).fetchone()
         return int(row[0]) if row else 0
