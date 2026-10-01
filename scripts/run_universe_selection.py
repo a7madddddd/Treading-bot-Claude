@@ -59,6 +59,20 @@ def main() -> int:
     p.add_argument("--effective-date",
                    help="Override effective trading date (YYYY-MM-DD); "
                         "default is today UTC.")
+    p.add_argument("--exclude", default="",
+                   help="Comma-separated extra symbols to exclude from the "
+                        "universe pool before enrichment (Controller-approved "
+                        "override on top of the auto-exclude of currently-open "
+                        "trades).")
+    p.add_argument("--no-exclude-open", action="store_true",
+                   help="Disable the automatic exclusion of symbols with an "
+                        "open (AWAITING_INITIAL_FILL or ACTIVE) trade in the "
+                        "DB. By default those are excluded so the pipeline "
+                        "never spends enrichment API calls on symbols the "
+                        "engine would skip at proposal time anyway. ABANDONED "
+                        "trades are NOT excluded -- Controller-approved "
+                        "2026-10-01: a symbol rejected on an earlier day may "
+                        "be re-proposed if it ranks today.")
     args = p.parse_args()
 
     key = _require_env("ALPACA_API_KEY_ID")
@@ -90,10 +104,71 @@ def main() -> int:
     conn = connect(args.db_path)
     bootstrap_schema(conn)
 
-    provider = AlpacaAssetsProvider(
+    # Build the exclusion set. Controller-approved 2026-10-01:
+    #   - auto-exclude symbols with an open (AWAITING_INITIAL_FILL /
+    #     ACTIVE) trade -- the engine would skip them anyway, so
+    #     spending enrichment API calls on them is pure waste.
+    #   - DO NOT exclude ABANDONED trades: a symbol the Controller
+    #     rejected yesterday may legitimately rank today if it is
+    #     trending. The engine's _check_watchlist will still ask for
+    #     approval, which is the right human-in-the-loop gate.
+    #   - allow a manual --exclude override for any extra symbols the
+    #     Controller does not want proposed today.
+    exclude: set = set()
+    manual_exclude = {s.strip().upper() for s in args.exclude.split(",")
+                      if s.strip()}
+    exclude.update(manual_exclude)
+    if not args.no_exclude_open:
+        from trade.sqlite_repository import SqliteTradeRepository
+        from trade.models import describe_status
+        trade_repo = SqliteTradeRepository(conn)
+        auto_excluded = set()
+        for record in trade_repo.list_active():
+            # list_active() returns AWAITING_INITIAL_FILL + ACTIVE only
+            # (src/trade/sqlite_repository.py:_ACTIVE_STATUSES) -- EXCLUDES
+            # ABANDONED, which is exactly the Controller-approved shape here.
+            if describe_status(record.trade) in ("AWAITING_INITIAL_FILL", "ACTIVE"):
+                auto_excluded.add(record.trade.symbol)
+        exclude.update(auto_excluded)
+        if auto_excluded:
+            print(f"[exclude] auto-excluded open positions: "
+                  f"{sorted(auto_excluded)}")
+    if manual_exclude:
+        print(f"[exclude] manual --exclude: {sorted(manual_exclude)}")
+
+    # Apply exclusion to whitelist (if any) OR let the provider know not
+    # to fetch excluded symbols from the all-equities feed. For
+    # whitelist mode we filter here; for all-equities mode we also
+    # filter here after the fetch (AlpacaAssetsProvider does not have
+    # an exclude-list parameter today, and adding one is out of scope
+    # for this small change -- a wrapper around the provider is enough).
+    if whitelist:
+        whitelist = tuple(s for s in whitelist if s not in exclude)
+        if not whitelist:
+            print("[FAIL] every whitelist entry is in the exclusion set",
+                  file=sys.stderr)
+            raise SystemExit(1)
+
+    raw_provider = AlpacaAssetsProvider(
         key_id=key, secret_key=sec, base_url=base,
         symbol_whitelist=whitelist or None,
     )
+
+    class _ExcludingProvider:
+        """Thin wrapper: drops excluded tickers after the base provider
+        fetches, so the whole-market path respects --exclude /
+        --no-exclude-open too. Matches the provider protocol
+        (get_raw_candidates(as_of_date) -> Tuple[RawCandidateRef, ...])."""
+        def __init__(self, inner, excluded):
+            self._inner = inner
+            self._excluded = frozenset(excluded)
+        def get_raw_candidates(self, as_of_date):
+            raw = self._inner.get_raw_candidates(as_of_date)
+            if not self._excluded:
+                return raw
+            return tuple(r for r in raw if r.ticker not in self._excluded)
+
+    provider = _ExcludingProvider(raw_provider, exclude) if exclude else raw_provider
     # Wire the sector provider so stage G's D-0048 concentration cap
     # actually enforces in production. Without this, every enriched
     # candidate carried source_reference="alpaca-iex" with no sector
