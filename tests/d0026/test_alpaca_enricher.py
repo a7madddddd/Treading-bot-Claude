@@ -159,6 +159,36 @@ class TestEnricher(unittest.TestCase):
         self.assertIn("/v2/stocks/TSLA/bars", transport.calls[0])
         self.assertIn("feed=iex", transport.calls[0])
 
+    def test_sector_provider_appends_sector_fragment(self):
+        """Regression for 2026-09-30 Bug #2: in production the enricher
+        never consulted any sector provider so stage G's D-0048
+        concentration cap was dormant. On the fix, a supplied
+        SectorProvider's result is spliced into source_reference as
+        '; sector=<name>' -- the exact shape the Concentration stage's
+        own parser already recognizes."""
+        from d0026.sector_provider import StaticSectorProvider
+        provider = StaticSectorProvider({"TSLA": "consumer_discretionary"})
+        transport = _StubTransport(HttpResponse(200,
+                                                json.dumps(_bars(35)).encode()))
+        e = AlpacaFeatureEnricher(key_id="k", secret_key="s",
+                                  transport=transport,
+                                  sector_provider=provider)
+        result = e(_cand("TSLA"), DATE, _regime())
+        self.assertIsNotNone(result.features)
+        self.assertIn("sector=consumer_discretionary",
+                      result.features.source_reference)
+
+    def test_sector_provider_absent_leaves_source_reference_unchanged(self):
+        """Without a provider the source_reference must stay
+        'alpaca-<feed>' with NO sector fragment -- the backward-
+        compatible default path."""
+        transport = _StubTransport(HttpResponse(200,
+                                                json.dumps(_bars(35)).encode()))
+        e = AlpacaFeatureEnricher(key_id="k", secret_key="s",
+                                  transport=transport)
+        result = e(_cand("TSLA"), DATE, _regime())
+        self.assertNotIn("sector=", result.features.source_reference)
+
 
 if __name__ == "__main__":
     unittest.main()

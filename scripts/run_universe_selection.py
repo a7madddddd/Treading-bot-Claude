@@ -94,7 +94,20 @@ def main() -> int:
         key_id=key, secret_key=sec, base_url=base,
         symbol_whitelist=whitelist or None,
     )
-    enricher = AlpacaFeatureEnricher(key_id=key, secret_key=sec)
+    # Wire the sector provider so stage G's D-0048 concentration cap
+    # actually enforces in production. Without this, every enriched
+    # candidate carried source_reference="alpaca-iex" with no sector
+    # fragment and stage G silently fell back to its "unknown sector,
+    # fail-open" branch (2026-09-30 Bug #2).
+    from d0026.sector_provider import load_default_sector_provider
+    try:
+        sector_provider = load_default_sector_provider()
+    except Exception:
+        sector_provider = None  # ship data/sectors.json broken -> fail open
+    enricher = AlpacaFeatureEnricher(
+        key_id=key, secret_key=sec,
+        sector_provider=sector_provider,
+    )
 
     class _TickerAsIdentityResolver(IdentityResolver):
         """Interim resolver: treats ticker itself as the stable

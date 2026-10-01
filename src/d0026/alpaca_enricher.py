@@ -89,6 +89,7 @@ class AlpacaFeatureEnricher:
         transport: HttpTransport = _urllib_transport,
         timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
         retry_policy=None,  # Optional common.http_retry.RetryPolicy
+        sector_provider=None,  # Optional d0026.sector_provider.SectorProvider
     ) -> None:
         if not key_id or not secret_key:
             raise AlpacaFeatureEnricherConfigError(
@@ -110,6 +111,12 @@ class AlpacaFeatureEnricher:
             transport = with_retry(transport, policy=retry_policy)
         self._transport = transport
         self._timeout = timeout_seconds
+        # Optional sector lookup. When provided, enriched features
+        # carry a "; sector=<name>" fragment on source_reference so the
+        # stage G Concentration cap (D-0048 max_sector_fraction) is
+        # actually enforced in production. Without this wiring B30's
+        # sector module was dormant in production (2026-09-30 Bug #2).
+        self._sector_provider = sector_provider
 
     def __call__(
         self,
@@ -147,6 +154,17 @@ class AlpacaFeatureEnricher:
         momentum = _return_over(bars, _MOMENTUM_LOOKBACK)
         exec_quality = _mean_range_over_vwap(bars[-_EXEC_QUALITY_WINDOW:])
 
+        sector_fragment = ""
+        if self._sector_provider is not None:
+            try:
+                sector = self._sector_provider.sector_of(symbol)
+            except Exception:  # noqa: BLE001 - never block a candidate on sector lookup
+                sector = None
+            if sector:
+                # Keep the exact fragment shape stage G already parses
+                # (src/d0026/sector_provider.py: sector_fragment()).
+                sector_fragment = f"; sector={sector}"
+
         features = DailySecurityFeatures(
             security_id=bar.security_id,
             feature_date=as_of_date,
@@ -156,7 +174,7 @@ class AlpacaFeatureEnricher:
             execution_quality_proxy=exec_quality,
             execution_quality_proxy_is_true_quote=False,
             warm_up_sufficient=True,
-            source_reference=f"alpaca-{self._feed}",
+            source_reference=f"alpaca-{self._feed}{sector_fragment}",
         )
 
         return UniverseCandidate(
