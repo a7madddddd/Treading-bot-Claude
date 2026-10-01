@@ -312,6 +312,40 @@ class TestSubmitOrder(unittest.TestCase):
         # Alpaca's sub-penny rule: prices >= $1.00 must be exactly 2 decimals.
         self.assertEqual(body["limit_price"], "101.25")
 
+    def test_side_aware_rounding_buy_floors(self):
+        """2026-09-30 Bug #5: a buy at 100.006 must round DOWN to
+        100.00 (never pay more than the buyer's limit); a sell at the
+        same price must round UP to 100.01 (never accept less than
+        the seller's limit). Previously both used Python's half-to-even
+        banker's rounding, which trimmed sell exits by up to 0.5 c
+        per share."""
+        from execution.alpaca_broker_client import _format_alpaca_limit_price
+        # Half-cent boundary samples hit the edge where banker's rounding
+        # misbehaves. Each pair asserts the directional guarantee.
+        self.assertEqual(_format_alpaca_limit_price(100.006, side="buy"), "100.00")
+        self.assertEqual(_format_alpaca_limit_price(100.006, side="sell"), "100.01")
+        self.assertEqual(_format_alpaca_limit_price(768.185, side="buy"), "768.18")
+        self.assertEqual(_format_alpaca_limit_price(768.185, side="sell"), "768.19")
+        # Prices below $1 keep 4-decimal precision and the same direction.
+        self.assertEqual(_format_alpaca_limit_price(0.55555, side="buy"), "0.5555")
+        self.assertEqual(_format_alpaca_limit_price(0.55555, side="sell"), "0.5556")
+        with self.assertRaises(ValueError):
+            _format_alpaca_limit_price(1.0, side="hold")
+
+    def test_submit_order_sell_rounds_up(self):
+        """End-to-end: a sell submission at a sub-penny price rounds up
+        on the wire, so a Floor exit never sells below the intended
+        guardrail (0.5 c/share savings vs the pre-fix body)."""
+        transport = _StubTransport()
+        transport.queue((200, _order_payload()))
+        _client(transport).submit_order(
+            client_order_id="C-SELL", symbol="TSLA", side="sell",
+            quantity=10, limit_price=350.004,
+        )
+        body = json.loads(transport.calls[0].body.decode("utf-8"))
+        self.assertEqual(body["side"], "sell")
+        self.assertEqual(body["limit_price"], "350.01")
+
 
 # ---- get_order_by_client_order_id --------------------------------------
 

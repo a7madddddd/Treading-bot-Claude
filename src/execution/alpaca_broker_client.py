@@ -178,7 +178,7 @@ class AlpacaBrokerClient(BrokerClient):
             "side": side,
             "type": "limit",
             "time_in_force": "day",
-            "limit_price": _format_alpaca_limit_price(limit_price),
+            "limit_price": _format_alpaca_limit_price(limit_price, side=side),
             "client_order_id": client_order_id,
         }
         try:
@@ -446,7 +446,7 @@ def _validate_symbol(symbol: str) -> None:
         raise ValueError(f"symbol must be a non-empty uppercase string, got {symbol!r}")
 
 
-def _format_alpaca_limit_price(limit_price: float) -> str:
+def _format_alpaca_limit_price(limit_price: float, *, side: str) -> str:
     """Alpaca's SEC-compliant sub-penny rule: an order priced at $1.00
     or higher must have exactly 2 decimals; below $1.00, up to 4. A
     tighter precision earns HTTP 422:
@@ -459,8 +459,26 @@ def _format_alpaca_limit_price(limit_price: float) -> str:
     This helper is deliberately Alpaca-specific -- the wider system
     keeps 4-decimal precision on its internal price fields (D-0009,
     strategy.md), and only the value that actually crosses the wire
-    to Alpaca gets truncated here."""
-    price = float(limit_price)
-    if price >= 1.0:
-        return f"{price:.2f}"
-    return f"{price:.4f}"
+    to Alpaca gets truncated here.
+
+    `side` picks the rounding direction so truncation is always in
+    the participant's favor, never against them (2026-09-30 Bug #5):
+        - BUY  -> ROUND_DOWN: never pay more than the requested limit.
+                   A buy limit of $100.006 at 2 decimals becomes 100.00
+                   (buyer's target ceiling holds).
+        - SELL -> ROUND_UP:   never accept less than the requested limit.
+                   A sell limit of $100.006 at 2 decimals becomes 100.01
+                   (seller's target floor holds).
+    Python's f-string ".2f" rounds half-to-even (banker's), which for
+    a SELL truncates AWAY from the target -- a real 0.5 c/share loss
+    per exit fill against strategy intent.
+    """
+    from decimal import Decimal, ROUND_DOWN, ROUND_UP
+
+    if side not in ("buy", "sell"):
+        raise ValueError(f"side must be 'buy' or 'sell', got {side!r}")
+
+    price = Decimal(str(float(limit_price)))
+    rounding = ROUND_DOWN if side == "buy" else ROUND_UP
+    quant = Decimal("0.01") if price >= Decimal("1") else Decimal("0.0001")
+    return format(price.quantize(quant, rounding=rounding), "f")
