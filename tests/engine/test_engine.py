@@ -1040,6 +1040,71 @@ class TestInitialEntryRecoveryAfterCrashBetweenRecordAndSubmit(unittest.TestCase
                             for e in notifier.events))
 
 
+class TestDbPersisterCallback(unittest.TestCase):
+    """Controller-approved 2026-10-01: at the end of every tick,
+    paper_session.sqlite (and ONLY that file) is committed+pushed to
+    the branch so a cloud-container reclaim mid-session preserves
+    state. The Engine takes an optional db_persister callback; the
+    production wiring is in scripts/run_paper_session.py. These tests
+    use an in-memory stub to confirm:
+      1. The callback IS invoked at the end of both run_trigger_check
+         and run_reconciliation_tick.
+      2. A raise from the callback NEVER crashes the main loop (the
+         CRITICAL notification is emitted and the engine stays alive)."""
+
+    def _engine_with_persister(self, callback):
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        from engine.engine import Engine
+        from execution.service import ExecutionService
+        trade_proposal_service = TradeProposalService(trade_repo, proposal_repo)
+        execution_service = ExecutionService(execution_repo, proposal_repo, trade_repo, FakeBrokerClient())
+        notifier = RecordingNotifier()
+        engine = Engine(
+            trade_repo=trade_repo, proposal_repo=proposal_repo, execution_repo=execution_repo,
+            trade_proposal_service=trade_proposal_service, execution_service=execution_service,
+            market_data=FakeMarketDataSource(), watchlist=StaticWatchlistSource(()),
+            decision_source=InMemoryDecisionSource(), notifier=notifier,
+            lock=EngineLock(conn, pid=1, host="test-host"),
+            db_persister=callback,
+        )
+        engine._lock.acquire(now=_now())
+        return engine, notifier
+
+    def test_callback_invoked_once_per_reconciliation_tick(self):
+        calls = []
+        def cb(now):
+            calls.append(now)
+        engine, _ = self._engine_with_persister(cb)
+        engine.run_reconciliation_tick(now=_now())
+        self.assertEqual(len(calls), 1)
+
+    def test_callback_invoked_once_per_trigger_check(self):
+        calls = []
+        def cb(now):
+            calls.append(now)
+        engine, _ = self._engine_with_persister(cb)
+        engine.run_trigger_check(now=_now())
+        self.assertEqual(len(calls), 1)
+
+    def test_callback_failure_is_logged_but_does_not_crash(self):
+        def cb(now):
+            raise RuntimeError("simulated git-push failure")
+        engine, notifier = self._engine_with_persister(cb)
+        # Must not raise.
+        engine.run_reconciliation_tick(now=_now())
+        self.assertTrue(any(e.event == "db_persist_failed" for e in notifier.events))
+
+    def test_no_callback_is_a_silent_no_op(self):
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        engine, _b, _m, _d, _n, _s = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn
+        )
+        engine._lock.acquire(now=_now())
+        # Must not raise even with db_persister=None (default).
+        engine.run_reconciliation_tick(now=_now())
+        engine.run_trigger_check(now=_now())
+
+
 class TestFloorLimitPriceRoundingConsolidated(unittest.TestCase):
     """Regression for 2026-10-01 Finding #3: the Floor limit price was
     previously double-rounded (engine -> 4 decimals, then broker ->

@@ -254,6 +254,7 @@ class Engine:
         decision_source: PendingDecisionSource,
         notifier: INotificationService,
         lock: EngineLock,
+        db_persister: Optional[Callable[[datetime], None]] = None,
     ) -> None:
         self._trade_repo = trade_repo
         self._proposal_repo = proposal_repo
@@ -266,6 +267,15 @@ class Engine:
         self._notifier = notifier
         self._lock = lock
         self._notified: Set[Tuple[str, str]] = set()
+        # Controller-approved 2026-10-01: optional callback invoked at
+        # the END of each tick to persist the live DB (and ONLY the DB
+        # file) to the remote git branch, so a cloud-container reclaim
+        # mid-session does not lose state. See
+        # scripts/run_paper_session.py for the production wiring.
+        # The callback is best-effort: a git failure is logged but
+        # never crashes the trading loop (the DB stays on local disk
+        # for the next tick to retry).
+        self._db_persister = db_persister
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -453,6 +463,7 @@ class Engine:
                 if proposal.proposed_action is TradeAction.LADDER_2 and proposal.approval_state is ApprovalState.APPROVED:
                     self._maybe_notify_ladder2_pending_confirmation(proposal.proposal_id, now=now)
         self._heartbeat(now=now)
+        self._persist_db_best_effort(now=now)
 
     def _recover_approved_without_execution(self, *, now: datetime) -> None:
         """Finds proposals in state APPROVED that have no execution
@@ -599,6 +610,28 @@ class Engine:
             return
 
         self._notify_floor_outcome(trade_id, exit_record.execution, symbol=trade.symbol)
+
+    def _persist_db_best_effort(self, *, now: datetime) -> None:
+        """Invoke the Controller-approved DB persister (git commit +
+        push of paper_session.sqlite only) at the end of every tick.
+        Never crashes the main loop on failure -- any git error
+        surfaces as a CRITICAL notification and the next tick retries.
+        """
+        if self._db_persister is None:
+            return
+        try:
+            self._db_persister(now)
+        except Exception as exc:  # noqa: BLE001 -- engine shield
+            self._notify(
+                level=NotificationLevel.CRITICAL,
+                event="db_persist_failed",
+                message=(
+                    f"DB persistence to git failed ({type(exc).__name__}): "
+                    f"{exc}. State is still on local disk; next tick retries. "
+                    "If this repeats, the cloud container may lose state "
+                    "on reclaim."
+                ),
+            )
 
     def _maybe_update_trailing(self, record, price, *, now):
         """Trailing floor activation + ratchet (strategy.md Sec.5 /
@@ -942,6 +975,7 @@ class Engine:
         for trade_record in self._trade_repo.list_active():
             self._process_trade(trade_record.trade.trade_id, now=now)
             self._heartbeat(now=now)
+        self._persist_db_best_effort(now=now)
 
     def _check_watchlist(self, *, now: datetime) -> None:
         """Watchlist-driven Trade creation (Controller-approved, this

@@ -65,6 +65,69 @@ def _fail(msg: str) -> "SystemExit":
     return SystemExit(1)
 
 
+def _repo_root_from_db_path(db_path: str) -> str:
+    """The repo root for the git persister. Defaults to the parent dir
+    of the DB file; if that is not inside a git working tree, fall back
+    to the script's repo root -- caller then controls the semantics via
+    PAPER_SESSION_DB_PATH."""
+    return os.path.abspath(os.path.dirname(os.path.abspath(db_path)) or _repo_root)
+
+
+def _make_db_persister(*, repo_root: str, db_filename: str):
+    """Returns a Callable[[datetime], None] that commits + pushes ONLY
+    `db_filename` from `repo_root` to the current branch's upstream.
+
+    Guarantees (Controller-approved 2026-10-01):
+      - commits only the DB file -- never anything else that may be
+        dirty in the working tree.
+      - no-op commit if `git diff --quiet` says the DB is unchanged
+        since HEAD.
+      - never crashes the engine on failure: raises so the Engine's
+        _persist_db_best_effort shield can surface a CRITICAL
+        notification and keep the main loop alive.
+    """
+    import subprocess
+    from datetime import datetime
+
+    def _run(cmd, check=True, capture_output=False):
+        return subprocess.run(
+            cmd, cwd=repo_root, check=check,
+            capture_output=capture_output, text=True, timeout=60,
+        )
+
+    def _persist(now: datetime) -> None:
+        # Fast exit when nothing changed (common case: a tick that
+        # neither reconciled nor applied any decision).
+        diff = _run(
+            ["git", "diff", "--quiet", "--", db_filename], check=False,
+        )
+        staged = _run(
+            ["git", "diff", "--cached", "--quiet", "--", db_filename],
+            check=False,
+        )
+        if diff.returncode == 0 and staged.returncode == 0:
+            return  # DB has not changed since HEAD -- nothing to commit
+
+        _run(["git", "add", db_filename])
+        # Commit only the DB file. If somehow nothing is staged after
+        # `git add` (concurrent reset?), skip to avoid an empty commit.
+        status = _run(
+            ["git", "diff", "--cached", "--quiet", "--", db_filename],
+            check=False,
+        )
+        if status.returncode == 0:
+            return
+        msg = (
+            f"chore(db): engine tick {now.isoformat()}\n\n"
+            f"Automated per-tick DB persistence (Controller-approved "
+            f"2026-10-01).\n"
+        )
+        _run(["git", "commit", "--only", db_filename, "-m", msg])
+        _run(["git", "push"])
+
+    return _persist
+
+
 def _require_env(name: str) -> str:
     v = os.environ.get(name, "").strip()
     if not v:
@@ -256,6 +319,16 @@ def main() -> int:
         watchlist = StaticWatchlistSource(symbols)
     lock = EngineLock(conn)
 
+    # Controller-approved 2026-10-01: at the end of every tick, commit
+    # paper_session.sqlite (and ONLY that file) to the branch and push,
+    # so a cloud-container reclaim mid-session does not lose state. The
+    # callback is best-effort; a git failure is a CRITICAL notification
+    # and the next tick retries.
+    db_persister = _make_db_persister(
+        repo_root=_repo_root_from_db_path(args.db_path),
+        db_filename=os.path.basename(os.path.abspath(args.db_path)),
+    )
+
     engine = Engine(
         trade_repo=trade_repo,
         proposal_repo=proposal_repo,
@@ -267,6 +340,7 @@ def main() -> int:
         decision_source=decision_source,
         notifier=notifier,
         lock=lock,
+        db_persister=db_persister,
     )
 
     # Preflight Telegram summary (before engine.start(), so still safe).
