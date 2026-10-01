@@ -83,7 +83,7 @@ from proposals.models import ApprovalState, TradeAction, approved_strategy_rule_
 from proposals.models import FloorContext
 from proposals.proposal import build_trade_proposal
 from proposals.repository import ProposalDecisionConflictError, ProposalRepository
-from trade.models import describe_status
+from trade.models import TradeStateError, describe_status
 from trade.repository import TradeRepository
 
 from .decision_source import ControllerDecision, DecisionKind, PendingDecisionSource
@@ -438,6 +438,14 @@ class Engine:
         self._heartbeat(now=now)
         self._apply_decisions(now=now)
         self._heartbeat(now=now)
+        # Recovery pass for APPROVED proposals whose submission never
+        # happened (crash between record_decision and _submit_approved,
+        # or any other reason the execution row is absent). Without
+        # this, an INITIAL_ENTRY approved just before a container
+        # restart stays APPROVED-but-unsubmitted forever (2026-10-01
+        # Finding #4).
+        self._recover_approved_without_execution(now=now)
+        self._heartbeat(now=now)
         for trade_record in self._trade_repo.list_active():
             trade_id = trade_record.trade.trade_id
             self._check_floor_trigger(trade_id, now=now)
@@ -445,6 +453,59 @@ class Engine:
                 if proposal.proposed_action is TradeAction.LADDER_2 and proposal.approval_state is ApprovalState.APPROVED:
                     self._maybe_notify_ladder2_pending_confirmation(proposal.proposal_id, now=now)
         self._heartbeat(now=now)
+
+    def _recover_approved_without_execution(self, *, now: datetime) -> None:
+        """Finds proposals in state APPROVED that have no execution
+        row (never submitted) and retries submission.
+
+        Scope: INITIAL_ENTRY only. Ladder APPROVED-but-unsubmitted is
+        already retried by _process_trade on every D-0021 :30 tick --
+        this method deliberately does not duplicate that, since D-0007
+        requires ladder revalidation to use a fresh market price
+        anyway and _process_trade already has that structure.
+        """
+
+        for trade_record in self._trade_repo.list_active():
+            trade = trade_record.trade
+            for proposal in self._proposal_repo.list_for_trade(trade.trade_id):
+                if proposal.proposed_action is not TradeAction.INITIAL_ENTRY:
+                    continue
+                if proposal.approval_state is not ApprovalState.APPROVED:
+                    continue
+                if self._execution_repo.get_by_proposal_id(proposal.proposal_id) is not None:
+                    continue
+                # APPROVED, INITIAL_ENTRY, no execution row -- retry.
+                try:
+                    price = self._market_data.get_last_trade(proposal.symbol)
+                except MarketDataUnavailableError as exc:
+                    self._notify(
+                        level=NotificationLevel.CRITICAL,
+                        event="market_data_unavailable",
+                        message=(
+                            f"Recovery: could not fetch current price for "
+                            f"{proposal.symbol} to retry approved Initial Entry "
+                            f"{proposal.proposal_id}: {exc}."
+                        ),
+                        symbol=proposal.symbol,
+                    )
+                    continue
+                self._notify(
+                    level=NotificationLevel.IMPORTANT,
+                    event="initial_entry_recovery_submit",
+                    message=(
+                        f"Recovery: retrying submission of approved Initial Entry "
+                        f"{proposal.proposal_id} for {proposal.symbol} (no execution "
+                        f"row found)."
+                    ),
+                    symbol=proposal.symbol,
+                )
+                self._submit_approved(
+                    proposal.proposal_id,
+                    current_price=price,
+                    active_floor_price=proposal.floor_trigger,
+                    now=now,
+                    initial_entry_trade_id=proposal.trade_id,
+                )
 
     def _check_floor_trigger(self, trade_id: str, *, now: datetime) -> None:
         """Floor detection -- Controller-approved to run on THIS
@@ -460,9 +521,6 @@ class Engine:
         trade = record.trade
         if describe_status(trade) != "ACTIVE":
             return
-        active_floor = trade.active_floor_price
-        if active_floor is None:
-            return
 
         try:
             price = self._market_data.get_last_trade(trade.symbol)
@@ -473,6 +531,17 @@ class Engine:
                 message=f"Could not get current price for {trade.symbol} (trade {trade_id}) for Floor check: {exc}",
                 symbol=trade.symbol,
             )
+            return
+
+        # Trailing floor activation + ratchet (D-0004/D-0008). Must run
+        # BEFORE reading active_floor so the latest trailing_floor_price
+        # participates in the floor comparison this same tick.
+        trade, record = self._maybe_update_trailing(record, price, now=now)
+        if record is None:
+            return
+
+        active_floor = trade.active_floor_price
+        if active_floor is None:
             return
 
         if price > active_floor:
@@ -486,8 +555,11 @@ class Engine:
         # current price. Only the lower (-1%) boundary is submitted as
         # the actual limit price -- see FLOOR_EXECUTION_RANGE_FRACTION's
         # own docstring for why (mirrors the Ladder 1/Ladder 2 execution
-        # range's "one boundary only" pattern exactly).
-        limit_price = round(price * (1 - FLOOR_EXECUTION_RANGE_FRACTION), 4)
+        # range's "one boundary only" pattern exactly). Rounding is left
+        # to the broker-client formatter (SEC Rule 612, side-aware
+        # ROUND_UP for sell) so precision is quantized in exactly one
+        # place.
+        limit_price = price * (1 - FLOOR_EXECUTION_RANGE_FRACTION)
 
         self._notify(
             level=NotificationLevel.CRITICAL,
@@ -495,7 +567,7 @@ class Engine:
             message=(
                 f"Floor triggered for trade {trade_id} ({trade.symbol}): price {price} at or below "
                 f"active floor {active_floor}. Submitting protective SELL for {trade.total_shares} "
-                f"shares at limit {limit_price} (or better)."
+                f"shares at limit {limit_price:.4f} (or better; broker quantizes to SEC-compliant precision)."
             ),
             symbol=trade.symbol,
         )
@@ -527,6 +599,123 @@ class Engine:
             return
 
         self._notify_floor_outcome(trade_id, exit_record.execution, symbol=trade.symbol)
+
+    def _maybe_update_trailing(self, record, price, *, now):
+        """Trailing floor activation + ratchet (strategy.md Sec.5 /
+        D-0004 / D-0008). Threshold-based, not price-based: activates
+        the first time price reaches weighted_avg_entry_price * 1.10
+        and the trailing floor becomes activation_threshold * 0.95;
+        each subsequent threshold is previous * 1.05 and the new floor
+        is new_threshold * 0.95. The floor only ever moves UP (defended
+        in trade.models.ratchet_trailing). Called from
+        _check_floor_trigger on the faster reconciliation cadence,
+        BEFORE active_floor_price is read, so the latest trailing
+        state participates in the floor comparison this same tick.
+        Idempotent: a tick where no activation/ratchet condition holds
+        is a plain no-op; a tick exactly on the activation threshold
+        activates once and returns.
+
+        Returns the (possibly-updated) (trade, record) tuple. If a
+        write failed (concurrent revision, repo error) returns the
+        original record so the floor check still runs against the
+        pre-update state and the next tick retries."""
+
+        trade = record.trade
+        wae = trade.weighted_avg_entry_price
+        if wae is None:
+            return trade, record
+
+        # Activation.
+        if not trade.trailing_activated:
+            activation_threshold = round(wae * 1.10, 4)
+            if price >= activation_threshold:
+                try:
+                    updated = trade.activate_trailing(
+                        current_price=activation_threshold, now=now,
+                    )
+                    new_record = self._trade_repo.update(
+                        updated,
+                        expected_revision=record.revision,
+                        transition="trailing_activated",
+                        now=now,
+                    )
+                    self._notify(
+                        level=NotificationLevel.IMPORTANT,
+                        event="trailing_activated",
+                        message=(
+                            f"Trailing floor ACTIVATED for {trade.symbol} (trade "
+                            f"{trade.trade_id}): price {price:.4f} reached activation "
+                            f"threshold {activation_threshold:.4f} (WAE {wae:.4f} x 1.10). "
+                            f"Trailing floor now at {updated.trailing_floor_price:.4f} "
+                            f"(vs original floor {trade.original_floor_price:.4f})."
+                        ),
+                        symbol=trade.symbol,
+                    )
+                    record = new_record
+                    trade = record.trade
+                except TradeStateError:
+                    # price slipped below threshold between read and
+                    # activate -- benign, retry next tick.
+                    return trade, record
+                except Exception as exc:  # noqa: BLE001
+                    self._notify(
+                        level=NotificationLevel.CRITICAL,
+                        event="trailing_activation_failed",
+                        message=(
+                            f"Trailing activation write failed for {trade.symbol} "
+                            f"(trade {trade.trade_id}): {exc}. Will retry on the next tick."
+                        ),
+                        symbol=trade.symbol,
+                    )
+                    return trade, record
+
+        # Ratchet (loop while the current price keeps clearing the next
+        # +5% threshold -- matches the backtest simulator's `while` so
+        # live and simulated trades behave identically for the same
+        # price path).
+        while (
+            trade.trailing_activated
+            and trade.trailing_current_threshold is not None
+        ):
+            next_threshold = round(trade.trailing_current_threshold * 1.05, 4)
+            if price < next_threshold:
+                break
+            try:
+                updated = trade.ratchet_trailing(current_price=next_threshold, now=now)
+            except TradeStateError:
+                break
+            try:
+                new_record = self._trade_repo.update(
+                    updated,
+                    expected_revision=record.revision,
+                    transition="trailing_ratcheted",
+                    now=now,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._notify(
+                    level=NotificationLevel.CRITICAL,
+                    event="trailing_ratchet_failed",
+                    message=(
+                        f"Trailing ratchet write failed for {trade.symbol} (trade "
+                        f"{trade.trade_id}): {exc}. Will retry on the next tick."
+                    ),
+                    symbol=trade.symbol,
+                )
+                return trade, record
+            self._notify(
+                level=NotificationLevel.IMPORTANT,
+                event="trailing_ratcheted",
+                message=(
+                    f"Trailing floor RATCHETED for {trade.symbol} (trade "
+                    f"{trade.trade_id}): new threshold {next_threshold:.4f}, "
+                    f"new trailing floor {updated.trailing_floor_price:.4f}."
+                ),
+                symbol=trade.symbol,
+            )
+            record = new_record
+            trade = record.trade
+
+        return trade, record
 
     def _notify_floor_outcome(self, trade_id: str, execution, *, symbol: str) -> None:
         if not execution.is_broker_terminal:
@@ -687,6 +876,7 @@ class Engine:
                 current_price=price,
                 active_floor_price=proposal.floor_trigger,
                 now=now,
+                initial_entry_trade_id=proposal.trade_id,
             )
             return
 
@@ -927,9 +1117,75 @@ class Engine:
         )
         self._notified.add(("pending_approval", proposal.proposal_id))
 
-    def _submit_approved(
-        self, proposal_id: str, *, current_price: float, active_floor_price: Optional[float], now: datetime
+    def _abandon_initial_entry_after_refusal(
+        self, trade_id: str, proposal_id: str, *, reason: str, now: datetime
     ) -> None:
+        """Mark an INITIAL_ENTRY trade ABANDONED when its approved
+        submission is refused BEFORE any fill (D-0007 revalidation or
+        D-0047 portfolio risk). Mirrors the REJECT-branch abandonment
+        in _apply_decision so the symbol is freed on the next
+        watchlist tick instead of staying permanently locked out in
+        AWAITING_INITIAL_FILL."""
+
+        trade_record = self._trade_repo.get(trade_id)
+        if trade_record is None:
+            return
+        trade = trade_record.trade
+        if trade.initial_order_reconciled:
+            # Any fill already happened -- never abandon a trade that
+            # has reached a reconciled state.
+            return
+        try:
+            self._trade_repo.update(
+                trade.abandon_before_fill(now=now),
+                expected_revision=trade_record.revision,
+                transition="abandoned_after_refusal",
+                now=now,
+            )
+            self._notify(
+                level=NotificationLevel.IMPORTANT,
+                event="initial_entry_abandoned",
+                message=(
+                    f"Initial Entry {proposal_id} ({trade.symbol}, trade "
+                    f"{trade_id}) marked ABANDONED after submission refusal "
+                    f"({reason}). Symbol released for the next watchlist tick."
+                ),
+                symbol=trade.symbol,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._notify(
+                level=NotificationLevel.CRITICAL,
+                event="abandon_failed",
+                message=(
+                    f"Could not mark {trade_id} as ABANDONED after submission "
+                    f"refusal for {proposal_id}: {exc}. Symbol may remain blocked "
+                    f"until the DB is cleaned."
+                ),
+                symbol=trade.symbol,
+            )
+
+    def _submit_approved(
+        self,
+        proposal_id: str,
+        *,
+        current_price: float,
+        active_floor_price: Optional[float],
+        now: datetime,
+        initial_entry_trade_id: Optional[str] = None,
+    ) -> None:
+        """Submission dispatch wrapper.
+
+        `initial_entry_trade_id` -- when set, this is an INITIAL_ENTRY
+        submission attempt (caller holds the trade_id) and a terminal
+        pre-fill refusal (D-0007 revalidation EXPIRED/PRICE_DRIFT, or
+        D-0047 portfolio risk) must abandon the Trade so the symbol is
+        released on the next watchlist tick. Without this, the Trade
+        stays in AWAITING_INITIAL_FILL forever and _check_watchlist's
+        has_open_trade guard permanently locks the symbol out (same
+        shape as the 2026-09-30 Bug #3 fix for the REJECT branch, now
+        extended to the approve-then-refused branch -- 2026-10-01
+        Finding #2)."""
+
         try:
             self._execution_service.submit_approved_proposal(
                 proposal_id, current_price=current_price, active_floor_price=active_floor_price, now=now
@@ -942,12 +1198,22 @@ class Engine:
                 event="submission_not_allowed",
                 message=f"Submission for {proposal_id} refused by D-0007 revalidation: {exc}",
             )
+            if initial_entry_trade_id is not None:
+                self._abandon_initial_entry_after_refusal(
+                    initial_entry_trade_id, proposal_id,
+                    reason=f"D-0007 revalidation refused: {exc}", now=now,
+                )
         except PortfolioRiskViolatedError as exc:
             self._notify(
                 level=NotificationLevel.IMPORTANT,
                 event="submission_risk_violated",
                 message=f"Submission for {proposal_id} refused by D-0047 portfolio risk enforcer: {exc}",
             )
+            if initial_entry_trade_id is not None:
+                self._abandon_initial_entry_after_refusal(
+                    initial_entry_trade_id, proposal_id,
+                    reason=f"D-0047 portfolio risk refused: {exc}", now=now,
+                )
         except BrokerSubmissionAmbiguousError as exc:
             self._notify(
                 level=NotificationLevel.CRITICAL,

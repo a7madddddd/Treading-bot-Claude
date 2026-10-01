@@ -854,5 +854,224 @@ class TestEngineLifecycleErrors(unittest.TestCase):
         self.assertEqual(len(ladder1), 1)
 
 
+class TestTrailingFloorWiring(unittest.TestCase):
+    """Regression for 2026-10-01 Finding #1: in production the engine
+    never called Trade.activate_trailing / Trade.ratchet_trailing, so
+    the Controller-approved D-0004/D-0008 trailing floor was dormant
+    and every live trade's active floor stayed at original_floor_price
+    (-10% of entry) forever. The fix wires both into
+    _check_floor_trigger (fast reconciliation cadence), BEFORE the
+    active_floor_price read, so the latest trailing floor participates
+    in the floor comparison on the same tick."""
+
+    def test_price_reaches_activation_threshold_activates_trailing(self):
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        _active_trade(trade_repo, price=100.0)  # WAE=100, floor=90, trailing OFF
+        engine, broker, market_data, decisions, notifier, exec_service = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn
+        )
+        # Activation threshold = 100 * 1.10 = 110. Trailing floor on
+        # activation = 110 * 0.95 = 104.5.
+        market_data.set_price("TSLA", 110.0)
+        engine._lock.acquire(now=_now())
+
+        engine.run_reconciliation_tick(now=_now())
+
+        after = trade_repo.get("T-1").trade
+        self.assertTrue(after.trailing_activated)
+        self.assertEqual(after.trailing_current_threshold, 110.0)
+        self.assertEqual(after.trailing_floor_price, 104.5)
+        self.assertEqual(after.active_floor_price, 104.5)  # trailing wins
+        self.assertTrue(any(e.event == "trailing_activated" for e in notifier.events))
+
+    def test_price_below_activation_threshold_leaves_trailing_off(self):
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        _active_trade(trade_repo, price=100.0)
+        engine, broker, market_data, decisions, notifier, exec_service = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn
+        )
+        market_data.set_price("TSLA", 109.99)
+        engine._lock.acquire(now=_now())
+
+        engine.run_reconciliation_tick(now=_now())
+
+        after = trade_repo.get("T-1").trade
+        self.assertFalse(after.trailing_activated)
+        self.assertEqual(after.active_floor_price, 90.0)  # still original
+
+    def test_ratchet_fires_on_each_next_threshold(self):
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        _active_trade(trade_repo, price=100.0)
+        engine, broker, market_data, decisions, notifier, exec_service = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn
+        )
+        engine._lock.acquire(now=_now())
+        # First tick: price hits 110 -> trailing activates (threshold
+        # 110, floor 104.5).
+        market_data.set_price("TSLA", 110.0)
+        engine.run_reconciliation_tick(now=_now())
+
+        # Second tick: price jumps to 121.5 (above 110 * 1.05 = 115.5
+        # AND above 115.5 * 1.05 = 121.275). Both ratchet steps must
+        # fire in one tick (matches backtesting simulator's while loop).
+        market_data.set_price("TSLA", 121.5)
+        engine.run_reconciliation_tick(now=_now() + timedelta(seconds=1))
+
+        after = trade_repo.get("T-1").trade
+        # After two ratchets: threshold = 110 * 1.05 * 1.05 = 121.275.
+        # New trailing floor = 121.275 * 0.95 = 115.21125 (rounded to
+        # 4 decimals by ratchet_trailing).
+        self.assertAlmostEqual(after.trailing_current_threshold, 121.275, places=4)
+        self.assertAlmostEqual(after.trailing_floor_price, 115.2113, places=4)
+        self.assertGreater(
+            sum(1 for e in notifier.events if e.event == "trailing_ratcheted"), 0
+        )
+
+    def test_trailing_floor_blocks_a_price_drop_now_below_the_lifted_floor(self):
+        """End-to-end: activate trailing, let price fall back below the
+        trailing floor, assert the Floor fires using the trailing floor
+        (not the original one)."""
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        _active_trade(trade_repo, price=100.0, shares=10)
+        engine, broker, market_data, decisions, notifier, exec_service = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn
+        )
+        engine._lock.acquire(now=_now())
+        # Tick 1: activate.
+        market_data.set_price("TSLA", 110.0)
+        engine.run_reconciliation_tick(now=_now())
+        # Tick 2: price drops to 104.0 -- above original floor (90),
+        # but below the trailing floor (104.5) -> Floor must fire.
+        market_data.set_price("TSLA", 104.0)
+        engine.run_reconciliation_tick(now=_now() + timedelta(seconds=1))
+
+        # A protective SELL execution must now exist for this trade.
+        sell = execution_repo.get_by_trade_id_and_side("T-1", "sell")
+        self.assertIsNotNone(sell,
+            "trailing floor must trigger Floor at 104.0 since 104.0 <= 104.5")
+        self.assertTrue(any(e.event == "floor_triggered" for e in notifier.events))
+
+
+class TestInitialEntryAbandonedAfterSubmissionRefusal(unittest.TestCase):
+    """Regression for 2026-10-01 Finding #2: an INITIAL_ENTRY approved
+    by the Controller but refused by D-0007 revalidation (EXPIRED or
+    ±0.5% PRICE_DRIFT) left the Trade in AWAITING_INITIAL_FILL forever,
+    permanently blocking the symbol from the next watchlist tick. The
+    fix abandons the Trade in the same way the REJECT branch does."""
+
+    def test_price_drift_refusal_abandons_the_trade_and_frees_the_symbol(self):
+        from trade.models import describe_status
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        watchlist = StaticWatchlistSource(("TSLA",))
+        engine, broker, market_data, decisions, notifier, exec_service = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn, watchlist=watchlist
+        )
+        market_data.set_price("TSLA", 100.0)
+        engine._lock.acquire(now=_now())
+        engine.run_trigger_check(now=_now())
+        trades = trade_repo.list_for_symbol("TSLA")
+        trade_id_before = trades[0].trade.trade_id
+        proposal = [p for p in proposal_repo.list_for_trade(trade_id_before)
+                    if p.proposed_action is TradeAction.INITIAL_ENTRY][0]
+
+        # Price drifts beyond the D-0007 ±0.5% band before approval is
+        # applied. 101.0 is +1.0% off the proposal snapshot of 100.0,
+        # safely outside the band so submit_approved_proposal raises
+        # SubmissionNotAllowedError.
+        market_data.set_price("TSLA", 101.0)
+        decisions.submit(ControllerDecision(
+            proposal_id=proposal.proposal_id,
+            kind=DecisionKind.APPROVE,
+            decided_by="controller",
+        ))
+        engine.run_reconciliation_tick(now=_now() + timedelta(seconds=1))
+
+        # Trade must now be ABANDONED (NOT still AWAITING_INITIAL_FILL).
+        after = trade_repo.get(trade_id_before)
+        self.assertEqual(describe_status(after.trade), "ABANDONED")
+        self.assertTrue(any(e.event == "initial_entry_abandoned" for e in notifier.events))
+
+        # Next watchlist tick must open a brand-new trade for the same
+        # symbol -- symbol was properly freed.
+        engine.run_trigger_check(now=_now() + timedelta(seconds=2))
+        self.assertEqual(len(trade_repo.list_for_symbol("TSLA")), 2)
+
+
+class TestInitialEntryRecoveryAfterCrashBetweenRecordAndSubmit(unittest.TestCase):
+    """Regression for 2026-10-01 Finding #4: a crash between
+    proposal_repo.record_decision and ExecutionService.
+    submit_approved_proposal left an APPROVED Initial Entry proposal
+    with no execution row and no retry path. The fix adds a recovery
+    pass in run_reconciliation_tick that scans for APPROVED
+    INITIAL_ENTRY proposals missing an execution and resubmits them."""
+
+    def test_approved_initial_entry_with_no_execution_is_resubmitted(self):
+        from proposals.models import approved_strategy_rule_set as _strat
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        watchlist = StaticWatchlistSource(("TSLA",))
+        engine, broker, market_data, decisions, notifier, exec_service = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn, watchlist=watchlist
+        )
+        market_data.set_price("TSLA", 100.0)
+        engine._lock.acquire(now=_now())
+        engine.run_trigger_check(now=_now())  # creates INITIAL_ENTRY proposal
+        trade_id = trade_repo.list_for_symbol("TSLA")[0].trade.trade_id
+        proposal = [p for p in proposal_repo.list_for_trade(trade_id)
+                    if p.proposed_action is TradeAction.INITIAL_ENTRY][0]
+
+        # Simulate the crash scenario: mark the proposal APPROVED
+        # directly in the repo (as if record_decision ran), but DO NOT
+        # go through _apply_decision so no submission happens.
+        proposal_repo.record_decision(
+            proposal.proposal_id, approved=True, decided_by="controller",
+            decided_at=_now(), action=TradeAction.INITIAL_ENTRY,
+        )
+        self.assertIsNone(execution_repo.get_by_proposal_id(proposal.proposal_id))
+
+        # Recovery pass must notice and resubmit on the next
+        # reconciliation tick.
+        engine.run_reconciliation_tick(now=_now() + timedelta(seconds=1))
+
+        exec_record = execution_repo.get_by_proposal_id(proposal.proposal_id)
+        self.assertIsNotNone(exec_record,
+            "recovery pass must retry an APPROVED Initial Entry with no execution")
+        self.assertEqual(broker.submit_calls, [exec_record.execution.client_order_id])
+        self.assertTrue(any(e.event == "initial_entry_recovery_submit"
+                            for e in notifier.events))
+
+
+class TestFloorLimitPriceRoundingConsolidated(unittest.TestCase):
+    """Regression for 2026-10-01 Finding #3: the Floor limit price was
+    previously double-rounded (engine -> 4 decimals, then broker ->
+    SEC-compliant precision). The fix removes the engine-side pre-
+    rounding and lets the broker-client formatter be the single
+    source of truth for precision. Behavior must still be correct for
+    both >=$1 and sub-$1 prices."""
+
+    def test_floor_passes_unrounded_limit_price_to_execution_service(self):
+        # Trade at $100, price falls to $89 -> Floor fires. Limit =
+        # 89 * 0.99 = 88.11 (exact 2 decimals). The important check
+        # here is that the limit_price going into the broker is the
+        # raw float, and the broker-client's formatter does the SEC-
+        # Rule-612 2-decimal quantization in ONE place.
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        _active_trade(trade_repo, price=100.0, shares=10)
+        engine, broker, market_data, decisions, notifier, exec_service = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn
+        )
+        market_data.set_price("TSLA", 89.0)  # <= floor at 90.0 -> fire
+        engine._lock.acquire(now=_now())
+
+        engine.run_reconciliation_tick(now=_now())
+
+        sell = execution_repo.get_by_trade_id_and_side("T-1", "sell")
+        self.assertIsNotNone(sell)
+        self.assertEqual(len(broker.submit_calls), 1)
+        # 89.0 * (1 - 0.01) = 88.11 exactly; limit must match without
+        # engine-side quantization having masked anything.
+        limit = broker.submit_limit_prices[sell.execution.client_order_id]
+        self.assertAlmostEqual(limit, 88.11, places=6)
+
+
 if __name__ == "__main__":
     unittest.main()
