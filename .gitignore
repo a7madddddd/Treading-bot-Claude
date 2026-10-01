@@ -14,12 +14,16 @@ Thumbs.db
 logs/
 *.log
 
-# Runtime SQLite state (session/proposal/trade DB) -- created at runtime,
-# never source. Contains real broker session data; must not be committed.
-# Trailing wildcard also catches archived snapshots
-# (e.g. paper_session.sqlite.pre-reset-YYYYMMDDTHHMMSSZ).
+# Runtime SQLite state (session/proposal/trade DB).
+# Controller-approved 2026-10-01: the single live DB
+# `paper_session.sqlite` IS committed so a fresh cloud container
+# (whose working directory resets to the git clone on every reclaim)
+# can rehydrate yesterday's open trades at startup. Everything else
+# matching *.sqlite* (archived snapshots, wal/shm sidecars, test DBs)
+# stays ignored.
 *.sqlite
 *.sqlite*
+!paper_session.sqlite
 
 # Common build/artifact dirs (kept broad; refine when a language is chosen)
 node_modules/
