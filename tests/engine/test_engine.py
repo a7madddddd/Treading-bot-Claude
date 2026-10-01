@@ -1040,6 +1040,66 @@ class TestInitialEntryRecoveryAfterCrashBetweenRecordAndSubmit(unittest.TestCase
                             for e in notifier.events))
 
 
+class TestLockOnSeparateConn(unittest.TestCase):
+    """Controller-approved 2026-10-01: the engine_lock table lives in
+    its own session-ephemeral SQLite file (engine_lock.sqlite), split
+    out of paper_session.sqlite so per-tick heartbeat writes never
+    dirty the committed data DB. These tests prove the lock-on-its-
+    own-conn wiring works end-to-end AND that the data conn stays
+    bit-for-bit untouched by lock traffic."""
+
+    def test_lock_on_a_dedicated_conn_leaves_the_data_conn_untouched(self):
+        from persistence.db import connect, bootstrap_schema, bootstrap_lock_only_schema
+        data_conn = connect(":memory:")
+        bootstrap_schema(data_conn)
+        lock_conn = connect(":memory:")
+        bootstrap_lock_only_schema(lock_conn)
+
+        lock = EngineLock(lock_conn, pid=99, host="test-host")
+        now = _now()
+        lock.acquire(now=now)
+        lock.heartbeat(now=now + timedelta(seconds=1))
+        lock.heartbeat(now=now + timedelta(seconds=2))
+        lock.heartbeat(now=now + timedelta(seconds=3))
+
+        # The lock conn carries the lock row.
+        lock_rows = lock_conn.execute("SELECT COUNT(*) FROM engine_lock").fetchone()[0]
+        self.assertEqual(lock_rows, 1)
+
+        # The data conn's engine_lock table (created by bootstrap_schema
+        # via migration 0003) exists but has NO rows -- the heartbeat
+        # traffic went exclusively to the lock conn.
+        data_rows = data_conn.execute("SELECT COUNT(*) FROM engine_lock").fetchone()[0]
+        self.assertEqual(data_rows, 0,
+            "the lock DB separation must leave the data conn's engine_lock empty")
+
+    def test_bootstrap_lock_only_schema_is_idempotent(self):
+        """A fresh container will call bootstrap_lock_only_schema on a
+        maybe-existing engine_lock.sqlite -- the IF NOT EXISTS DDL
+        must be safe to run twice."""
+        from persistence.db import connect, bootstrap_lock_only_schema
+        conn = connect(":memory:")
+        bootstrap_lock_only_schema(conn)
+        bootstrap_lock_only_schema(conn)  # must not raise
+        # And the table must still be usable.
+        lock = EngineLock(conn, pid=1, host="test")
+        lock.acquire(now=_now())
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM engine_lock").fetchone()[0], 1)
+
+    def test_bootstrap_lock_only_schema_does_not_create_other_tables(self):
+        """Lock DB is deliberately minimal -- it must NOT include
+        trades/proposals/order_executions etc."""
+        from persistence.db import connect, bootstrap_lock_only_schema
+        conn = connect(":memory:")
+        bootstrap_lock_only_schema(conn)
+        tables = {
+            r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        self.assertEqual(tables, {"engine_lock"})
+
+
 class TestDbPersisterCallback(unittest.TestCase):
     """Controller-approved 2026-10-01: at the end of every tick,
     paper_session.sqlite (and ONLY that file) is committed+pushed to

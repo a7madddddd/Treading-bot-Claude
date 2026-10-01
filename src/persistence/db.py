@@ -271,6 +271,32 @@ def bootstrap_schema(
         _apply_migration(conn, version, approved_migrations[version])
 
 
+def bootstrap_lock_only_schema(conn: sqlite3.Connection) -> None:
+    """Bootstrap ONLY the engine_lock table on a fresh connection, for
+    the dedicated engine_lock.sqlite file (Controller-approved
+    2026-10-01: the lock DB is split out of paper_session.sqlite so
+    per-tick heartbeat writes do not dirty the committed data DB).
+
+    This runs no migrations and does not touch any other table. The
+    DDL mirrors src/persistence/migrations/0003_engine_lock.sql with
+    CREATE TABLE IF NOT EXISTS added so re-running on an existing
+    file is a safe no-op. The schema is deliberately NOT versioned via
+    get_schema_version(); the lock file is session-ephemeral and
+    carries no durable state."""
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS engine_lock (
+            id            INTEGER PRIMARY KEY CHECK (id = 1),
+            pid           INTEGER NOT NULL,
+            host          TEXT NOT NULL,
+            started_at    TEXT NOT NULL,
+            heartbeat_at  TEXT NOT NULL
+        );
+        """
+    )
+
+
 @contextmanager
 def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
     """BEGIN IMMEDIATE ... COMMIT/ROLLBACK. Required for every

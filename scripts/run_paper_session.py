@@ -248,7 +248,7 @@ def main() -> int:
                        bot_token=bot_token)
 
     # Wire concrete adapters and services.
-    from persistence.db import connect, bootstrap_schema
+    from persistence.db import connect, bootstrap_schema, bootstrap_lock_only_schema
     from trade.sqlite_repository import SqliteTradeRepository
     from proposals.sqlite_repository import SqliteProposalRepository
     from execution.sqlite_repository import SqliteOrderExecutionRepository
@@ -263,8 +263,27 @@ def main() -> int:
     from engine.lock import EngineLock
     from engine.watchlist import StaticWatchlistSource
 
+    # Two SQLite files, by design (Controller-approved 2026-10-01):
+    #   1. paper_session.sqlite -- durable trading state (trades,
+    #      proposals, executions, universe snapshots, research). This
+    #      file IS committed+pushed to the branch by the per-tick
+    #      persister when it changes, so a fresh cloud container can
+    #      rehydrate yesterday's open positions on startup.
+    #   2. engine_lock.sqlite  -- session-ephemeral liveness beacon.
+    #      Writes happen several times per tick (heartbeat); this file
+    #      is gitignored so those writes never produce commits. On a
+    #      container reclaim the lock is naturally gone (fresh clone =
+    #      fresh file), which is exactly what the stale-lock-steal path
+    #      already handles.
     conn = connect(args.db_path)
     bootstrap_schema(conn)
+
+    lock_db_path = os.path.join(
+        os.path.dirname(os.path.abspath(args.db_path)),
+        "engine_lock.sqlite",
+    )
+    lock_conn = connect(lock_db_path)
+    bootstrap_lock_only_schema(lock_conn)
 
     trade_repo = SqliteTradeRepository(conn)
     proposal_repo = SqliteProposalRepository(conn)
@@ -317,7 +336,7 @@ def main() -> int:
         )
     else:
         watchlist = StaticWatchlistSource(symbols)
-    lock = EngineLock(conn)
+    lock = EngineLock(lock_conn)
 
     # Controller-approved 2026-10-01: at the end of every tick, commit
     # paper_session.sqlite (and ONLY that file) to the branch and push,

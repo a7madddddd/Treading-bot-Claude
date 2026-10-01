@@ -24,6 +24,10 @@ logs/
 *.sqlite
 *.sqlite*
 !paper_session.sqlite
+# Lock DB (session-ephemeral, heartbeat-only) stays ignored even
+# though *.sqlite* already covers it -- an explicit line here is a
+# readability aid for anyone scanning .gitignore.
+engine_lock.sqlite
 
 # Common build/artifact dirs (kept broad; refine when a language is chosen)
 node_modules/
