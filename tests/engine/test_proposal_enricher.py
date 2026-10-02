@@ -64,10 +64,14 @@ class TestProposalEnricher(unittest.TestCase):
         self.assertEqual(append_enrichment("hello", ""), "hello")
 
     def test_append_enrichment_adds_divider(self):
-        out = append_enrichment("hello", "• news")
+        """append_enrichment adds a blank-line separator; the enrichment
+        itself supplies its own header (CompositeEnricher does)."""
+        out = append_enrichment("hello", "— Research (advisory):\n• news")
         self.assertIn("hello", out)
-        self.assertIn("Market context", out)
+        self.assertIn("— Research (advisory):", out)
         self.assertIn("• news", out)
+        # blank line between base message and enrichment
+        self.assertIn("hello\n\n—", out)
 
 
 if __name__ == "__main__":

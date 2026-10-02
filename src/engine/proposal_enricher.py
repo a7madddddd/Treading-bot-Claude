@@ -88,13 +88,10 @@ def _extract_text(report) -> Optional[str]:
 
 
 def append_enrichment(message: str, enrichment: Optional[str]) -> str:
-    """Pure helper: appends the enrichment block below a divider.
-    Returns the message unchanged if enrichment is None/empty."""
+    """Pure helper: appends the enrichment block below a blank-line
+    separator. The enrichment is expected to supply its own header
+    (CompositeEnricher does -- "— Research (advisory):"). Returns the
+    message unchanged if enrichment is None/empty."""
     if not enrichment:
         return message
-    return (
-        message
-        + "\n\n"
-        + "— Market context (advisory, Perplexity):\n"
-        + enrichment
-    )
+    return message + "\n\n" + enrichment

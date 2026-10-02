@@ -55,7 +55,11 @@ class PerplexityEnricher:
         text = _extract_perplexity_text(report)
         if not text:
             return None
-        text = text.strip()
+        # strip only trailing/leading newlines, NOT per-line indent --
+        # otherwise the first bullet loses its "  • " prefix.
+        text = text.strip("\n").rstrip()
+        if not text:
+            return None
         if len(text) > self._MAX_CHARS:
             text = text[: self._MAX_CHARS - 1].rstrip() + "…"
         return "🔍 Research:\n" + text
@@ -305,7 +309,9 @@ class CompositeEnricher:
             except Exception:  # noqa: BLE001
                 continue
             if isinstance(out, str) and out.strip():
-                lines.append(out.strip())
+                # Strip trailing newlines only; keep leading indentation
+                # on multi-line blocks (e.g. Perplexity's bullet list).
+                lines.append(out.strip("\n").rstrip())
         if not lines:
             return None
         return self._HEADER + "\n" + "\n".join(lines)
