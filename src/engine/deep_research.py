@@ -529,9 +529,41 @@ class DeepResearchComposer:
 
     def enrich(self, symbol: str) -> Optional[str]:
         """Protocol-compatible with the earlier CompositeEnricher so
-        the Engine's self._enrich() wrapper works unchanged."""
+        the Engine's self._enrich() wrapper works unchanged.
+
+        Also runs the trade evaluator (D-0050 Phase 10) and appends
+        its filter+score block below the research report."""
         report = self.build_report(symbol)
-        return report.to_telegram_text()
+        base = report.to_telegram_text()
+
+        # D-0050 Phase 10: filter+score+rank.
+        evaluation_block = None
+        try:
+            from engine.research_hub import SymbolResearchHub
+            from engine.trade_evaluator import (
+                TradeEvaluator, format_evaluation_block,
+            )
+            hub = SymbolResearchHub(
+                fred=self._fred, finnhub=self._finnhub,
+                alpha_vantage=self._av, polygon=self._polygon,
+                tiingo=self._tiingo, perplexity=self._perplexity,
+            )
+            evaluator = TradeEvaluator(hub)
+            result = evaluator.evaluate(symbol)
+            evaluation_block = format_evaluation_block(result)
+        except Exception:  # noqa: BLE001
+            pass
+
+        # When no source was configured at all, don't emit an
+        # evaluator-only block that would be a bare "rejected: no live
+        # price" line — that is noise, not research.
+        any_source = any([self._fred, self._finnhub, self._av,
+                          self._polygon, self._tiingo, self._perplexity])
+        if not any_source:
+            return None
+        if base and evaluation_block:
+            return base + "\n" + evaluation_block
+        return base or evaluation_block
 
     def build_report(self, symbol: str) -> DeepResearchReport:
         report = DeepResearchReport(symbol=symbol)
