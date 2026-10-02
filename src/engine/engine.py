@@ -361,7 +361,7 @@ class Engine:
                     key=proposal.proposal_id,
                     level=NotificationLevel.IMPORTANT,
                     event="proposal_awaiting_approval",
-                    message=_format_proposal_message(
+                    message=self._enrich(proposal.symbol, _format_proposal_message(
                         proposal,
                         recovery=True,
                         price_context=(
@@ -369,7 +369,7 @@ class Engine:
                             if proposal.proposed_action is TradeAction.INITIAL_ENTRY
                             else None
                         ),
-                    ),
+                    )),
                     symbol=proposal.symbol,
                     interactive_actions=(
                         ("✅ Approve", f"approve:{proposal.proposal_id}"),
@@ -446,10 +446,10 @@ class Engine:
             key=proposal.proposal_id,
             level=NotificationLevel.IMPORTANT,
             event="proposal_awaiting_approval",
-            message=_format_proposal_message(
+            message=self._enrich(symbol, _format_proposal_message(
                 proposal, recovery=True,
                 price_context=self._safe_price_context(symbol),
-            ),
+            )),
             symbol=symbol,
             interactive_actions=(
                 ("✅ Approve", f"approve:{proposal.proposal_id}"),
