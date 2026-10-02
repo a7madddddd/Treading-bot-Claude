@@ -152,13 +152,38 @@ class PolygonSource:
         return out
 
     def get_ticker_snapshot(self, symbol: str) -> Optional[dict]:
+        """Primary: /v2/snapshot (paid tiers). Free-tier fallback:
+        /v2/aggs/ticker/{sym}/prev — returns previous session's OHLCV
+        shaped identically to a snapshot.day block so downstream
+        parsing is unchanged.
+        """
         data = self._get_json(
             f"/v2/snapshot/locale/us/markets/stocks/tickers/{symbol}"
         )
         if isinstance(data, dict):
             ticker = data.get("ticker")
-            if isinstance(ticker, dict):
+            if isinstance(ticker, dict) and ticker:
                 return ticker
+        # Fallback: previous-day aggregates.
+        prev = self._get_json(
+            f"/v2/aggs/ticker/{symbol}/prev", params={"adjusted": "true"}
+        )
+        if isinstance(prev, dict):
+            results = prev.get("results")
+            if isinstance(results, list) and results:
+                row = results[0]
+                # Shape identically to snapshot's day/prevDay fields so
+                # consumers (research_hub, deep_research) read the same keys.
+                return {
+                    "day": {
+                        "c": row.get("c"), "h": row.get("h"),
+                        "l": row.get("l"), "o": row.get("o"),
+                        "v": row.get("v"),
+                    },
+                    "prevDay": {"c": row.get("c")},  # fallback: same bar; no %-change
+                    "lastTrade": {"p": row.get("c")},
+                    "_fallback_source": "aggs/prev",
+                }
         return None
 
     def get_ticker_details(self, symbol: str) -> Optional[dict]:

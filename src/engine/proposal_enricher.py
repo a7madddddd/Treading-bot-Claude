@@ -71,13 +71,13 @@ def _extract_text(report) -> Optional[str]:
         findings = getattr(report, "findings", None)
         if not findings:
             # Some responses may just have a top-level `summary` field.
-            summary = getattr(report, "summary", None)
+            summary = getattr(report, "text", None) or getattr(report, "summary", None)
             if isinstance(summary, str) and summary.strip():
                 return summary
             return None
         lines = []
         for f in findings:
-            s = getattr(f, "summary", None)
+            s = getattr(f, "text", None) or getattr(f, "summary", None)
             if isinstance(s, str) and s.strip():
                 lines.append("• " + s.strip())
         if not lines:

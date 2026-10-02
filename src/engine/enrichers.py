@@ -71,12 +71,12 @@ def _extract_perplexity_text(report) -> Optional[str]:
         if findings:
             lines = []
             for f in findings:
-                s = getattr(f, "summary", None)
+                s = getattr(f, "text", None) or getattr(f, "summary", None)
                 if isinstance(s, str) and s.strip():
                     lines.append("  • " + s.strip())
             if lines:
                 return "\n".join(lines)
-        summary = getattr(report, "summary", None)
+        summary = getattr(report, "text", None) or getattr(report, "summary", None)
         if isinstance(summary, str) and summary.strip():
             return summary
     except Exception:  # noqa: BLE001

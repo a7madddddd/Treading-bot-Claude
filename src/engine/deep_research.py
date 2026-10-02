@@ -426,7 +426,7 @@ def _call_perplexity(pxclient, symbol: str
         findings = getattr(rep, "findings", None) or []
         out = []
         for f in findings[:max_bullets]:
-            s = getattr(f, "summary", None)
+            s = getattr(f, "text", None) or getattr(f, "summary", None)
             if isinstance(s, str) and s.strip():
                 out.append("• " + s.strip())
         return out
