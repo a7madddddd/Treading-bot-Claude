@@ -259,17 +259,19 @@ def _build_composite_enricher(*, enable_research: bool):
         print(f"[research] Polygon init failed: {exc}")
 
     # Polygon S3 bulk access is a separate capability (historical bulk
-    # files, not per-symbol enrichment). Log that it's configured so the
-    # Controller knows the keys are honored; actual bulk downloader is a
-    # separate work item (SigV4 or boto3).
+    # files, not per-symbol enrichment). Build and advertise the signed
+    # SigV4 client at startup so the Controller sees it is wired. The
+    # bulk downloader is scripts/download_polygon_bulk.py.
     try:
         from marketdata.polygon_source import PolygonS3Config
-        s3 = PolygonS3Config.from_env()
-        if s3 is not None:
-            print(f"[research] Polygon S3 bulk configured: endpoint={s3.endpoint} "
-                  f"(downloader not yet implemented)")
-    except Exception:  # noqa: BLE001
-        pass
+        s3cfg = PolygonS3Config.from_env()
+        if s3cfg is not None:
+            s3client = s3cfg.build_client()
+            print(f"[research] Polygon S3 bulk client READY: "
+                  f"endpoint={s3cfg.endpoint}  "
+                  f"(use scripts/download_polygon_bulk.py)")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[research] Polygon S3 init failed: {exc}")
 
     if not subs:
         print("[research] NO sub-enrichers could be built -- disabled")

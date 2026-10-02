@@ -242,3 +242,14 @@ class PolygonS3Config:
         # Never print the secret.
         return (f"PolygonS3Config(endpoint={self.endpoint!r}, "
                 f"access_key_id='***', secret_key='***')")
+
+    def build_client(self, **kwargs):
+        """Construct a PolygonS3Client from this config. ``kwargs`` are
+        forwarded (bucket, region, timeout_seconds, transport, clock)."""
+        from marketdata.polygon_s3_client import PolygonS3Client
+        return PolygonS3Client(
+            endpoint=self.endpoint,
+            access_key_id=self.access_key_id,
+            secret_key=self.secret_key,
+            **kwargs,
+        )
