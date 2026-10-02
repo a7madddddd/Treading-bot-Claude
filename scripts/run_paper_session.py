@@ -196,6 +196,89 @@ def _preflight(*, key_id: str, secret: str, base_url: str,
     }
 
 
+def _build_composite_enricher(*, enable_research: bool):
+    """Builds the CompositeEnricher from available env-var API keys.
+
+    Each sub-enricher is best-effort: a missing key, a bad key, or any
+    construction error silently excludes that source. Returns None when
+    research is disabled, or when no sub-enricher could be built.
+    """
+    if not enable_research:
+        return None
+
+    from engine.enrichers import (
+        CompositeEnricher, PerplexityEnricher, FinnhubEnricher,
+        AlphaVantageEnricher, TiingoEnricher, PolygonEnricher,
+    )
+    subs = []
+    attached: list = []
+
+    try:
+        from research.perplexity_agent import PerplexityAgentClient
+        key = os.environ.get("PERPLEXITY_API_KEY", "").strip()
+        if key:
+            subs.append(PerplexityEnricher(PerplexityAgentClient(api_key=key)))
+            attached.append("Perplexity")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[research] Perplexity init failed: {exc}")
+
+    try:
+        from marketdata.finnhub_source import FinnhubSource
+        fh = FinnhubSource.from_env()
+        if fh is not None:
+            subs.append(FinnhubEnricher(fh))
+            attached.append("Finnhub")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[research] Finnhub init failed: {exc}")
+
+    try:
+        from marketdata.alpha_vantage_source import AlphaVantageSource
+        av = AlphaVantageSource.from_env()
+        if av is not None:
+            subs.append(AlphaVantageEnricher(av))
+            attached.append("AlphaVantage")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[research] AlphaVantage init failed: {exc}")
+
+    try:
+        from marketdata.tiingo_source import TiingoSource
+        tn = TiingoSource.from_env()
+        if tn is not None:
+            subs.append(TiingoEnricher(tn))
+            attached.append("Tiingo")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[research] Tiingo init failed: {exc}")
+
+    try:
+        from marketdata.polygon_source import PolygonSource
+        pg = PolygonSource.from_env()
+        if pg is not None:
+            subs.append(PolygonEnricher(pg))
+            attached.append("Polygon")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[research] Polygon init failed: {exc}")
+
+    # Polygon S3 bulk access is a separate capability (historical bulk
+    # files, not per-symbol enrichment). Log that it's configured so the
+    # Controller knows the keys are honored; actual bulk downloader is a
+    # separate work item (SigV4 or boto3).
+    try:
+        from marketdata.polygon_source import PolygonS3Config
+        s3 = PolygonS3Config.from_env()
+        if s3 is not None:
+            print(f"[research] Polygon S3 bulk configured: endpoint={s3.endpoint} "
+                  f"(downloader not yet implemented)")
+    except Exception:  # noqa: BLE001
+        pass
+
+    if not subs:
+        print("[research] NO sub-enrichers could be built -- disabled")
+        return None
+
+    print(f"[research] composite enrichment ENABLED: {', '.join(attached)}")
+    return CompositeEnricher(subs)
+
+
 def _install_signal_handlers(stop_flag: list) -> None:
     def _handler(signum, _frame):
         print(f"[signal] received {signum}, requesting shutdown", flush=True)
@@ -228,10 +311,15 @@ def main() -> int:
                              "snapshot=SnapshotUniverseSource reading today's "
                              "D-0026 snapshot from SQLite (B22).")
     parser.add_argument("--enable-perplexity", action="store_true",
-                        help="D-0050: attach a Perplexity-driven research "
-                             "blurb to each new proposal notification. "
-                             "Requires PERPLEXITY_API_KEY. Advisory only; "
-                             "a Perplexity failure never blocks a proposal.")
+                        help="(deprecated alias of --enable-research; kept "
+                             "for backwards compatibility).")
+    parser.add_argument("--enable-research", action="store_true",
+                        help="D-0050: attach composite research enrichment "
+                             "(Perplexity + Finnhub + Alpha Vantage + Tiingo "
+                             "+ Polygon) to every new proposal notification. "
+                             "Each sub-source is independent; a missing API "
+                             "key or a failed fetch is silently skipped. "
+                             "Strictly advisory -- never blocks a proposal.")
     args = parser.parse_args()
 
     key_id = _require_env("ALPACA_API_KEY_ID")
@@ -353,26 +441,16 @@ def main() -> int:
         db_filename=os.path.basename(os.path.abspath(args.db_path)),
     )
 
-    # D-0050 Phase 2: optional Perplexity-driven proposal enrichment.
-    # Enabled when PERPLEXITY_API_KEY is set AND --enable-perplexity is
-    # passed. Fail-open at construction (missing key -> enricher=None).
-    proposal_enricher = None
-    if getattr(args, "enable_perplexity", False):
-        try:
-            from research.perplexity_agent import (
-                PerplexityAgentClient, PerplexityConfigError,
-            )
-            from engine.proposal_enricher import ProposalEnricher
-            api_key = os.environ.get("PERPLEXITY_API_KEY", "").strip()
-            if api_key:
-                proposal_enricher = ProposalEnricher(
-                    PerplexityAgentClient(api_key=api_key)
-                )
-                print("[run] Perplexity proposal enrichment: ENABLED")
-            else:
-                print("[run] Perplexity requested but PERPLEXITY_API_KEY unset -- disabled")
-        except Exception as exc:  # noqa: BLE001
-            print(f"[run] Perplexity init failed, continuing without enrichment: {exc}")
+    # D-0050 Phase 7: composite research enrichment on proposal
+    # notifications. Each sub-enricher is attempted independently; a
+    # missing API key or a failed fetch is silently skipped, so the
+    # resulting Telegram message carries only what succeeded. All
+    # strictly advisory per CLAUDE.md §5 -- never gates approval,
+    # never changes trading state.
+    proposal_enricher = _build_composite_enricher(
+        enable_research=getattr(args, "enable_research", False)
+                        or getattr(args, "enable_perplexity", False),
+    )
 
     engine = Engine(
         trade_repo=trade_repo,
