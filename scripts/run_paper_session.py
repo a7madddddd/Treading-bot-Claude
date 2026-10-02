@@ -227,6 +227,11 @@ def main() -> int:
                         help="static=StaticWatchlistSource (from --symbols); "
                              "snapshot=SnapshotUniverseSource reading today's "
                              "D-0026 snapshot from SQLite (B22).")
+    parser.add_argument("--enable-perplexity", action="store_true",
+                        help="D-0050: attach a Perplexity-driven research "
+                             "blurb to each new proposal notification. "
+                             "Requires PERPLEXITY_API_KEY. Advisory only; "
+                             "a Perplexity failure never blocks a proposal.")
     args = parser.parse_args()
 
     key_id = _require_env("ALPACA_API_KEY_ID")
@@ -348,6 +353,27 @@ def main() -> int:
         db_filename=os.path.basename(os.path.abspath(args.db_path)),
     )
 
+    # D-0050 Phase 2: optional Perplexity-driven proposal enrichment.
+    # Enabled when PERPLEXITY_API_KEY is set AND --enable-perplexity is
+    # passed. Fail-open at construction (missing key -> enricher=None).
+    proposal_enricher = None
+    if getattr(args, "enable_perplexity", False):
+        try:
+            from research.perplexity_agent import (
+                PerplexityAgentClient, PerplexityConfigError,
+            )
+            from engine.proposal_enricher import ProposalEnricher
+            api_key = os.environ.get("PERPLEXITY_API_KEY", "").strip()
+            if api_key:
+                proposal_enricher = ProposalEnricher(
+                    PerplexityAgentClient(api_key=api_key)
+                )
+                print("[run] Perplexity proposal enrichment: ENABLED")
+            else:
+                print("[run] Perplexity requested but PERPLEXITY_API_KEY unset -- disabled")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[run] Perplexity init failed, continuing without enrichment: {exc}")
+
     engine = Engine(
         trade_repo=trade_repo,
         proposal_repo=proposal_repo,
@@ -360,6 +386,7 @@ def main() -> int:
         notifier=notifier,
         lock=lock,
         db_persister=db_persister,
+        proposal_enricher=proposal_enricher,
     )
 
     # Preflight Telegram summary (before engine.start(), so still safe).

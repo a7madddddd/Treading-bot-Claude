@@ -255,6 +255,7 @@ class Engine:
         notifier: INotificationService,
         lock: EngineLock,
         db_persister: Optional[Callable[[datetime], None]] = None,
+        proposal_enricher=None,
     ) -> None:
         self._trade_repo = trade_repo
         self._proposal_repo = proposal_repo
@@ -276,6 +277,24 @@ class Engine:
         # never crashes the trading loop (the DB stays on local disk
         # for the next tick to retry).
         self._db_persister = db_persister
+        # D-0050 Phase 2: optional Perplexity-driven research enrichment
+        # appended to new proposal notifications. Advisory only; a None
+        # value disables enrichment entirely, and any failure in the
+        # enricher produces no change to the outgoing message.
+        self._proposal_enricher = proposal_enricher
+
+    def _enrich(self, symbol: str, base_message: str) -> str:
+        """Fail-open wrapper that appends an enrichment blurb to a
+        proposal message, or returns the message unchanged on any
+        failure or when no enricher is configured."""
+        if self._proposal_enricher is None:
+            return base_message
+        try:
+            from engine.proposal_enricher import append_enrichment
+            blurb = self._proposal_enricher.enrich(symbol)
+            return append_enrichment(base_message, blurb)
+        except Exception:  # noqa: BLE001 -- never block a proposal
+            return base_message
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -1020,10 +1039,10 @@ class Engine:
         self._notify(
             level=NotificationLevel.IMPORTANT,
             event="proposal_awaiting_approval",
-            message=_format_proposal_message(
+            message=self._enrich(symbol, _format_proposal_message(
                 proposal,
                 price_context=self._safe_price_context(symbol),
-            ),
+            )),
             symbol=symbol,
             interactive_actions=(
                 ("✅ Approve", f"approve:{proposal.proposal_id}"),
@@ -1142,7 +1161,7 @@ class Engine:
         self._notify(
             level=NotificationLevel.IMPORTANT,
             event="proposal_awaiting_approval",
-            message=_format_proposal_message(proposal),
+            message=self._enrich(proposal.symbol, _format_proposal_message(proposal)),
             symbol=proposal.symbol,
             interactive_actions=(
                 ("✅ Approve", f"approve:{proposal.proposal_id}"),
