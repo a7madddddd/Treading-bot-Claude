@@ -101,14 +101,28 @@ class HistoricalMembership:
 
 
 class RegimeLabel(Enum):
-    """Placeholder categorical regime labels. The classification *method*
-    (percentile / volatility / drawdown / composite) and its cutoffs are
-    still TBD per docs/trading/historical-data-calibration-plan.md §6 —
-    this enum exists only so RegimeState has a typed slot to populate,
-    not to assert a chosen method or threshold."""
+    """Categorical regime labels.
+
+    UNKNOWN / UNCLASSIFIED_PENDING_CALIBRATION remain for cases where
+    no classifier ran or the classifier declines to label.
+
+    RISK_ON / NEUTRAL / RISK_OFF are populated by the FRED-driven
+    classifier added in D-0050 Phase 1, based on the current VIX
+    percentile against the trailing 252-trading-day window:
+      - vix_percentile <= 0.33 → RISK_ON
+      - 0.33 < vix_percentile < 0.66 → NEUTRAL
+      - vix_percentile >= 0.66 → RISK_OFF
+
+    Stage E (RegimeAdaptation) remains the only consumer; it reads
+    the numeric ``vix_percentile`` from reference_series_values, not
+    this label — the label is for Controller observability on the
+    saved snapshot."""
 
     UNKNOWN = "unknown"
     UNCLASSIFIED_PENDING_CALIBRATION = "unclassified_pending_calibration"
+    RISK_ON = "risk_on"
+    NEUTRAL = "neutral"
+    RISK_OFF = "risk_off"
 
 
 @dataclass(frozen=True)

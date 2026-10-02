@@ -207,12 +207,15 @@ def main() -> int:
         def record(self, event):
             print(f"[audit] {type(event).__name__}")
 
-    regime = RegimeState(
-        as_of_date=effective,
-        label=RegimeLabel.UNCLASSIFIED_PENDING_CALIBRATION,
-        reference_series_values=(("vix_percentile", 0.5),),
-        classification_method_version="stub-v1",
-    )
+    # D-0050 Phase 1: live regime from FRED when FRED_API_KEY is set,
+    # placeholder otherwise. The classifier itself fails open on any
+    # error -- see src/d0026/regime_classifier.py.
+    from d0026.regime_classifier import classify_regime
+    from marketdata.fred_source import FredSource
+    regime = classify_regime(FredSource.from_env(), effective)
+    print(f"[regime] label={regime.label.value} "
+          f"version={regime.classification_method_version} "
+          f"values={dict(regime.reference_series_values)}")
 
     repo = SqliteSnapshotRepository(conn)
     pipeline = UniversePipeline(
