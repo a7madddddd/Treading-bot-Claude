@@ -45,13 +45,17 @@ class EvaluatorConfig:
     require_price: bool = True
 
     # Soft-score weights (should sum to ~100 before risk discounts)
-    weight_fundamentals: float = 20.0
-    weight_technicals: float = 25.0
-    weight_momentum: float = 15.0
-    weight_news: float = 10.0
+    weight_fundamentals: float = 18.0
+    weight_technicals: float = 22.0
+    weight_momentum: float = 12.0
+    weight_news: float = 8.0
+    weight_trend: float = 15.0        # D-0050 Phase 12: 5d/30d/90d returns
+    weight_rel_strength: float = 10.0 # D-0050 Phase 12: vs SPY
 
     # Risk-discount caps
     max_risk_discount: float = 20.0
+    # Phase 12: additional risk discount for high volatility
+    high_volatility_pct_threshold: float = 60.0  # annualized stddev > this → penalty
 
     # Fundamentals tuning
     pe_sweet_spot_low: float = 10.0
@@ -237,7 +241,44 @@ def _risk_discount(r: SymbolResearch, cfg: EvaluatorConfig) -> float:
         discount += 3.0  # price at upper band — mean reversion risk
     if r.regime == "neutral":
         discount += 0.0  # neutral is fine
+    # Phase 12: high realized vol = larger position-size risk
+    if (r.volatility_30d_pct is not None
+            and r.volatility_30d_pct > cfg.high_volatility_pct_threshold):
+        discount += min(5.0, (r.volatility_30d_pct - cfg.high_volatility_pct_threshold) / 20)
     return min(cfg.max_risk_discount, discount)
+
+
+# ---- Trend (5d / 30d / 90d returns) ---------------------------------
+
+def _score_trend(r: SymbolResearch, cfg: EvaluatorConfig) -> float:
+    """0..weight_trend. Rewards positive multi-period performance.
+    Each window contributes equally when present."""
+    components = 0
+    score = 0.0
+    for ret in (r.return_5d_pct, r.return_30d_pct, r.return_90d_pct):
+        if ret is None:
+            continue
+        components += 1
+        # Normalize: -10% → 0, +10% → 1 (clamped)
+        clamped = max(-10.0, min(10.0, ret))
+        score += (clamped + 10.0) / 20.0
+    if components == 0:
+        return 0.0
+    return (score / components) * cfg.weight_trend
+
+
+# ---- Relative strength vs SPY ---------------------------------------
+
+def _score_rel_strength(r: SymbolResearch, cfg: EvaluatorConfig) -> float:
+    """0..weight_rel_strength. Rewards outperformance of the market
+    (SPY). Positive RS = stock beats SPY by that many points over the
+    last 30 trading days."""
+    if r.rel_strength_30d_pct is None:
+        return 0.0
+    # -5% RS → 0, +5% RS → 1 (clamped)
+    clamped = max(-5.0, min(5.0, r.rel_strength_30d_pct))
+    normalized = (clamped + 5.0) / 10.0
+    return normalized * cfg.weight_rel_strength
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +313,8 @@ class TradeEvaluator:
             "fundamentals": _score_fundamentals(research, cfg),
             "technicals":   _score_technicals(research, cfg),
             "momentum":     _score_momentum(research, cfg),
+            "trend":        _score_trend(research, cfg),
+            "rel_str":      _score_rel_strength(research, cfg),
             "news":         _score_news(research, cfg),
             "risk":        -_risk_discount(research, cfg),
         }
@@ -313,10 +356,14 @@ def format_evaluation_block(result: EvaluationResult) -> str:
         "🟢 OK" if result.soft_score >= 50 else "🟡 WEAK")
     lines.append(f"⚖ Evaluator score: {result.soft_score:.1f}/100  {verdict_tag}")
     bits = []
-    for k in ("fundamentals", "technicals", "momentum", "news", "risk"):
+    for k in ("fundamentals", "technicals", "momentum", "trend",
+              "rel_str", "news", "risk"):
         v = result.score_breakdown.get(k)
         if v is not None:
-            bits.append(f"{k[:4]} {v:+.0f}")
+            short = {"fundamentals":"fund","technicals":"tech",
+                     "momentum":"mome","trend":"trnd","rel_str":"rsvs",
+                     "news":"news","risk":"risk"}.get(k, k[:4])
+            bits.append(f"{short} {v:+.0f}")
     lines.append("  " + " · ".join(bits))
 
     # Confirm what each API contributed
@@ -333,6 +380,16 @@ def format_evaluation_block(result: EvaluationResult) -> str:
         sig_bits.append(f"MACD {r.macd_signal}")
     if r.day_change_pct is not None:
         sig_bits.append(f"Day {r.day_change_pct:+.2f}%")
+    if r.return_5d_pct is not None:
+        sig_bits.append(f"5d {r.return_5d_pct:+.1f}%")
+    if r.return_30d_pct is not None:
+        sig_bits.append(f"30d {r.return_30d_pct:+.1f}%")
+    if r.rel_strength_30d_pct is not None:
+        sig_bits.append(f"RS/SPY {r.rel_strength_30d_pct:+.1f}")
+    if r.volatility_30d_pct is not None:
+        sig_bits.append(f"Vol {r.volatility_30d_pct:.0f}%")
+    if r.volume_ratio_30d is not None:
+        sig_bits.append(f"VolX {r.volume_ratio_30d:.1f}")
     if r.news_count_48h:
         sig_bits.append(f"News {r.news_count_48h}")
     if r.regime is not None:

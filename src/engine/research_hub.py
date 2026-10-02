@@ -40,6 +40,16 @@ class SymbolResearch:
     day_volume: Optional[float] = None
     prev_close: Optional[float] = None
 
+    # ---- Multi-period performance (Polygon aggregates, D-0050 Phase 12) --
+    return_5d_pct: Optional[float] = None
+    return_30d_pct: Optional[float] = None
+    return_90d_pct: Optional[float] = None
+    volatility_30d_pct: Optional[float] = None  # annualized stddev of daily returns
+    avg_volume_30d: Optional[float] = None
+    volume_ratio_30d: Optional[float] = None    # today vs 30d average (1.0 = normal)
+    # Relative strength vs SPY benchmark (RS = stock_30d_return - spy_30d_return)
+    rel_strength_30d_pct: Optional[float] = None
+
     # ---- Fundamentals (Finnhub) -------------------------------------
     pe_ratio: Optional[float] = None
     market_cap_millions: Optional[float] = None
@@ -126,6 +136,11 @@ class SymbolResearchHub:
         self._px = perplexity
         self._max_workers = max_workers
         self._deadline = deadline_seconds
+        # D-0050 Phase 12: cache SPY's 30-day return across symbols
+        # in the same ranker batch so we don't hit Polygon once per
+        # candidate. Rebuilt lazily on each hub instance.
+        self._spy_return_30d: Optional[float] = None
+        self._spy_lock = __import__("threading").Lock()
 
     def collect(self, symbol: str) -> SymbolResearch:
         """Returns a SymbolResearch populated by every reachable source."""
@@ -309,7 +324,91 @@ class SymbolResearchHub:
                 out["sector"] = det.get("sic_description")
         except Exception:  # noqa: BLE001
             pass
+        # D-0050 Phase 12: 100 daily bars → multi-period returns +
+        # volatility + volume ratio. Free-tier Polygon /v2/aggs IS
+        # entitled, so this works on the Controller's current plan.
+        try:
+            from datetime import date as _date, timedelta as _td
+            today = _date.today()
+            bars = self._pg.get_aggregates(
+                symbol, 1, "day",
+                today - _td(days=130),
+                today,
+                adjusted=True,
+            )
+            if bars and len(bars) >= 5:
+                closes = [b[1].get("c") for b in bars
+                          if isinstance(b[1], dict) and b[1].get("c") is not None]
+                volumes = [b[1].get("v") for b in bars
+                           if isinstance(b[1], dict) and b[1].get("v") is not None]
+                closes = [float(c) for c in closes if isinstance(c, (int, float))]
+                volumes = [float(v) for v in volumes if isinstance(v, (int, float))]
+                if closes:
+                    latest = closes[-1]
+                    # fall back to the aggregate close if the snapshot
+                    # could not give us a live price.
+                    if out.get("current_price") is None:
+                        out["current_price"] = latest
+                    if len(closes) >= 6:
+                        out["return_5d_pct"] = (latest - closes[-6]) / closes[-6] * 100
+                    if len(closes) >= 21:
+                        out["return_30d_pct"] = (latest - closes[-21]) / closes[-21] * 100
+                    if len(closes) >= 61:
+                        out["return_90d_pct"] = (latest - closes[-61]) / closes[-61] * 100
+                    # 30-day annualized volatility (daily log returns)
+                    if len(closes) >= 22:
+                        import math
+                        recent = closes[-22:]
+                        rets = [math.log(recent[i] / recent[i-1])
+                                for i in range(1, len(recent))
+                                if recent[i-1] > 0]
+                        if len(rets) >= 2:
+                            mean = sum(rets) / len(rets)
+                            var = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
+                            out["volatility_30d_pct"] = math.sqrt(var) * math.sqrt(252) * 100
+                if volumes and len(volumes) >= 21:
+                    avg30 = sum(volumes[-21:-1]) / 20
+                    out["avg_volume_30d"] = avg30
+                    if avg30 > 0:
+                        out["volume_ratio_30d"] = volumes[-1] / avg30
+                # Relative strength vs SPY (stock_30d_return - spy_30d_return).
+                # Positive = outperforming the market; negative = lagging.
+                if out.get("return_30d_pct") is not None and symbol != "SPY":
+                    spy_ret = self._get_spy_30d_return()
+                    if spy_ret is not None:
+                        out["rel_strength_30d_pct"] = (
+                            out["return_30d_pct"] - spy_ret
+                        )
+        except Exception:  # noqa: BLE001
+            pass
         return out or None
+
+    def _get_spy_30d_return(self) -> Optional[float]:
+        """Lazy-fetch SPY's 30-day return once per hub instance.
+        Returns None if Polygon can't give us enough bars."""
+        with self._spy_lock:
+            if self._spy_return_30d is not None:
+                return self._spy_return_30d
+        try:
+            from datetime import date as _date, timedelta as _td
+            today = _date.today()
+            bars = self._pg.get_aggregates(
+                "SPY", 1, "day",
+                today - _td(days=50),
+                today, adjusted=True,
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        if not bars or len(bars) < 21:
+            return None
+        closes = [b[1].get("c") for b in bars if isinstance(b[1], dict)]
+        closes = [float(c) for c in closes if isinstance(c, (int, float))]
+        if len(closes) < 21:
+            return None
+        spy_ret = (closes[-1] - closes[-21]) / closes[-21] * 100
+        with self._spy_lock:
+            self._spy_return_30d = spy_ret
+        return spy_ret
 
     def _fetch_tiingo(self, symbol: str) -> Optional[dict]:
         try:
