@@ -109,7 +109,8 @@ def _active_trade(trade_repo, *, trade_id="T-1", symbol="TSLA", price=100.0, sha
 
 def _make_engine(
     trade_repo, proposal_repo, execution_repo, conn, *,
-    broker=None, market_data=None, decision_source=None, notifier=None, watchlist=None,
+    broker=None, market_data=None, decision_source=None, notifier=None,
+    watchlist=None, trade_evaluator=None,
 ):
     broker = broker or FakeBrokerClient()
     market_data = market_data or FakeMarketDataSource()
@@ -123,7 +124,7 @@ def _make_engine(
         trade_repo=trade_repo, proposal_repo=proposal_repo, execution_repo=execution_repo,
         trade_proposal_service=trade_proposal_service, execution_service=execution_service,
         market_data=market_data, watchlist=watchlist, decision_source=decision_source,
-        notifier=notifier, lock=lock,
+        notifier=notifier, lock=lock, trade_evaluator=trade_evaluator,
     )
     return engine, broker, market_data, decision_source, notifier, execution_service
 
@@ -637,6 +638,135 @@ class TestWatchlistDrivenTradeCreation(unittest.TestCase):
 
         self.assertEqual(trade_repo.list_for_symbol("TSLA"), [])
         self.assertTrue(any(e.event == "market_data_unavailable" for e in notifier.events))
+
+
+class TestWatchlistWithTradeEvaluator(unittest.TestCase):
+    """D-0050 Phase 10: when a TradeEvaluator is attached, only Top-3
+    candidates with score >= 60 become proposals; the rest are
+    silently dropped."""
+
+    class _FakeEvalResult:
+        def __init__(self, symbol, score=0.0, passes=True):
+            self.symbol = symbol
+            self.soft_score = score
+            self.passes_hard_filter = passes
+            self.hard_filter_reasons = ["x"] if not passes else []
+            self.score_breakdown = {}
+            self.research = None
+
+    class _FakeEvaluator:
+        def __init__(self, scores: dict, raise_on_rank: bool = False):
+            self._scores = scores
+            self._raise = raise_on_rank
+            self.last_candidates = None
+
+        def rank(self, candidates):
+            self.last_candidates = list(candidates)
+            if self._raise:
+                raise RuntimeError("eval blew up")
+            results = []
+            for s in candidates:
+                score = self._scores.get(s, 0.0)
+                passes = score >= 0  # 0 means "not rejected"
+                if score < 0:  # convention: negative = hard-filter reject
+                    passes = False
+                results.append(TestWatchlistWithTradeEvaluator._FakeEvalResult(
+                    s, abs(score), passes))
+            return sorted(results, key=lambda r: -r.soft_score)
+
+    def test_low_score_candidates_skipped(self):
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        watchlist = StaticWatchlistSource(("A", "B", "C"))
+        evaluator = self._FakeEvaluator({"A": 55.0, "B": 65.0, "C": 70.0})
+        engine, broker, market_data, *_ = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            watchlist=watchlist, trade_evaluator=evaluator,
+        )
+        for s in ("A", "B", "C"):
+            market_data.set_price(s, 100.0)
+        engine._lock.acquire(now=_now())
+        engine.run_trigger_check(now=_now())
+
+        trades = set()
+        for s in ("A", "B", "C"):
+            if trade_repo.list_for_symbol(s):
+                trades.add(s)
+        # A (55) below threshold → skipped. B,C accepted.
+        self.assertEqual(trades, {"B", "C"})
+        self.assertEqual(sorted(evaluator.last_candidates), ["A", "B", "C"])
+
+    def test_top_n_cap_enforced(self):
+        """More than 3 passing symbols → only Top-3 by score become proposals."""
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        watchlist = StaticWatchlistSource(("A", "B", "C", "D", "E"))
+        evaluator = self._FakeEvaluator({
+            "A": 61.0, "B": 70.0, "C": 90.0, "D": 65.0, "E": 80.0,
+        })
+        engine, broker, market_data, *_ = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            watchlist=watchlist, trade_evaluator=evaluator,
+        )
+        for s in ("A", "B", "C", "D", "E"):
+            market_data.set_price(s, 100.0)
+        engine._lock.acquire(now=_now())
+        engine.run_trigger_check(now=_now())
+
+        trades = {s for s in ("A", "B", "C", "D", "E")
+                  if trade_repo.list_for_symbol(s)}
+        # Top-3 by score: C(90), E(80), B(70). D(65) and A(61) dropped.
+        self.assertEqual(trades, {"C", "E", "B"})
+
+    def test_evaluator_raise_falls_back_to_unranked(self):
+        """A buggy evaluator must never block the trigger loop."""
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        watchlist = StaticWatchlistSource(("A", "B"))
+        evaluator = self._FakeEvaluator({}, raise_on_rank=True)
+        engine, broker, market_data, decisions, notifier, _ = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            watchlist=watchlist, trade_evaluator=evaluator,
+        )
+        for s in ("A", "B"):
+            market_data.set_price(s, 100.0)
+        engine._lock.acquire(now=_now())
+        engine.run_trigger_check(now=_now())
+
+        trades = {s for s in ("A", "B") if trade_repo.list_for_symbol(s)}
+        self.assertEqual(trades, {"A", "B"})
+        self.assertTrue(any(e.event == "evaluator_failed" for e in notifier.events))
+
+    def test_hard_filter_reject_dropped(self):
+        """A hard-filter reject must not become a proposal."""
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        watchlist = StaticWatchlistSource(("A", "B"))
+        evaluator = self._FakeEvaluator({"A": -1, "B": 75.0})  # A rejected
+        engine, broker, market_data, *_ = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            watchlist=watchlist, trade_evaluator=evaluator,
+        )
+        for s in ("A", "B"):
+            market_data.set_price(s, 100.0)
+        engine._lock.acquire(now=_now())
+        engine.run_trigger_check(now=_now())
+
+        self.assertEqual(trade_repo.list_for_symbol("A"), [])
+        self.assertTrue(trade_repo.list_for_symbol("B"))
+
+    def test_no_evaluator_falls_back_to_pre_d0050_flow(self):
+        """When no evaluator is attached, every candidate becomes a proposal
+        (the pre-D-0050 behaviour must still work)."""
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        watchlist = StaticWatchlistSource(("A", "B"))
+        engine, broker, market_data, *_ = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            watchlist=watchlist,  # no trade_evaluator
+        )
+        for s in ("A", "B"):
+            market_data.set_price(s, 100.0)
+        engine._lock.acquire(now=_now())
+        engine.run_trigger_check(now=_now())
+
+        trades = {s for s in ("A", "B") if trade_repo.list_for_symbol(s)}
+        self.assertEqual(trades, {"A", "B"})
 
 
 class TestOrphanedTradeRecovery(unittest.TestCase):

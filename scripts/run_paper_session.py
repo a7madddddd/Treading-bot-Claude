@@ -289,6 +289,57 @@ def _build_composite_enricher(*, enable_research: bool):
     )
 
 
+def _build_trade_evaluator(*, enable_research: bool):
+    """Builds the TradeEvaluator with a hub tied to the same env-var
+    API clients the composite enricher uses. Returns None when
+    research is disabled or no sources are configured."""
+    if not enable_research:
+        return None
+    try:
+        from engine.research_hub import SymbolResearchHub
+        from engine.trade_evaluator import TradeEvaluator
+    except Exception as exc:  # noqa: BLE001
+        print(f"[evaluator] import failed: {exc}")
+        return None
+
+    px = None
+    try:
+        from research.perplexity_agent import PerplexityAgentClient
+        k = os.environ.get("PERPLEXITY_API_KEY", "").strip()
+        if k:
+            px = PerplexityAgentClient(api_key=k)
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        from marketdata.fred_source import FredSource
+        from marketdata.finnhub_source import FinnhubSource
+        from marketdata.alpha_vantage_source import AlphaVantageSource
+        from marketdata.polygon_source import PolygonSource
+        from marketdata.tiingo_source import TiingoSource
+        hub = SymbolResearchHub(
+            fred=FredSource.from_env(),
+            finnhub=FinnhubSource.from_env(),
+            alpha_vantage=AlphaVantageSource.from_env(),
+            polygon=PolygonSource.from_env(),
+            tiingo=TiingoSource.from_env(),
+            perplexity=px,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[evaluator] hub build failed: {exc}")
+        return None
+
+    # Any source configured? If none, the evaluator would reject
+    # everything on "no live price" -- better to leave it off.
+    if not any([hub._fred, hub._fh, hub._av, hub._pg, hub._tn, hub._px]):
+        print("[evaluator] no sources configured -- disabled")
+        return None
+
+    print("[evaluator] TradeEvaluator ENABLED "
+          "(Top-3 per cycle, min score 60/100)")
+    return TradeEvaluator(hub)
+
+
 def _install_signal_handlers(stop_flag: list) -> None:
     def _handler(signum, _frame):
         print(f"[signal] received {signum}, requesting shutdown", flush=True)
@@ -462,6 +513,14 @@ def main() -> int:
                         or getattr(args, "enable_perplexity", False),
     )
 
+    # D-0050 Phase 10: TradeEvaluator ranks each cycle's watchlist
+    # candidates by live research. Reuses the same clients the
+    # composite enricher already built.
+    trade_evaluator = _build_trade_evaluator(
+        enable_research=getattr(args, "enable_research", False)
+                        or getattr(args, "enable_perplexity", False),
+    )
+
     engine = Engine(
         trade_repo=trade_repo,
         proposal_repo=proposal_repo,
@@ -475,6 +534,7 @@ def main() -> int:
         lock=lock,
         db_persister=db_persister,
         proposal_enricher=proposal_enricher,
+        trade_evaluator=trade_evaluator,
     )
 
     # Preflight Telegram summary (before engine.start(), so still safe).

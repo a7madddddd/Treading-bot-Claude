@@ -256,6 +256,7 @@ class Engine:
         lock: EngineLock,
         db_persister: Optional[Callable[[datetime], None]] = None,
         proposal_enricher=None,
+        trade_evaluator=None,
     ) -> None:
         self._trade_repo = trade_repo
         self._proposal_repo = proposal_repo
@@ -282,6 +283,12 @@ class Engine:
         # value disables enrichment entirely, and any failure in the
         # enricher produces no change to the outgoing message.
         self._proposal_enricher = proposal_enricher
+        # D-0050 Phase 10: optional TradeEvaluator ranks watchlist
+        # candidates per trigger-check. When set, only Top-3 symbols
+        # with soft_score >= 60 become proposals; when None, every
+        # watchlist symbol without an open trade becomes a proposal
+        # (the pre-D-0050 behavior).
+        self._evaluator = trade_evaluator
 
     def _enrich(self, symbol: str, base_message: str) -> str:
         """Fail-open wrapper that appends an enrichment blurb to a
@@ -996,22 +1003,65 @@ class Engine:
             self._heartbeat(now=now)
         self._persist_db_best_effort(now=now)
 
-    def _check_watchlist(self, *, now: datetime) -> None:
-        """Watchlist-driven Trade creation (Controller-approved, this
-        session). The Engine never selects symbols -- only asks
-        WatchlistSource what to watch and reacts. A symbol already
-        having an open (AWAITING_INITIAL_FILL or ACTIVE) Trade is
-        never given a second one -- list_for_symbol() (already exists)
-        is the duplicate-prevention check, done synchronously right
-        before start_trade() with no race window in this single-
-        process design."""
+    # D-0050 Phase 10 — Controller-approved policy for the evaluator:
+    #   TOP_N_PER_CYCLE  — at most N new proposals per trigger-check
+    #   MIN_SCORE        — a candidate must score >= this to become a proposal
+    _TOP_N_PER_CYCLE = 3
+    _MIN_SCORE = 60.0
 
+    def _check_watchlist(self, *, now: datetime) -> None:
+        """Watchlist-driven Trade creation.
+
+        Pre-D-0050: every watchlist symbol without an open trade became
+        a proposal.
+
+        D-0050 Phase 10 (Controller-approved): when a TradeEvaluator
+        is attached, candidates run through the hub+evaluator first.
+        Only the Top-3 with soft_score >= 60 become proposals; the
+        rest are silently dropped. A symbol with an open trade
+        (AWAITING_INITIAL_FILL or ACTIVE) is still excluded up-front,
+        same as before — the Engine never proposes a duplicate.
+        """
+
+        candidates: list = []
         for symbol in self._watchlist.get_active_symbols():
             records = self._trade_repo.list_for_symbol(symbol)
             has_open_trade = any(describe_status(r.trade) in ("AWAITING_INITIAL_FILL", "ACTIVE") for r in records)
             if has_open_trade:
                 continue
-            self._start_new_trade(symbol, now=now)
+            candidates.append(symbol)
+
+        if not candidates:
+            return
+
+        if self._evaluator is None:
+            # Pre-D-0050 flow: every candidate becomes a proposal.
+            for symbol in candidates:
+                self._start_new_trade(symbol, now=now)
+            return
+
+        # Rank, keep passing + score >= MIN_SCORE, cap at TOP_N.
+        try:
+            ranked = self._evaluator.rank(candidates)
+        except Exception as exc:  # noqa: BLE001
+            # Evaluator must never block the trigger loop; fall through
+            # to the un-ranked flow so no opportunity is missed.
+            self._notify(
+                level=NotificationLevel.CRITICAL,
+                event="evaluator_failed",
+                message=f"TradeEvaluator failed; falling back to un-ranked candidates: {exc}",
+                symbol=None,
+            )
+            for symbol in candidates:
+                self._start_new_trade(symbol, now=now)
+            return
+
+        accepted = [r for r in ranked
+                    if r.passes_hard_filter and r.soft_score >= self._MIN_SCORE]
+        accepted = accepted[: self._TOP_N_PER_CYCLE]
+
+        for r in accepted:
+            self._start_new_trade(r.symbol, now=now)
 
     def _start_new_trade(self, symbol: str, *, now: datetime) -> None:
         try:
