@@ -66,6 +66,48 @@ class TestPolygonRest(unittest.TestCase):
         got = s.get_ticker_snapshot("TSLA")
         self.assertEqual(got["ticker"], "TSLA")
 
+    def test_snapshot_falls_back_to_prev_on_free_tier(self):
+        """Free-tier keys get 403/empty on /v2/snapshot. The method must
+        fall back to /v2/aggs/ticker/{sym}/prev and shape the result like
+        a snapshot so downstream consumers (research_hub, deep_research)
+        read the same keys."""
+        calls = []
+
+        class _MultiStub:
+            def __init__(self):
+                self.last_url = None
+            def __call__(self, url, headers, timeout):
+                calls.append(url)
+                if "snapshot/locale" in url:
+                    # free-tier typical: 200 but empty ticker, or non-OK
+                    return _r(200, {"status": "OK", "ticker": {}})
+                if "aggs/ticker" in url and "/prev" in url:
+                    return _r(200, {"status": "OK", "results": [
+                        {"c": 250.0, "h": 252.0, "l": 248.0, "o": 249.0,
+                         "v": 1_000_000, "t": 1700000000000},
+                    ]})
+                return _r(500, {})
+
+        s = PolygonSource(api_key="k", transport=_MultiStub())
+        got = s.get_ticker_snapshot("TSLA")
+        self.assertIsNotNone(got)
+        self.assertEqual(got["day"]["c"], 250.0)
+        self.assertEqual(got["day"]["v"], 1_000_000)
+        # prevDay must be EMPTY so research_hub doesn't compute a fake 0.00% change
+        self.assertEqual(got["prevDay"], {})
+        self.assertEqual(got.get("_fallback_source"), "aggs/prev")
+        # Confirms both calls happened in order
+        self.assertEqual(len(calls), 2)
+        self.assertIn("snapshot/locale", calls[0])
+        self.assertIn("/prev", calls[1])
+
+    def test_snapshot_returns_none_when_both_fail(self):
+        class _AllFail:
+            def __call__(self, url, headers, timeout):
+                return _r(500, {})
+        s = PolygonSource(api_key="k", transport=_AllFail())
+        self.assertIsNone(s.get_ticker_snapshot("TSLA"))
+
     def test_details_parsed(self):
         body = {"status": "OK",
                 "results": {"ticker": "TSLA", "name": "Tesla, Inc."}}

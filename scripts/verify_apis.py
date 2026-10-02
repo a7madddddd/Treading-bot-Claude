@@ -331,11 +331,12 @@ try:
             else:
                 ok(f"findings count: {len(findings)}")
                 for i, f in enumerate(findings[:3]):
-                    summary = getattr(f, "summary", None)
-                    if summary:
-                        ok(f"findings[{i}].summary = {shorten(summary, 120)}")
+                    text = getattr(f, "text", None) or getattr(f, "summary", None)
+                    if text:
+                        ok(f"findings[{i}].text = {shorten(text, 120)}")
                     else:
-                        fail(f"findings[{i}] has no summary; dir = {dir(f)[:15]}")
+                        fail(f"findings[{i}] has no text/summary; "
+                             f"attrs = {[a for a in dir(f) if not a.startswith('_')][:10]}")
         else:
             fail("report is None")
 except Exception as exc:  # noqa: BLE001

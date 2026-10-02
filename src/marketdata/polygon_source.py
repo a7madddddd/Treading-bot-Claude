@@ -180,7 +180,11 @@ class PolygonSource:
                         "l": row.get("l"), "o": row.get("o"),
                         "v": row.get("v"),
                     },
-                    "prevDay": {"c": row.get("c")},  # fallback: same bar; no %-change
+                    # Deliberately empty: with only the previous bar we
+                    # cannot compute today's %-change honestly. Keeping
+                    # prevDay empty makes research_hub skip the computation
+                    # (prev_close stays None) rather than report +0.00%.
+                    "prevDay": {},
                     "lastTrade": {"p": row.get("c")},
                     "_fallback_source": "aggs/prev",
                 }
