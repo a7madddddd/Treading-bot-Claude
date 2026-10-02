@@ -115,6 +115,39 @@ class FinnhubSource:
             return [x for x in data if isinstance(x, dict)]
         return []
 
+    def earnings_calendar(self, symbol: str, from_date: date,
+                          to_date: date) -> List[dict]:
+        """Upcoming earnings in [from_date, to_date]. Returns [] on failure."""
+        data = self._get_json("/calendar/earnings", {
+            "symbol": symbol,
+            "from": from_date.isoformat(),
+            "to": to_date.isoformat(),
+        })
+        if isinstance(data, dict):
+            lst = data.get("earningsCalendar")
+            if isinstance(lst, list):
+                return [x for x in lst if isinstance(x, dict)]
+        return []
+
+    def recommendation_trends(self, symbol: str) -> List[dict]:
+        """Analyst recommendation trend buckets per month."""
+        data = self._get_json("/stock/recommendation", {"symbol": symbol})
+        if isinstance(data, list):
+            return [x for x in data if isinstance(x, dict)]
+        return []
+
+    def insider_sentiment(self, symbol: str, from_date: date,
+                          to_date: date) -> Optional[dict]:
+        """Monthly insider-sentiment MSPR / change buckets."""
+        data = self._get_json("/stock/insider-sentiment", {
+            "symbol": symbol,
+            "from": from_date.isoformat(),
+            "to": to_date.isoformat(),
+        })
+        if isinstance(data, dict) and data.get("data"):
+            return data
+        return None
+
     @classmethod
     def from_env(cls, env_var: str = "FINNHUB_API_KEY",
                  **kwargs) -> Optional["FinnhubSource"]:

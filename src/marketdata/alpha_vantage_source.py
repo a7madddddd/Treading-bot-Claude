@@ -180,6 +180,29 @@ class AlphaVantageSource:
                 continue
         return sorted(out, key=lambda t: t[0])
 
+    def sma(self, symbol: str, *, time_period: int = 50,
+            interval: str = "daily",
+            series_type: str = "close") -> List[Tuple[date, float]]:
+        data = self._get({
+            "function": "SMA", "symbol": symbol, "interval": interval,
+            "time_period": time_period, "series_type": series_type,
+        })
+        if data is None:
+            return []
+        series = data.get("Technical Analysis: SMA")
+        if not isinstance(series, dict):
+            return []
+        out: List[Tuple[date, float]] = []
+        for k, v in series.items():
+            d = _parse_date(k)
+            if d is None or not isinstance(v, dict):
+                continue
+            try:
+                out.append((d, float(v.get("SMA"))))
+            except (TypeError, ValueError):
+                continue
+        return sorted(out)
+
     @classmethod
     def from_env(cls, env_var: str = "ALPHA_VANTAGE_API_KEY",
                  **kwargs) -> Optional["AlphaVantageSource"]:

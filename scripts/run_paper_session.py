@@ -197,88 +197,96 @@ def _preflight(*, key_id: str, secret: str, base_url: str,
 
 
 def _build_composite_enricher(*, enable_research: bool):
-    """Builds the CompositeEnricher from available env-var API keys.
-
-    Each sub-enricher is best-effort: a missing key, a bad key, or any
-    construction error silently excludes that source. Returns None when
-    research is disabled, or when no sub-enricher could be built.
+    """Builds the DeepResearchComposer (D-0050 Phase 9) from every
+    available env-var API key. Each source is best-effort: a missing
+    key or a failed fetch means that section stays blank, the rest of
+    the report is still produced.
     """
     if not enable_research:
         return None
 
-    from engine.enrichers import (
-        CompositeEnricher, PerplexityEnricher, FinnhubEnricher,
-        AlphaVantageEnricher, TiingoEnricher, PolygonEnricher,
-    )
-    subs = []
+    from engine.deep_research import DeepResearchComposer
     attached: list = []
 
+    px_client = None
     try:
         from research.perplexity_agent import PerplexityAgentClient
         key = os.environ.get("PERPLEXITY_API_KEY", "").strip()
         if key:
-            subs.append(PerplexityEnricher(PerplexityAgentClient(api_key=key)))
+            px_client = PerplexityAgentClient(api_key=key)
             attached.append("Perplexity")
     except Exception as exc:  # noqa: BLE001
         print(f"[research] Perplexity init failed: {exc}")
 
+    fh_client = None
     try:
         from marketdata.finnhub_source import FinnhubSource
-        fh = FinnhubSource.from_env()
-        if fh is not None:
-            subs.append(FinnhubEnricher(fh))
+        fh_client = FinnhubSource.from_env()
+        if fh_client is not None:
             attached.append("Finnhub")
     except Exception as exc:  # noqa: BLE001
         print(f"[research] Finnhub init failed: {exc}")
 
+    av_client = None
     try:
         from marketdata.alpha_vantage_source import AlphaVantageSource
-        av = AlphaVantageSource.from_env()
-        if av is not None:
-            subs.append(AlphaVantageEnricher(av))
+        av_client = AlphaVantageSource.from_env()
+        if av_client is not None:
             attached.append("AlphaVantage")
     except Exception as exc:  # noqa: BLE001
         print(f"[research] AlphaVantage init failed: {exc}")
 
+    tn_client = None
     try:
         from marketdata.tiingo_source import TiingoSource
-        tn = TiingoSource.from_env()
-        if tn is not None:
-            subs.append(TiingoEnricher(tn))
+        tn_client = TiingoSource.from_env()
+        if tn_client is not None:
             attached.append("Tiingo")
     except Exception as exc:  # noqa: BLE001
         print(f"[research] Tiingo init failed: {exc}")
 
+    pg_client = None
     try:
         from marketdata.polygon_source import PolygonSource
-        pg = PolygonSource.from_env()
-        if pg is not None:
-            subs.append(PolygonEnricher(pg))
+        pg_client = PolygonSource.from_env()
+        if pg_client is not None:
             attached.append("Polygon")
     except Exception as exc:  # noqa: BLE001
         print(f"[research] Polygon init failed: {exc}")
 
-    # Polygon S3 bulk access is a separate capability (historical bulk
-    # files, not per-symbol enrichment). Build and advertise the signed
-    # SigV4 client at startup so the Controller sees it is wired. The
-    # bulk downloader is scripts/download_polygon_bulk.py.
+    fred_client = None
+    try:
+        from marketdata.fred_source import FredSource
+        fred_client = FredSource.from_env()
+        if fred_client is not None:
+            attached.append("FRED")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[research] FRED init failed: {exc}")
+
     try:
         from marketdata.polygon_source import PolygonS3Config
         s3cfg = PolygonS3Config.from_env()
         if s3cfg is not None:
-            s3client = s3cfg.build_client()
+            s3cfg.build_client()  # validates auth config
             print(f"[research] Polygon S3 bulk client READY: "
                   f"endpoint={s3cfg.endpoint}  "
                   f"(use scripts/download_polygon_bulk.py)")
     except Exception as exc:  # noqa: BLE001
         print(f"[research] Polygon S3 init failed: {exc}")
 
-    if not subs:
-        print("[research] NO sub-enrichers could be built -- disabled")
+    if not attached:
+        print("[research] NO sources could be built -- disabled")
         return None
 
-    print(f"[research] composite enrichment ENABLED: {', '.join(attached)}")
-    return CompositeEnricher(subs)
+    print(f"[research] deep research ENABLED: {', '.join(attached)}")
+    return DeepResearchComposer(
+        fred=fred_client,
+        finnhub=fh_client,
+        alpha_vantage=av_client,
+        polygon=pg_client,
+        tiingo=tn_client,
+        perplexity=px_client,
+    )
 
 
 def _install_signal_handlers(stop_flag: list) -> None:
