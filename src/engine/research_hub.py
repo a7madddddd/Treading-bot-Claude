@@ -116,7 +116,7 @@ class SymbolResearchHub:
         tiingo=None,
         perplexity=None,
         max_workers: int = 6,
-        deadline_seconds: float = 30.0,
+        deadline_seconds: float = 60.0,
     ) -> None:
         self._fred = fred
         self._fh = finnhub
@@ -328,6 +328,10 @@ class SymbolResearchHub:
         return {"news_count_48h": len(news), "news_headlines": heads}
 
     def _fetch_perplexity(self, symbol: str) -> Optional[dict]:
+        """Fires the two Perplexity queries (positives + negatives) IN
+        PARALLEL rather than sequentially — total latency drops from
+        the sum to the slower of the two, which comfortably fits the
+        hub's per-source deadline."""
         def _bullets(q: str) -> List[str]:
             try:
                 rep = self._px.research_stock(symbol, q)
@@ -341,14 +345,25 @@ class SymbolResearchHub:
                     out.append(s.strip())
             return out
 
-        cat = _bullets(
-            "In 3 very short bullets, list the single biggest POSITIVE "
-            "catalyst or tailwind for this stock RIGHT NOW. Each bullet "
-            "under 18 words.")
-        risk = _bullets(
-            "In 3 very short bullets, list the single biggest NEGATIVE "
-            "risk or headwind for this stock RIGHT NOW. Each bullet "
-            "under 18 words.")
+        cat_q = ("In 3 very short bullets, list the single biggest POSITIVE "
+                 "catalyst or tailwind for this stock RIGHT NOW. Each bullet "
+                 "under 18 words.")
+        risk_q = ("In 3 very short bullets, list the single biggest NEGATIVE "
+                  "risk or headwind for this stock RIGHT NOW. Each bullet "
+                  "under 18 words.")
+
+        import concurrent.futures as _f
+        with _f.ThreadPoolExecutor(max_workers=2) as ex:
+            fc = ex.submit(_bullets, cat_q)
+            fr = ex.submit(_bullets, risk_q)
+            try:
+                cat = fc.result(timeout=55.0)
+            except Exception:  # noqa: BLE001
+                cat = []
+            try:
+                risk = fr.result(timeout=55.0)
+            except Exception:  # noqa: BLE001
+                risk = []
         if not cat and not risk:
             return None
         return {"perplexity_catalysts": cat, "perplexity_risks": risk}
