@@ -64,6 +64,16 @@ def main() -> int:
                         "universe pool before enrichment (Controller-approved "
                         "override on top of the auto-exclude of currently-open "
                         "trades).")
+    p.add_argument("--max-symbols", type=int, default=0,
+                   help="Operational cap on the number of candidates "
+                        "entering stage A (after whitelist + exclusion). "
+                        "0 (default) = no cap, process the full fetched "
+                        "universe. Use a positive value (e.g. 500) for "
+                        "fast interactive runs; percentile math stays "
+                        "well-defined on any sample >= ~50.")
+    p.add_argument("--progress-every", type=int, default=25,
+                   help="Print a progress line every N identity "
+                        "resolutions (default 25). Set 0 to disable.")
     p.add_argument("--no-exclude-open", action="store_true",
                    help="Disable the automatic exclusion of symbols with an "
                         "open (AWAITING_INITIAL_FILL or ACTIVE) trade in the "
@@ -169,6 +179,21 @@ def main() -> int:
             return tuple(r for r in raw if r.ticker not in self._excluded)
 
     provider = _ExcludingProvider(raw_provider, exclude) if exclude else raw_provider
+
+    # --max-symbols: operational cap for interactive runs.
+    if args.max_symbols and args.max_symbols > 0:
+        class _CappingProvider:
+            def __init__(self, inner, cap):
+                self._inner = inner
+                self._cap = cap
+            def get_raw_candidates(self, as_of_date):
+                raw = self._inner.get_raw_candidates(as_of_date)
+                if len(raw) <= self._cap:
+                    return raw
+                print(f"[cap] fetched {len(raw)} candidates; keeping first "
+                      f"{self._cap} per --max-symbols")
+                return raw[: self._cap]
+        provider = _CappingProvider(provider, args.max_symbols)
     # Wire the sector provider so stage G's D-0048 concentration cap
     # actually enforces in production. Without this, every enriched
     # candidate carried source_reference="alpaca-iex" with no sector
@@ -204,8 +229,31 @@ def main() -> int:
             )
 
     class _StdoutSink(AuditSink):
+        """Progress-oriented stdout audit sink. Prints one line per
+        identity resolution batch (every N) rather than one per symbol —
+        for a 10k-symbol universe the per-symbol version buries the
+        actual signal."""
+        def __init__(self, progress_every: int = 25):
+            self._progress_every = progress_every
+            self._identity_count = 0
+            self._rejected_count = 0
         def record(self, event):
-            print(f"[audit] {type(event).__name__}")
+            name = type(event).__name__
+            if name == "IdentityResolutionEvent":
+                self._identity_count += 1
+                if (self._progress_every
+                        and self._identity_count % self._progress_every == 0):
+                    print(f"[progress] identity-resolved: "
+                          f"{self._identity_count}", flush=True)
+            elif name == "CandidateRejectedEvent":
+                self._rejected_count += 1
+                if (self._progress_every
+                        and self._rejected_count % self._progress_every == 0):
+                    print(f"[progress] rejected so far: "
+                          f"{self._rejected_count}", flush=True)
+            else:
+                # One-off events (regime, snapshot, crash) always print.
+                print(f"[audit] {name}", flush=True)
 
     # D-0050 Phase 1: live regime from FRED when FRED_API_KEY is set,
     # placeholder otherwise. The classifier itself fails open on any
@@ -225,7 +273,7 @@ def main() -> int:
             UniverseSelectionConfig()
         ),
         snapshot_repository=repo,
-        audit_sink=_StdoutSink(),
+        audit_sink=_StdoutSink(progress_every=args.progress_every),
         selection_version="D-0048-v1",
         universe_source_version="alpaca-assets-v1",
         identity_mapping_version="ticker-as-id-v1",
