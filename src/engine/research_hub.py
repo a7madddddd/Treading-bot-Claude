@@ -93,6 +93,15 @@ class SymbolResearch:
     company_name: Optional[str] = None
     sector: Optional[str] = None
 
+    # ---- Political signal (D-0050 Phase B.25) -----------------------
+    political_buys_30d: int = 0
+    political_sells_30d: int = 0
+    political_recent_names: List[str] = field(default_factory=list)
+    political_cluster_score: float = 0.0
+    political_committee_match: bool = False
+    political_weighted_signal: float = 0.0   # 0..25
+    political_sell_wave: bool = False        # 3+ whitelisted sellers in 30d
+
     # ---- Collection health ------------------------------------------
     sources_succeeded: List[str] = field(default_factory=list)
     sources_failed: List[str] = field(default_factory=list)

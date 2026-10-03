@@ -259,6 +259,7 @@ class Engine:
         trade_evaluator=None,
         portfolio_filter=None,
         macro_calendar=None,
+        political_universe_source=None,
     ) -> None:
         self._trade_repo = trade_repo
         self._proposal_repo = proposal_repo
@@ -297,6 +298,11 @@ class Engine:
         # D-0050 Phase 16: optional MacroEventCalendar blocks new
         # proposals in the pre-event window.
         self._macro_calendar = macro_calendar
+        # D-0050 Phase B.27: political universe source. When set, its
+        # Top-N tickers are UNIONed with the watchlist each cycle, and
+        # its signal data enriches every candidate's SymbolResearch
+        # before the evaluator scores it.
+        self._political_universe = political_universe_source
 
     def _enrich(self, symbol: str, base_message: str) -> str:
         """Fail-open wrapper that appends an enrichment blurb to a
@@ -1032,12 +1038,38 @@ class Engine:
         """
 
         candidates: list = []
+        seen_syms: set = set()
         for symbol in self._watchlist.get_active_symbols():
+            if symbol in seen_syms:
+                continue
+            seen_syms.add(symbol)
             records = self._trade_repo.list_for_symbol(symbol)
             has_open_trade = any(describe_status(r.trade) in ("AWAITING_INITIAL_FILL", "ACTIVE") for r in records)
             if has_open_trade:
                 continue
             candidates.append(symbol)
+
+        # D-0050 Phase B.27: UNION in Top-N political picks (de-duped).
+        political_signals: dict = {}
+        if self._political_universe is not None:
+            try:
+                for symbol in self._political_universe.get_active_symbols():
+                    if symbol in seen_syms:
+                        continue
+                    seen_syms.add(symbol)
+                    records = self._trade_repo.list_for_symbol(symbol)
+                    has_open = any(describe_status(r.trade) in ("AWAITING_INITIAL_FILL", "ACTIVE") for r in records)
+                    if has_open:
+                        continue
+                    candidates.append(symbol)
+                political_signals = self._political_universe.get_signals()
+            except Exception as exc:  # noqa: BLE001
+                self._notify(
+                    level=NotificationLevel.CRITICAL,
+                    event="political_universe_failed",
+                    message=f"Political universe source failed: {exc}",
+                    symbol=None,
+                )
 
         if not candidates:
             return
@@ -1049,8 +1081,22 @@ class Engine:
             return
 
         # Rank, keep passing + score >= MIN_SCORE, cap at TOP_N.
+        # D-0050 Phase B.28: enrich each candidate's SymbolResearch
+        # with the political signal map so the evaluator sees it.
         try:
             ranked = self._evaluator.rank(candidates)
+            if political_signals:
+                for r in ranked:
+                    sig = political_signals.get(r.symbol)
+                    if sig is None or r.research is None:
+                        continue
+                    r.research.political_buys_30d = sig.politician_buys_30d
+                    r.research.political_sells_30d = sig.politician_sells_30d
+                    r.research.political_recent_names = list(sig.recent_names)
+                    r.research.political_cluster_score = sig.cluster_score
+                    r.research.political_committee_match = sig.committee_match
+                    r.research.political_weighted_signal = sig.weighted_signal
+                    r.research.political_sell_wave = sig.sell_wave
         except Exception as exc:  # noqa: BLE001
             # Evaluator must never block the trigger loop; fall through
             # to the un-ranked flow so no opportunity is missed.

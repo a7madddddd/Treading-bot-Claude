@@ -45,12 +45,13 @@ class EvaluatorConfig:
     require_price: bool = True
 
     # Soft-score weights (should sum to ~100 before risk discounts)
-    weight_fundamentals: float = 18.0
-    weight_technicals: float = 22.0
-    weight_momentum: float = 12.0
-    weight_news: float = 8.0
-    weight_trend: float = 15.0        # D-0050 Phase 12: 5d/30d/90d returns
-    weight_rel_strength: float = 10.0 # D-0050 Phase 12: vs SPY
+    weight_fundamentals: float = 16.0
+    weight_technicals: float = 20.0
+    weight_momentum: float = 10.0
+    weight_news: float = 7.0
+    weight_trend: float = 13.0        # D-0050 Phase 12: 5d/30d/90d returns
+    weight_rel_strength: float = 9.0  # D-0050 Phase 12: vs SPY
+    weight_political: float = 15.0    # D-0050 Phase B.26: congressional signal
 
     # Risk-discount caps
     max_risk_discount: float = 20.0
@@ -121,6 +122,10 @@ def _hard_filter(r: SymbolResearch, cfg: EvaluatorConfig) -> List[str]:
 
     if cfg.reject_on_risk_off_regime and r.regime == "risk_off":
         reasons.append("macro regime RISK_OFF")
+
+    # D-0050 Phase B.26: insiders en-masse → trust the exit.
+    if r.political_sell_wave:
+        reasons.append(f"insider sell wave ({r.political_sells_30d} whitelisted sellers)")
 
     return reasons
 
@@ -274,6 +279,18 @@ def _score_trend(r: SymbolResearch, cfg: EvaluatorConfig) -> float:
     return (score / components) * cfg.weight_trend
 
 
+# ---- Political signal (D-0050 Phase B.26) ---------------------------
+
+def _score_political(r: SymbolResearch, cfg: EvaluatorConfig) -> float:
+    """0..weight_political. Driven by the composite weighted_signal
+    the cluster builder produces (0..25) → mapped to 0..weight_political."""
+    sig = getattr(r, "political_weighted_signal", 0.0) or 0.0
+    if sig <= 0:
+        return 0.0
+    normalized = min(1.0, sig / 25.0)
+    return normalized * cfg.weight_political
+
+
 # ---- Relative strength vs SPY ---------------------------------------
 
 def _score_rel_strength(r: SymbolResearch, cfg: EvaluatorConfig) -> float:
@@ -323,6 +340,7 @@ class TradeEvaluator:
             "trend":        _score_trend(research, cfg),
             "rel_str":      _score_rel_strength(research, cfg),
             "news":         _score_news(research, cfg),
+            "political":    _score_political(research, cfg),
             "risk":        -_risk_discount(research, cfg),
         }
         total = sum(breakdown.values())
@@ -364,12 +382,12 @@ def format_evaluation_block(result: EvaluationResult) -> str:
     lines.append(f"⚖ Evaluator score: {result.soft_score:.1f}/100  {verdict_tag}")
     bits = []
     for k in ("fundamentals", "technicals", "momentum", "trend",
-              "rel_str", "news", "risk"):
+              "rel_str", "news", "political", "risk"):
         v = result.score_breakdown.get(k)
         if v is not None:
             short = {"fundamentals":"fund","technicals":"tech",
                      "momentum":"mome","trend":"trnd","rel_str":"rsvs",
-                     "news":"news","risk":"risk"}.get(k, k[:4])
+                     "news":"news","political":"poli","risk":"risk"}.get(k, k[:4])
             bits.append(f"{short} {v:+.0f}")
     lines.append("  " + " · ".join(bits))
 
@@ -401,6 +419,13 @@ def format_evaluation_block(result: EvaluationResult) -> str:
         sig_bits.append(f"News {r.news_count_48h}")
     if r.regime is not None:
         sig_bits.append(f"Macro {r.regime}")
+    if r.political_buys_30d:
+        if r.political_committee_match:
+            sig_bits.append(f"🏛️ {r.political_buys_30d} buyers (cmte-match)")
+        else:
+            sig_bits.append(f"🏛️ {r.political_buys_30d} buyers")
+    if r.political_sells_30d:
+        sig_bits.append(f"🏛️⚠ {r.political_sells_30d} sellers")
     if sig_bits:
         lines.append("  Signals: " + " · ".join(sig_bits))
 

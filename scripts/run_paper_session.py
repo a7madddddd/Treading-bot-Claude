@@ -521,6 +521,25 @@ def main() -> int:
                         or getattr(args, "enable_perplexity", False),
     )
 
+    # D-0050 Phase B.27: political universe source (QuiverQuant +
+    # CapitolTrades scrapers for the whitelist + Senate/House
+    # eDisclosure index). ON when at least QuiverQuant is configured.
+    political_universe = None
+    if trade_evaluator is not None:
+        try:
+            from marketdata.quiverquant_source import QuiverQuantSource
+            from research.political_aggregator import PoliticalAggregator
+            from research.edisclosure_source import EDisclosureSource
+            from engine.political_universe_source import PoliticalUniverseSource
+            qq = QuiverQuantSource.from_env()
+            ed = EDisclosureSource()
+            agg = PoliticalAggregator(quiverquant=qq, edisclosure=ed)
+            political_universe = PoliticalUniverseSource(agg)
+            attached = "QuiverQuant" if qq else "eDisclosure-only"
+            print(f"[political] universe source ENABLED ({attached})")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[political] init failed: {exc}")
+
     # D-0050 Phase 14 + 16: portfolio filter + macro-event calendar.
     # Always ON once research is enabled; both fail-open internally.
     portfolio_filter = None
@@ -566,6 +585,7 @@ def main() -> int:
         trade_evaluator=trade_evaluator,
         portfolio_filter=portfolio_filter,
         macro_calendar=macro_calendar,
+        political_universe_source=political_universe,
     )
 
     # Preflight Telegram summary (before engine.start(), so still safe).

@@ -100,13 +100,17 @@ class TestScorers(unittest.TestCase):
         r = _good_research(pe_ratio=20, analyst_buy_ratio=0.9,
                            insider_mspr=50)
         s = _score_fundamentals(r, DEFAULT_CONFIG)
-        self.assertGreater(s, 15)  # cap is 20
+        # weight_fundamentals rebalanced in B.26; perfect inputs → >=10
+        self.assertGreater(s, 10)
+        self.assertLessEqual(s, DEFAULT_CONFIG.weight_fundamentals)
 
     def test_technicals_high_on_crossover(self):
         r = _good_research(macd_signal="bullish_crossover", rsi_14=55,
                            golden_cross=True)
         s = _score_technicals(r, DEFAULT_CONFIG)
-        self.assertGreater(s, 20)
+        # weight_technicals rebalanced in B.26; perfect signals → full weight
+        self.assertGreater(s, 15)
+        self.assertLessEqual(s, DEFAULT_CONFIG.weight_technicals)
 
     def test_technicals_low_on_bearish(self):
         r = _good_research(macd_signal="bearish_crossover", rsi_14=80,
