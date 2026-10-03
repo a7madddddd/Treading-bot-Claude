@@ -15,7 +15,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, Iterator, Optional
 
-APPROVED_SCHEMA_VERSION = 6
+APPROVED_SCHEMA_VERSION = 7
 """The explicit, Controller-approved live-authorization boundary --
 the ONLY thing that makes a migration eligible to run. A migration
 file numbered above this constant may exist in the migrations

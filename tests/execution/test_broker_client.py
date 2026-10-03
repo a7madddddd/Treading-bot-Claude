@@ -52,6 +52,9 @@ class TestAbstractInterface(unittest.TestCase):
             def get_cash_balance(self):
                 raise NotImplementedError
 
+            def get_account_equity(self):
+                raise NotImplementedError
+
         with self.assertRaises(TypeError):
             MissingCancel()  # type: ignore[abstract]
 
@@ -66,8 +69,28 @@ class TestAbstractInterface(unittest.TestCase):
             def cancel_order(self, client_order_id):
                 raise NotImplementedError
 
+            def get_account_equity(self):
+                raise NotImplementedError
+
         with self.assertRaises(TypeError):
             MissingCash()  # type: ignore[abstract]
+
+    def test_subclass_missing_get_account_equity_cannot_be_instantiated(self):
+        class MissingEquity(BrokerClient):
+            def submit_order(self, **kwargs):
+                raise NotImplementedError
+
+            def get_order_by_client_order_id(self, client_order_id):
+                raise NotImplementedError
+
+            def cancel_order(self, client_order_id):
+                raise NotImplementedError
+
+            def get_cash_balance(self):
+                raise NotImplementedError
+
+        with self.assertRaises(TypeError):
+            MissingEquity()  # type: ignore[abstract]
 
     def test_complete_subclass_can_be_instantiated(self):
         class Complete(BrokerClient):
@@ -81,6 +104,9 @@ class TestAbstractInterface(unittest.TestCase):
                 raise NotImplementedError
 
             def get_cash_balance(self):
+                raise NotImplementedError
+
+            def get_account_equity(self):
                 raise NotImplementedError
 
         Complete()  # must not raise

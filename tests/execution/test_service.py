@@ -108,6 +108,12 @@ class FakeBrokerClient(BrokerClient):
     def get_cash_balance(self) -> float:
         return self._cash_balance
 
+    def get_account_equity(self) -> float:
+        # Fake broker: equity = cash for test purposes (there are no
+        # open positions tracked here). Real Alpaca would return
+        # cash + sum(position.market_value).
+        return self._cash_balance
+
 
 def _repos():
     conn = connect(":memory:")

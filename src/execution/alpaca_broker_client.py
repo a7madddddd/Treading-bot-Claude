@@ -286,6 +286,38 @@ class AlpacaBrokerClient(BrokerClient):
         except (TypeError, ValueError) as ex:
             raise BrokerCommunicationError(f"/v2/account 'cash' was not a number: {raw!r}") from ex
 
+    def get_account_equity(self) -> float:
+        # One HTTP call, same shape as get_cash_balance -- Alpaca returns
+        # both fields on the same /v2/account response, but a separate
+        # call keeps the per-method failure semantics clean (equity
+        # could legitimately be present with cash missing, etc.).
+        try:
+            status, payload = self._request("GET", "/v2/account")
+        except _AmbiguousTransport as ex:
+            raise BrokerCommunicationError(str(ex)) from ex
+
+        if not (200 <= status < 300):
+            raise BrokerCommunicationError(
+                f"Alpaca returned HTTP {status} on /v2/account: {_error_snippet(payload)}"
+            )
+
+        obj = _load_json(payload, on_bad_json="/v2/account payload was not valid JSON")
+
+        if obj.get("account_blocked") is True or obj.get("trading_blocked") is True:
+            raise BrokerAccountBlockedError(
+                f"Alpaca account is blocked: "
+                f"account_blocked={obj.get('account_blocked')!r}, "
+                f"trading_blocked={obj.get('trading_blocked')!r}"
+            )
+
+        raw = obj.get("equity")
+        if raw is None:
+            raise BrokerCommunicationError("/v2/account response is missing 'equity'")
+        try:
+            return float(raw)
+        except (TypeError, ValueError) as ex:
+            raise BrokerCommunicationError(f"/v2/account 'equity' was not a number: {raw!r}") from ex
+
     # ---- transport internals ------------------------------------------
 
     # Standard "ambiguous" transport-level exceptions -- a caller of
