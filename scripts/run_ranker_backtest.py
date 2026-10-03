@@ -56,6 +56,7 @@ def _closes_provider_from_polygon(client, start: date, end: date):
                     out.append((d, float(c)))
         cache[symbol] = out
         return out
+    _get.cache = cache
     return _get
 
 
@@ -130,9 +131,22 @@ def main() -> int:
 
     closes_fn = _closes_provider_from_polygon(pg, data_start, end)
     # Prime cache: force one fetch per symbol so we can report progress.
+    # Polygon free tier = 5 requests/minute. Sleep 13s between calls so
+    # the whole fetch stays under the limit with margin.
+    import time
     for i, s in enumerate(syms, 1):
         bars = closes_fn(s)
-        print(f"  [{i:>3}/{len(syms)}] {s:<6} {len(bars):>4} bars")
+        print(f"  [{i:>3}/{len(syms)}] {s:<6} {len(bars):>4} bars", flush=True)
+        if len(bars) == 0 and i < len(syms):
+            # Likely rate-limited — wait a full minute then retry once.
+            print(f"      ⚠ 0 bars — likely rate-limited, waiting 65s and retrying...", flush=True)
+            time.sleep(65)
+            # Clear cache entry so retry actually re-fetches
+            closes_fn.cache.pop(s, None)
+            bars = closes_fn(s)
+            print(f"      retry: {len(bars):>4} bars", flush=True)
+        if i < len(syms):
+            time.sleep(13)
 
     sim = HistoricalSimulator(
         closes_provider=closes_fn,
