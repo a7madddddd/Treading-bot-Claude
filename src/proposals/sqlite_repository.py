@@ -65,6 +65,11 @@ def _proposal_to_row(proposal: TradeProposal) -> Dict[str, Any]:
         "ladder_2_quantity": proposal.ladder_2_quantity,
         "floor_trigger": proposal.floor_trigger,
         "maximum_position": proposal.maximum_position,
+        # D-0051: Initial Entry share count persisted alongside the
+        # existing Ladder-1/Ladder-2 counts. The column is NULLABLE in
+        # SQL so pre-D-0051 rows (no column populated) continue to load
+        # cleanly as initial_quantity=None.
+        "initial_quantity": proposal.initial_quantity,
         "proposal_created_at": proposal.proposal_created_at.isoformat(),
         "weighted_avg_entry_at_proposal": proposal.weighted_avg_entry_at_proposal,
         "active_floor_at_proposal": proposal.active_floor_at_proposal,
@@ -100,6 +105,16 @@ def _row_to_proposal(row: Mapping[str, Any]) -> TradeProposal:
         ladder_2_quantity=row["ladder_2_quantity"],
         floor_trigger=row["floor_trigger"],
         maximum_position=row["maximum_position"],
+        # D-0051: NULLABLE column. Rows persisted BEFORE the migration
+        # that added it (sqlite3.Row supports .keys() and item access
+        # but not .get()) are detected by key absence or SQL NULL and
+        # fall through to initial_quantity=None.
+        initial_quantity=(
+            row["initial_quantity"]
+            if "initial_quantity" in row.keys()
+            and row["initial_quantity"] is not None
+            else None
+        ),
         proposal_created_at=_parse_dt(row["proposal_created_at"]),
         weighted_avg_entry_at_proposal=row["weighted_avg_entry_at_proposal"],
         active_floor_at_proposal=row["active_floor_at_proposal"],

@@ -2909,3 +2909,135 @@ not touch:
   container was restarted, which is a live reminder that B17 needs
   answering before daily unattended operation is credible; still not
   a blocker for continuing bounded real-case testing.
+
+
+## D-0051 — Percentage-based position sizing supersedes fixed 10/10/20
+
+**Date:** 2026-10-03
+**Decided by:** Controller
+**Status:** APPROVED
+**Supersedes:** D-0004 §1 share-count row (ONLY; D-0004's price triggers
+-5% / -8% / -10% and its Trade reference-price contract are unchanged).
+
+### Context
+
+D-0004 §1 fixed every layer's share count at 10 / 10 / 20 (max 40). That
+was safe for the three-symbol static watchlist of 2026-08 to 2026-09 but
+no longer composes with the newly-approved dynamic Universe (D-0048),
+which can return symbols spanning a 60× price range in the same cycle:
+40 shares of QQQ at $750 is $30,000 of exposure (~30% of a $100k paper
+account), while 40 shares of a $12 small-cap ETF is $480 (~0.5%). The
+same "strategy" therefore produces materially different per-trade risk
+depending only on the symbol's price.
+
+### Decision
+
+Replace the fixed share counts with a Controller-approved percentage
+policy sized against account equity at the moment the proposal is built:
+
+| Rule     | Trigger | Shares                              |
+|----------|---------|-------------------------------------|
+| Buy      |   0%    | floor(5% × 25% × equity / price)    |
+| Ladder 1 |  −5%    | floor(5% × 25% × equity / price)    |
+| Ladder 2 |  −8%    | floor(5% × 50% × equity / price)    |
+| Floor    | −10%    | SELL ALL                            |
+
+- Trade budget = 5% of broker-reported equity at proposal creation time.
+- Split 25% / 25% / 50% across Initial / Ladder 1 / Ladder 2 (same 1:1:2
+  ratio as the pre-D-0051 10/10/20 fixed counts; the only change is
+  denominating in dollars instead of shares).
+- Floor at -10% still sells the entire position in one order.
+- At least 1 share per layer (`min_shares=1`); a symbol priced above
+  roughly 2× the Initial dollar budget is rejected by
+  `PositionSizingPolicy.is_tradable` and no proposal is created, so a
+  single-share forced buy that wildly overshoots the policy never
+  reaches the broker.
+
+### Freezing the share count on the proposal (data-completeness fix)
+
+Pre-D-0051 code read `strategy.initial_qty` at submission time rather
+than storing it on the proposal -- a historical gap because the
+quantity was effectively constant. Under D-0051 the quantity depends on
+equity and price at proposal creation time; those can move between
+proposal creation and submission. To keep "the Controller approved X
+shares" and "the broker submitted X shares" always equal, D-0051 adds
+`initial_quantity` to `TradeProposal` (schema migration 0007) and the
+execution path reads it from the proposal, not the strategy. See
+`src/proposals/proposal.py`, `src/proposals/models.py:TradeProposal`,
+`src/execution/service.py::_requested_qty_for`.
+
+### Backward compatibility — pre-D-0051 trades keep their original sizes
+
+Trades whose proposals were persisted BEFORE this decision continue to
+run their remaining Ladder 1 / Ladder 2 attempts at the previously-
+approved fixed share counts stored on their own proposal rows. The
+five paper positions open on the Oracle VM at 2026-10-03 16:00 UTC
+(AMZN, GOOGL, KO, NVDA, QQQ, TSLA, V -- all 10 shares) are not
+re-sized retroactively: retroactive share changes would reset their
+weighted-average entry, move their Floor, and break the frozen-
+reference contract in D-0004 §2. See `src/proposals/sqlite_repository.py`
+for the backward-compat NULL read.
+
+### Implementation
+
+- `src/proposals/position_sizing.py` -- new
+  `PositionSizingPolicy` dataclass and `APPROVED_D0051_POLICY` singleton.
+- `src/proposals/models.py` -- `StrategyRuleSet.__post_init__` relaxed
+  from hardcoded 10/10/20 to "positive integer + sum invariant";
+  `approved_strategy_rule_set()` now accepts keyword overrides whose
+  defaults still produce 10/10/20 for callers (backtest + tests) with no
+  equity/price context; `TradeProposal.initial_quantity` field added
+  (nullable for backward compat).
+- `src/proposals/proposal.py` -- `build_trade_proposal()` writes
+  `initial_quantity = strategy.initial_qty` onto every new proposal.
+- `src/proposals/sqlite_repository.py` -- persists and reads back
+  `initial_quantity`; absent column / NULL value preserves the pre-D-0051
+  behavior.
+- `src/persistence/migrations/0007_proposal_initial_quantity.sql` --
+  schema migration (nullable column).
+- `src/persistence/db.py` -- `APPROVED_SCHEMA_VERSION` bumped from 6 to 7.
+- `src/execution/broker_client.py` -- `BrokerClient` abstract gains
+  `get_account_equity()`.
+- `src/execution/alpaca_broker_client.py` -- Alpaca impl of
+  `get_account_equity` using the existing `/v2/account` endpoint's
+  `equity` field.
+- `src/execution/service.py::_requested_qty_for` -- reads
+  `proposal.initial_quantity` when set; falls back to
+  `strategy.initial_qty` for pre-D-0051 proposals.
+- `src/engine/engine.py` -- new `_sized_strategy()` helper queries the
+  broker's equity and runs the policy, fail-closed if the broker is
+  unreachable or the symbol is un-sizable (CRITICAL / IMPORTANT
+  notifications; never a silent fallback to the pre-D-0051 fixed sizes
+  the Controller never approved for the current cycle). Three
+  production call sites updated: `_check_watchlist` (new INITIAL_ENTRY),
+  `_propose_next_action_for_trade` (Ladder 1 / 2), and
+  `_recreate_missing_initial_entry` (recovery).
+- `scripts/run_paper_session.py` -- no changes required: the engine
+  consumes the policy internally.
+
+### Tests
+
+- `tests/proposals/test_position_sizing.py` -- 17 new unit tests
+  (policy construction, scaling with equity, min_shares floor,
+  is_tradable 2× cap, edge cases).
+- `tests/engine/test_engine.py::FakeBrokerClient` -- gains
+  `get_account_equity() -> 80000.0` so the existing engine tests
+  continue to produce exactly the pre-D-0051 10/10/20 counts under the
+  new policy ($80k × 5% × 25% / $100 = 10 shares at the $100 test entry
+  price).
+- `tests/execution/test_broker_client.py` -- new "missing
+  get_account_equity cannot instantiate" test for the abstract contract.
+- `tests/execution/test_service.py::FakeBrokerClient` -- gains
+  `get_account_equity()` identical to `get_cash_balance()`.
+- Full suite: 1393/1393 -> 1411/1411 PASS, no regressions.
+
+### Rollback
+
+`PositionSizingPolicy` is a dataclass constructed in `engine.py` from
+`APPROVED_D0051_POLICY`. To restore the pre-D-0051 fixed-size behavior:
+either (a) replace `self._sizing_policy = APPROVED_D0051_POLICY` with a
+`PositionSizingPolicy` whose per-layer dollars happen to produce 10 /
+10 / 20 at the current prices (not stable across symbols), or more
+cleanly (b) revert this commit; the migration 0007 column stays and is
+harmless (new proposals simply store a quantity-aligned value again).
+Both routes require a new Controller decision superseding D-0051.

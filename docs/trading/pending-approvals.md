@@ -61,9 +61,18 @@ Last audit: 2026-10-03.
 
 ## 🟡 OPEN — Can decide later
 
-### P-005 — Position sizer wiring
-- Built (B.15) but NOT wired to `TradeProposalService.start_trade`.
-- Decision needed: Wire now or after ranker is validated.
+### P-005 — Position sizer wiring — RESOLVED (D-0051, 2026-10-03)
+- **Status:** ✅ APPROVED and wired end-to-end as D-0051.
+- The B.15 volatility-adjusted sizer is DELETED (never adopted).
+  D-0051 uses percentage-of-equity sizing with a 25%/25%/50% split
+  across the three layers of a 5% trade budget — a dollar-based
+  policy, not a volatility-adjusted one.
+- Code: `src/proposals/position_sizing.py`, wired through
+  `src/engine/engine.py::_sized_strategy` into every production
+  INITIAL_ENTRY / LADDER_1 / LADDER_2 / recovery call site.
+- Backward compatibility: trades proposed before D-0051 keep their
+  original approved quantities on their persisted proposals; only new
+  proposals use percentage sizing.
 
 ### P-006 — Historical data gap
 - Can't backtest fundamentals/news/political signals (58% of production

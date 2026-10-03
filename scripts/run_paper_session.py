@@ -641,10 +641,36 @@ def main() -> int:
     try:
         now = datetime.now(timezone.utc)
         engine.start(now=now)
+        # Build a mode-aware startup message so the Controller sees the
+        # ACTUAL universe source, not the (unused) static --symbols fallback.
+        if args.universe_mode == "snapshot":
+            try:
+                today_snap = snapshot_repo.get_snapshot_for(now.date())
+            except Exception:  # noqa: BLE001
+                today_snap = None
+            if today_snap is not None and not today_snap.is_empty:
+                tickers_preview = ", ".join(
+                    s.ticker_as_of_date for s in today_snap.symbols[:10]
+                )
+                startup_msg = (
+                    f"Engine live in snapshot mode. "
+                    f"Universe = {len(today_snap.symbols)} symbols from "
+                    f"today's D-0026 snapshot: {tickers_preview}."
+                )
+            else:
+                startup_msg = (
+                    "Engine live in snapshot mode. No universe snapshot "
+                    "for today yet — engine will pick it up on the next "
+                    "cycle once it is written."
+                )
+        else:
+            startup_msg = (
+                f"Engine live in static mode. Watchlist: {list(symbols)}."
+            )
         notifier.send(NotificationEvent(
             level=NotificationLevel.IMPORTANT,
             event="paper_session_started",
-            message=f"Engine live for symbols {list(symbols)}.",
+            message=startup_msg,
             symbol=None,
             extra=(),
         ))

@@ -80,7 +80,10 @@ from marketdata.source import MarketDataSource, MarketDataUnavailableError
 from notifications.service import INotificationService, NotificationEvent, NotificationLevel
 from orchestration.trade_proposal_service import LadderAlreadyFilledError, TradeProposalService
 from proposals.models import ApprovalState, TradeAction, approved_strategy_rule_set
-from proposals.models import FloorContext
+from proposals.models import FloorContext, StrategyRuleSet
+from proposals.position_sizing import (
+    APPROVED_D0051_POLICY, PositionSizingPolicyError,
+)
 from proposals.proposal import build_trade_proposal
 from proposals.repository import ProposalDecisionConflictError, ProposalRepository
 from trade.models import TradeStateError, describe_status
@@ -175,9 +178,15 @@ def _format_proposal_message(
     prefix = "[recovery] " if recovery else ""
 
     if action is TradeAction.INITIAL_ENTRY:
-        strategy = approved_strategy_rule_set()
         buy_price = proposal.proposed_entry
-        qty = strategy.initial_qty
+        # D-0051: read the Initial-Entry share count from the Proposal
+        # itself. Pre-D-0051 proposals persisted with initial_quantity
+        # = None (never set) fall back to the frozen pre-D-0051 fixed
+        # 10 so legacy-era display stays faithful to what the Controller
+        # actually approved then.
+        qty = (proposal.initial_quantity
+               if proposal.initial_quantity is not None
+               else approved_strategy_rule_set().initial_qty)
         cost = buy_price * qty
         l1 = proposal.ladder_1_trigger
         l2 = proposal.ladder_2_trigger
@@ -298,11 +307,70 @@ class Engine:
         # D-0050 Phase 16: optional MacroEventCalendar blocks new
         # proposals in the pre-event window.
         self._macro_calendar = macro_calendar
+        # D-0051 (2026-10-03): the Controller-approved percentage-based
+        # sizing policy used to compute per-layer share counts for every
+        # new proposal created in this engine. Replaces the pre-D-0051
+        # fixed 10/10/20 that was hardcoded in approved_strategy_rule_set.
+        # Not swappable at the method call site -- this is the single
+        # authoritative policy for live proposals in this engine.
+        self._sizing_policy = APPROVED_D0051_POLICY
         # D-0050 Phase B.27: political universe source. When set, its
         # Top-N tickers are UNIONed with the watchlist each cycle, and
         # its signal data enriches every candidate's SymbolResearch
         # before the evaluator scores it.
         self._political_universe = political_universe_source
+
+    def _sized_strategy(self, *, price: float) -> Optional[StrategyRuleSet]:
+        """D-0051: queries the broker for the account's current equity,
+        then runs the Controller-approved sizing policy to compute the
+        three per-layer share counts for a NEW proposal at this price.
+
+        Returns None (and raises nothing) on any failure the engine must
+        not propagate as a crash: broker unreachable, account blocked,
+        policy rejects the inputs (equity or price non-positive, symbol
+        too expensive to size at even one share). The CALLER checks the
+        return value and simply skips creating the proposal when it is
+        None -- fail-closed, no silent fallback to the pre-D-0051 fixed
+        10/10/20 that would secretly size differently from the Controller's
+        approved percentage policy.
+
+        Pre-D-0051 proposals already persisted on disk are untouched by
+        this method: when they advance to Ladder 1 or Ladder 2 their
+        quantities come from TradeProposal.ladder_1_quantity /
+        ladder_2_quantity exactly as before. Only brand-new INITIAL_ENTRY
+        proposals (and their Ladder successors) use the new policy."""
+        try:
+            equity = self._execution_service._broker.get_account_equity()
+        except Exception as exc:  # noqa: BLE001 -- fail-closed
+            self._notify(
+                level=NotificationLevel.CRITICAL,
+                event="position_sizing_broker_unavailable",
+                message=(f"D-0051 position sizing could not query broker "
+                         f"equity: {type(exc).__name__}: {exc}. "
+                         "No proposal created this cycle."),
+                symbol=None,
+            )
+            return None
+        try:
+            sizing = self._sizing_policy.compute_shares(
+                equity=equity, price=price,
+            )
+        except PositionSizingPolicyError as exc:
+            self._notify(
+                level=NotificationLevel.IMPORTANT,
+                event="position_sizing_rejected",
+                message=(f"D-0051 position sizing rejected inputs "
+                         f"(equity=${equity:,.2f}, price=${price:,.2f}): "
+                         f"{exc}. No proposal created."),
+                symbol=None,
+            )
+            return None
+        return approved_strategy_rule_set(
+            initial_qty=sizing.initial_qty,
+            ladder_1_qty=sizing.ladder_1_qty,
+            ladder_2_qty=sizing.ladder_2_qty,
+            maximum_position=sizing.maximum_position,
+        )
 
     def _enrich(self, symbol: str, base_message: str) -> str:
         """Fail-open wrapper that appends an enrichment blurb to a
@@ -450,6 +518,12 @@ class Engine:
             )
             return
 
+        # D-0051: recovery of a missing Initial Entry still goes through
+        # the Controller-approved sizing policy -- a recovered proposal
+        # must size identically to how a fresh one would right now.
+        strategy = self._sized_strategy(price=price)
+        if strategy is None:
+            return
         proposal_id = f"{trade_id}-initial_entry-{uuid.uuid4().hex[:8]}"
         proposal = build_trade_proposal(
             proposal_id=proposal_id,
@@ -458,7 +532,7 @@ class Engine:
             symbol=symbol,
             current_price=price,
             as_of=now,
-            strategy=approved_strategy_rule_set(),
+            strategy=strategy,
             floor_context=FloorContext.no_existing_position(),
         )
         self._proposal_repo.save(proposal)
@@ -1178,6 +1252,14 @@ class Engine:
             )
             return
 
+        strategy = self._sized_strategy(price=price)
+        if strategy is None:
+            # Fail-closed: the sizing policy declined this symbol/price
+            # or the broker was unreachable. _sized_strategy already
+            # emitted the right-level notification. Do not fall back to
+            # the pre-D-0051 fixed 10/10/20 -- that would silently size
+            # a position the Controller never approved.
+            return
         trade_id = f"{symbol}-{uuid.uuid4().hex[:8]}"
         proposal_id = f"{trade_id}-initial_entry-{uuid.uuid4().hex[:8]}"
         _trade_record, proposal = self._trade_proposal_service.start_trade(
@@ -1185,7 +1267,7 @@ class Engine:
             symbol=symbol,
             proposal_id=proposal_id,
             current_price=price,
-            strategy=approved_strategy_rule_set(),
+            strategy=strategy,
             floor_context=FloorContext.no_existing_position(),
             now=now,
         )
@@ -1298,13 +1380,26 @@ class Engine:
 
         proposal_id = f"{trade_id}-{action.value}-{uuid.uuid4().hex[:8]}"
         floor_context = FloorContext.known(active_floor) if active_floor is not None else FloorContext.no_existing_position()
+        # D-0051: Ladder-1 and Ladder-2 proposals reuse the SAME per-layer
+        # sizing policy, but their effective share counts come from the
+        # TradeProposal fields on the ORIGINAL Initial Entry proposal
+        # (ladder_1_quantity / ladder_2_quantity, already stored in SQLite).
+        # The strategy we hand to propose_next_action here still needs
+        # positive integers for post-validation, so we re-run the policy
+        # with the current equity + the FROZEN original entry price. This
+        # keeps the StrategyRuleSet internally consistent without
+        # affecting the broker-facing quantity (that path reads
+        # proposal.ladder_1_quantity / ladder_2_quantity directly).
+        strategy = self._sized_strategy(price=original_entry_price)
+        if strategy is None:
+            return
         try:
             proposal = self._trade_proposal_service.propose_next_action(
                 trade_id=trade_id,
                 action=action,
                 proposal_id=proposal_id,
                 current_price=original_entry_price,
-                strategy=approved_strategy_rule_set(),
+                strategy=strategy,
                 floor_context=floor_context,
                 now=now,
             )

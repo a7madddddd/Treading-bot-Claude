@@ -176,14 +176,26 @@ def _execution_limit_price_for(proposal: TradeProposal) -> float:
 
 
 def _requested_qty_for(proposal: TradeProposal, strategy) -> int:
-    """INITIAL_ENTRY quantity is not stored on TradeProposal (a real,
-    surfaced data-completeness gap -- see module docstring/design
-    review) -- resolved by reading the already-approved, frozen
-    StrategyRuleSet directly, exactly as build_trade_proposal() itself
-    already does. Ladder quantities are read from the Proposal's own
-    stored fields (the historically-approved record), not re-derived
-    from the current strategy."""
+    """Returns the share count the broker should see for this
+    proposal's action.
+
+    Historical note: INITIAL_ENTRY quantity used to live only on the
+    StrategyRuleSet (10 shares, D-0004 §1) because the TradeProposal
+    schema did not store it; execution re-read strategy.initial_qty
+    at submission time. D-0051 (2026-10-03) closes that gap by
+    storing `initial_quantity` on the proposal itself, so the share
+    count the Controller approved is the same share count that reaches
+    the broker, even if equity or price moved between approval and
+    submission.
+
+    Backward compatibility: proposals persisted before D-0051 read
+    back with initial_quantity=None; those fall through to the legacy
+    strategy.initial_qty path so already-open trades (e.g. the five
+    paper positions open on 2026-10-03) continue to execute under
+    their original approval."""
     if proposal.proposed_action is TradeAction.INITIAL_ENTRY:
+        if proposal.initial_quantity is not None:
+            return proposal.initial_quantity
         return strategy.initial_qty
     if proposal.proposed_action is TradeAction.LADDER_1:
         return proposal.ladder_1_quantity

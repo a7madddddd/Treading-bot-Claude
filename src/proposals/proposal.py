@@ -122,6 +122,11 @@ def build_trade_proposal(
         ladder_2_quantity=strategy.ladder_2_qty,
         floor_trigger=floor_trigger,
         maximum_position=strategy.maximum_position,
+        # D-0051: freeze the Initial Entry share count on the proposal
+        # itself. Execution reads this field (not strategy.initial_qty)
+        # so a later equity/price change cannot alter what the
+        # Controller actually approved.
+        initial_quantity=strategy.initial_qty,
         proposal_created_at=as_of,
         weighted_avg_entry_at_proposal=weighted_avg_entry_at_proposal,
         active_floor_at_proposal=active_floor_at_proposal,

@@ -8,14 +8,40 @@ new dated entry in `decisions.md`.**
 
 ## 1. Rule table
 
-| Rule     | Trigger | Shares            | Purpose                              |
-|----------|---------|-------------------|--------------------------------------|
-| Buy      |   0%    | 10                | Initial position                     |
-| Ladder 1 |  −5%    | +10               | Small pullback — possibly noise      |
-| Ladder 2 |  −8%    | +20               | Larger pullback — real drawdown      |
-| Floor    | −10%    | SELL ALL (40)     | Last-resort exit                     |
+| Rule     | Trigger | Shares                 | Purpose                              |
+|----------|---------|------------------------|--------------------------------------|
+| Buy      |   0%    | 25% of trade budget    | Initial position                     |
+| Ladder 1 |  −5%    | +25% of trade budget   | Small pullback — possibly noise      |
+| Ladder 2 |  −8%    | +50% of trade budget   | Larger pullback — real drawdown      |
+| Floor    | −10%    | SELL ALL               | Last-resort exit                     |
 
-Maximum planned position size before Floor: **40 shares**.
+Trade budget = **5% of account equity** at proposal creation time (D-0051,
+2026-10-03). Share counts are then computed as `floor(dollars / price)`
+with a floor of 1 share per layer and a 2× price-vs-initial-dollar cap
+that rejects symbols too expensive to size cleanly.
+
+### D-0051 example (equity = $100,000)
+
+Trade budget = $5,000, split 25% / 25% / 50% across the three layers.
+
+| Symbol | Price | Initial | Ladder 1 | Ladder 2 | Max total |
+|---|---|---|---|---|---|
+| WBD    | $12   | 104 | 104 | 208 | 416 |
+| TSLA   | $370  |   3 |   3 |   6 |  12 |
+| QQQ    | $750  |   1 |   1 |   3 |   5 |
+
+Dollar exposure at the maximum position stays near 5% of equity for every
+symbol, instead of the pre-D-0051 fixed 40 shares that produced a 60×
+dollar-exposure spread between a $12 ticker and a $750 ticker.
+
+### Pre-D-0051 behavior (frozen on existing positions)
+
+Trades whose proposals were created before D-0051 continue to run under
+their original approved share counts (10 / 10 / 20, maximum 40). D-0051
+applies ONLY to proposals created after it is in effect. See
+`src/execution/service.py::_requested_qty_for` for the backward-compat
+fallback and the TradeProposal.initial_quantity field that persists the
+D-0051-era share count explicitly.
 
 ## 2. Price reference rule
 

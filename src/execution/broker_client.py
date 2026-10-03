@@ -124,3 +124,15 @@ class BrokerClient(ABC):
         to authorize new orders. Raises BrokerCommunicationError if the
         broker could not be reached with a well-formed response."""
         raise NotImplementedError
+
+    @abstractmethod
+    def get_account_equity(self) -> float:
+        """Returns the account's current total equity in USD -- cash
+        plus the market value of every open position, as the broker
+        reports it right now. Added for D-0051 (2026-10-03) percentage-
+        based position sizing, which must size each new trade relative
+        to the full account's economic value, not just unspent cash:
+        $80k cash with $20k in open positions is a $100k account, and
+        5% of it is $5,000, not $4,000. Same source-of-truth and failure
+        contract as get_cash_balance()."""
+        raise NotImplementedError

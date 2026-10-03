@@ -58,6 +58,14 @@ class FakeBrokerClient(BrokerClient):
     def get_cash_balance(self) -> float:
         return 100000.0
 
+    def get_account_equity(self) -> float:
+        # Tests were originally written against the pre-D-0051 fixed
+        # 10/10/20 quantities. $80k equity makes the D-0051 policy
+        # (5% / 25% / 25% / 50%) at the standard $100 test entry price
+        # compute exactly initial=10, ladder_1=10, ladder_2=20, so
+        # existing assertions keep passing without a per-test rewrite.
+        return 80000.0
+
 
 class FakeMarketDataSource(MarketDataSource):
     def __init__(self, prices: Optional[Dict[str, float]] = None):

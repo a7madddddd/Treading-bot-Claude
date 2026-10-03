@@ -54,16 +54,16 @@ class StrategyRuleSet:
     maximum_position: int
 
     def __post_init__(self) -> None:
-        expected = {
+        # Price triggers are the FROZEN policy from docs/trading/strategy.md
+        # §1 (-5% / -8% / -10%). They remain hard-fixed because D-0004
+        # defines the strategy around them; any change here would be a
+        # new Controller decision superseding D-0004 itself.
+        fixed_price_triggers = {
             "ladder_1_pct": -0.05,
-            "ladder_1_qty": 10,
             "ladder_2_pct": -0.08,
-            "ladder_2_qty": 20,
             "floor_pct": -0.10,
-            "initial_qty": 10,
-            "maximum_position": 40,
         }
-        for field_name, expected_value in expected.items():
+        for field_name, expected_value in fixed_price_triggers.items():
             actual_value = getattr(self, field_name)
             if actual_value != expected_value:
                 raise StrategyUnavailableError(
@@ -71,6 +71,20 @@ class StrategyRuleSet:
                     f"match the approved value {expected_value!r} "
                     "(docs/trading/strategy.md §1, §7) -- refusing to "
                     "construct an invalid strategy rule set"
+                )
+        # Quantities are no longer fixed to 10/10/20: D-0051 (2026-10-03)
+        # supersedes that part of D-0004 and sizes each layer as a
+        # percentage of equity via `position_sizing.PositionSizingPolicy`.
+        # What is still validated here is INTERNAL CONSISTENCY: all
+        # quantities positive integers and summing to maximum_position.
+        for field_name in ("initial_qty", "ladder_1_qty",
+                           "ladder_2_qty", "maximum_position"):
+            v = getattr(self, field_name)
+            if not isinstance(v, int) or v <= 0:
+                raise StrategyUnavailableError(
+                    f"StrategyRuleSet.{field_name} must be a positive int "
+                    f"(D-0051 permits dynamic quantities, but each layer "
+                    f"must still be a real buyable share count); got {v!r}"
                 )
         if self.initial_qty + self.ladder_1_qty + self.ladder_2_qty != self.maximum_position:
             raise StrategyUnavailableError(
@@ -80,19 +94,39 @@ class StrategyRuleSet:
             )
 
 
-def approved_strategy_rule_set() -> StrategyRuleSet:
+def approved_strategy_rule_set(
+    *,
+    initial_qty: int = 10,
+    ladder_1_qty: int = 10,
+    ladder_2_qty: int = 20,
+    maximum_position: Optional[int] = None,
+) -> StrategyRuleSet:
     """The ONLY approved way to obtain a StrategyRuleSet. Raises
-    StrategyUnavailableError (never returns a default/partial object)
-    if the approved values cannot be validated."""
+    StrategyUnavailableError if the approved values cannot be validated.
+
+    D-0051 (2026-10-03) made the three share quantities dynamic:
+    production code computes them from equity+price via
+    `PositionSizingPolicy.compute_shares()` and passes the result as
+    keyword arguments. The default values preserve the pre-D-0051
+    fixed-share behavior (10/10/20) so test fixtures and backtest
+    harnesses that have no equity/price context still build a valid,
+    well-defined StrategyRuleSet without further changes.
+
+    `maximum_position` defaults to the sum of the three quantities
+    (the only internally-consistent choice); callers may pass it
+    explicitly only when they want the validator to double-check
+    their own arithmetic."""
+    if maximum_position is None:
+        maximum_position = initial_qty + ladder_1_qty + ladder_2_qty
 
     return StrategyRuleSet(
         ladder_1_pct=-0.05,
-        ladder_1_qty=10,
+        ladder_1_qty=ladder_1_qty,
         ladder_2_pct=-0.08,
-        ladder_2_qty=20,
+        ladder_2_qty=ladder_2_qty,
         floor_pct=-0.10,
-        initial_qty=10,
-        maximum_position=40,
+        initial_qty=initial_qty,
+        maximum_position=maximum_position,
     )
 
 
@@ -241,6 +275,16 @@ class TradeProposal:
     proposal attempt for the same (trade_id, proposed_action) was
     created, superseding this one. Must remain None in every other
     state."""
+
+    initial_quantity: Optional[int] = None
+    """D-0051 (2026-10-03) field: Initial Entry share count fixed at
+    proposal creation time from the policy's compute_shares() output,
+    stored here so execution never re-derives it from a maybe-changed
+    equity/price at submission time. Nullable for backward
+    compatibility: pre-D-0051 proposals persisted without this field
+    read back as None and the execution service falls back to
+    `strategy.initial_qty` for them. New proposals created by
+    build_trade_proposal() always set it."""
 
     def __post_init__(self) -> None:
         if not self.proposal_id:
