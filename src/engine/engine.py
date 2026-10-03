@@ -257,6 +257,8 @@ class Engine:
         db_persister: Optional[Callable[[datetime], None]] = None,
         proposal_enricher=None,
         trade_evaluator=None,
+        portfolio_filter=None,
+        macro_calendar=None,
     ) -> None:
         self._trade_repo = trade_repo
         self._proposal_repo = proposal_repo
@@ -289,6 +291,12 @@ class Engine:
         # watchlist symbol without an open trade becomes a proposal
         # (the pre-D-0050 behavior).
         self._evaluator = trade_evaluator
+        # D-0050 Phase 14: optional PortfolioFilter runs AFTER the
+        # evaluator to enforce sector + correlation caps.
+        self._portfolio_filter = portfolio_filter
+        # D-0050 Phase 16: optional MacroEventCalendar blocks new
+        # proposals in the pre-event window.
+        self._macro_calendar = macro_calendar
 
     def _enrich(self, symbol: str, base_message: str) -> str:
         """Fail-open wrapper that appends an enrichment blurb to a
@@ -1056,9 +1064,42 @@ class Engine:
                 self._start_new_trade(symbol, now=now)
             return
 
-        accepted = [r for r in ranked
-                    if r.passes_hard_filter and r.soft_score >= self._MIN_SCORE]
-        accepted = accepted[: self._TOP_N_PER_CYCLE]
+        # D-0050 Phase 16: macro-event blackout window.
+        if self._macro_calendar is not None:
+            try:
+                block, reason = self._macro_calendar.should_block_new_proposals(now)
+            except Exception:  # noqa: BLE001
+                block, reason = False, ""
+            if block:
+                self._notify(
+                    level=NotificationLevel.IMPORTANT,
+                    event="macro_event_blackout",
+                    message=f"Skipping new proposals this cycle: {reason}",
+                    symbol=None,
+                )
+                return
+
+        accepted_results = [r for r in ranked
+                            if r.passes_hard_filter and r.soft_score >= self._MIN_SCORE]
+
+        # D-0050 Phase 14: portfolio-level filter (sector + correlation).
+        if self._portfolio_filter is not None and accepted_results:
+            try:
+                triplets = [(r.symbol, r.soft_score, r.research)
+                            for r in accepted_results]
+                filtered = self._portfolio_filter.apply(triplets)
+                accepted_symbols = {fp.symbol for fp in filtered if fp.accepted}
+                accepted_results = [r for r in accepted_results
+                                    if r.symbol in accepted_symbols]
+            except Exception as exc:  # noqa: BLE001
+                self._notify(
+                    level=NotificationLevel.CRITICAL,
+                    event="portfolio_filter_failed",
+                    message=f"Portfolio filter failed; proceeding without it: {exc}",
+                    symbol=None,
+                )
+
+        accepted = accepted_results[: self._TOP_N_PER_CYCLE]
 
         for r in accepted:
             self._start_new_trade(r.symbol, now=now)

@@ -521,6 +521,35 @@ def main() -> int:
                         or getattr(args, "enable_perplexity", False),
     )
 
+    # D-0050 Phase 14 + 16: portfolio filter + macro-event calendar.
+    # Always ON once research is enabled; both fail-open internally.
+    portfolio_filter = None
+    macro_calendar = None
+    if trade_evaluator is not None:
+        try:
+            from engine.portfolio_filter import PortfolioFilter
+            from marketdata.polygon_source import PolygonSource
+            pg = PolygonSource.from_env()
+            if pg is not None:
+                from datetime import date as _date, timedelta as _td
+                def _closes_fn(sym):
+                    today = _date.today()
+                    bars = pg.get_aggregates(sym, 1, "day",
+                                              today - _td(days=50), today,
+                                              adjusted=True)
+                    return [(d, b.get("c")) for d, b in bars
+                            if isinstance(b, dict) and b.get("c") is not None]
+                portfolio_filter = PortfolioFilter(closes_provider=_closes_fn)
+                print("[portfolio] sector + correlation filter ENABLED")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[portfolio] init failed, continuing without it: {exc}")
+        try:
+            from engine.macro_calendar import MacroEventCalendar
+            macro_calendar = MacroEventCalendar()
+            print("[macro] FOMC/CPI/NFP blackout calendar ENABLED")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[macro] init failed: {exc}")
+
     engine = Engine(
         trade_repo=trade_repo,
         proposal_repo=proposal_repo,
@@ -535,6 +564,8 @@ def main() -> int:
         db_persister=db_persister,
         proposal_enricher=proposal_enricher,
         trade_evaluator=trade_evaluator,
+        portfolio_filter=portfolio_filter,
+        macro_calendar=macro_calendar,
     )
 
     # Preflight Telegram summary (before engine.start(), so still safe).
