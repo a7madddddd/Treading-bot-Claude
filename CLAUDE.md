@@ -11,10 +11,39 @@ and are referenced from here — do not duplicate them into this file.
 
 ## 0. Session-start requirement (MANDATORY, added 2026-10-03)
 
-**At the start of EVERY session**, before anything else, Claude MUST read
-`docs/trading/pending-approvals.md` and surface the open blocking items
-to the Controller in Arabic. This is not optional and does not require
-the Controller to ask.
+**At the start of EVERY session**, before anything else, Claude MUST:
+
+**0.a — Read pending-approvals**
+Read `docs/trading/pending-approvals.md` and surface the open blocking
+items to the Controller in Arabic. Not optional. Does not require the
+Controller to ask.
+
+**0.b — Understand before suggesting (added 2026-10-03, afternoon)**
+Before proposing ANY new scorer, ranker, filter, strategy variant,
+scoring formula, parameter change, or code fix, Claude MUST:
+1. Search `docs/trading/decisions.md` for every related D-NNNN number
+   (grep by D-0026 / D-0048 / strategy / ranker / etc.).
+2. Search `src/` for the actual existing implementation of that
+   capability — follow the names, read the file, read its tests.
+3. Confirm in Arabic to the Controller: "The X you're asking about is
+   ALREADY approved as D-NNNN and implemented in src/path/to/file.py
+   with N tests. Here is what it does: ..." BEFORE spending any time
+   designing a replacement.
+
+If a production implementation already exists and is approved, DO NOT
+build a parallel one as a "research script" without explicitly telling
+the Controller it is a parallel exploration and asking first.
+
+**Failure history that 0.b prevents:** on 2026-10-03 Claude spent ~2
+hours building and backtesting four separate "research" rankers
+(Momentum, Mean Reversion, Pullback, Breakout) without checking
+`decisions.md`. The entire time, D-0048 (approved 2026-09-27) already
+specified the production ranker (40% Momentum + 30% Quality + 30%
+Liquidity) with a full 8-stage pipeline, implementation in
+`src/d0026/stages/`, and 233 passing tests. All the time spent on
+alternative rankers was wasted because they were tested on a tiny
+hardcoded 12-symbol universe instead of the real dynamic universe that
+D-0048 operates on. This mistake must not repeat.
 
 Failure history that this rule prevents: on 2026-10-02 and 2026-10-03,
 P-001 (D-0026 Universe not approved), P-002 (ranker scorer still
