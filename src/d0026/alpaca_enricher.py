@@ -206,7 +206,11 @@ class AlpacaFeatureEnricher:
             data = json.loads(resp.body.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
             return []
-        return list(data.get("bars", []))
+        # Alpaca may return {"bars": null} for symbols with no data in
+        # the window. dict.get(k, default) returns the default only when
+        # k is MISSING; a present-but-null value falls through to list(None)
+        # and crashes the pipeline. Guard with `or []`.
+        return list(data.get("bars") or [])
 
 
 # ---- pure math ------------------------------------------------------
