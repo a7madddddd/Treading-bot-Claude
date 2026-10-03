@@ -10,18 +10,22 @@ Last audit: 2026-10-03.
 
 ## 🚨 BLOCKING — Must decide before production
 
-### P-001 — Dynamic Universe (D-0026) parameters
-- **Status:** PROPOSED / NOT APPROVED
-- **File:** `docs/architecture/universe.md`,
-  `docs/trading/universe-selection-analysis.md`
-- **What it is:** The 8-stage dynamic Universe selection pipeline
-  (A tradability → B data quality → C execution → D strategy
-  mechanics → E regime → F ranking → G concentration → H top-N).
-- **Why it matters:** Without approved parameters the pipeline cannot run.
-  Current paper trading uses legacy TSLA/Capitol Trades Routines, NOT this
-  pipeline.
-- **Decision needed:** Approve the pipeline shape + numeric thresholds,
-  or ask Claude to propose simpler defaults.
+### P-001 — Dynamic Universe (D-0026) parameters — RESOLVED (D-0048, 2026-09-27)
+- **Status:** ✅ APPROVED via D-0048 (percentage-only parameters)
+- **File:** `docs/trading/decisions.md` D-0048
+- **Code:** `src/d0026/config.py`, `src/d0026/stages/` fully implemented,
+  915/915 tests pass.
+- **What is live:** 8-stage pipeline with approved percentile thresholds
+  (top 30% by volume, top 40% by cap, ≤ 0.15% spread, ATR 1-5%, F
+  weights 40/30/30, G ≤ 30% sector, H Top-10).
+- **Operational note:** The pipeline needs a LARGE candidate pool
+  (hundreds of symbols from Alpaca `--whitelist` empty) because every
+  stage is percentile-based. Running with a tiny whitelist of 10-15
+  symbols produces zero survivors — this is expected, not a bug.
+- **Claude's earlier error:** Previous session claimed this was unapproved.
+  Wrong — D-0048 approved it. Rule for the future: search
+  `decisions.md` by every related D-number before claiming a decision
+  is open.
 
 ### P-002 — Ranker scorer choice
 - **Status:** TESTED, awaiting Controller decision
