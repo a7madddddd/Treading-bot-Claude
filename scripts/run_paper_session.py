@@ -381,6 +381,15 @@ def main() -> int:
                              "Each sub-source is independent; a missing API "
                              "key or a failed fetch is silently skipped. "
                              "Strictly advisory -- never blocks a proposal.")
+    parser.add_argument("--no-db-push", action="store_true",
+                        help="Disable the per-tick git commit+push of "
+                             "paper_session.sqlite. Local SQLite persistence "
+                             "is unaffected -- the DB is still written to "
+                             "disk continuously. Use on hosts with persistent "
+                             "disk (e.g. a dedicated VM) where state does not "
+                             "need external backup via GitHub. The original "
+                             "push behavior remains the default for cloud "
+                             "containers that get reclaimed on inactivity.")
     args = parser.parse_args()
 
     key_id = _require_env("ALPACA_API_KEY_ID")
@@ -497,10 +506,17 @@ def main() -> int:
     # so a cloud-container reclaim mid-session does not lose state. The
     # callback is best-effort; a git failure is a CRITICAL notification
     # and the next tick retries.
-    db_persister = _make_db_persister(
-        repo_root=_repo_root_from_db_path(args.db_path),
-        db_filename=os.path.basename(os.path.abspath(args.db_path)),
-    )
+    if args.no_db_push:
+        db_persister = None
+        print("[db] git push DISABLED by --no-db-push; SQLite still persists "
+              "to disk every tick (that behavior is intrinsic to the DB "
+              "writes, not to this callback). The engine will not emit "
+              "'db_persist_failed' CRITICAL notifications.")
+    else:
+        db_persister = _make_db_persister(
+            repo_root=_repo_root_from_db_path(args.db_path),
+            db_filename=os.path.basename(os.path.abspath(args.db_path)),
+        )
 
     # D-0050 Phase 7: composite research enrichment on proposal
     # notifications. Each sub-enricher is attempted independently; a
