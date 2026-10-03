@@ -214,17 +214,24 @@ def _score_momentum(r: SymbolResearch, cfg: EvaluatorConfig) -> float:
 
 
 def _score_news(r: SymbolResearch, cfg: EvaluatorConfig) -> float:
-    """0..weight_news. Rewards fresh news + Perplexity catalysts."""
-    if r.news_count_48h == 0 and not r.perplexity_catalysts:
+    """0..weight_news. Rewards fresh news + POLARITY of catalyst/risk
+    balance (D-0050 Phase 17), not just raw counts. Polarity maps
+    [-1, +1] to [0, 1] so purely negative sentiment contributes zero
+    rather than pulling the component into negative weighting (the
+    risk component handles that side)."""
+    if r.news_count_48h == 0 and not r.perplexity_catalysts and not r.perplexity_risks:
         return 0.0
     score = 0.0
     components = 0
     if r.news_count_48h > 0:
         components += 1
         score += min(1.0, r.news_count_48h / 5.0)
-    if r.perplexity_catalysts:
+    from engine.news_sentiment import compute_news_polarity
+    polarity = compute_news_polarity(r)
+    if polarity is not None:
         components += 1
-        score += min(1.0, len(r.perplexity_catalysts) / 3.0)
+        # Shift from [-1, 1] to [0, 1]
+        score += (polarity + 1.0) / 2.0
     if components == 0:
         return 0.0
     return (score / components) * cfg.weight_news
