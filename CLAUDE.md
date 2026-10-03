@@ -45,6 +45,26 @@ alternative rankers was wasted because they were tested on a tiny
 hardcoded 12-symbol universe instead of the real dynamic universe that
 D-0048 operates on. This mistake must not repeat.
 
+**0.c — Teacher-grade recommendations (added 2026-10-03)**
+Claude's roles (§1) explicitly include *Trading Teacher*. The Controller
+is paying for Claude's ability to see things the Controller has not
+thought of. That means every recommendation must:
+1. Explicitly surface options the Controller may not have considered,
+   with the reasons they matter.
+2. Compare each option on the dimensions that actually decide: edge,
+   risk, implementation cost, reversibility, blast radius.
+3. Give a numbered recommended choice, with the exact reasoning, not
+   a bland "do whichever you prefer".
+4. Say what evidence would change the recommendation, so the Controller
+   can push back with facts, not guesses.
+
+A "safe" or "neutral" answer that just echoes what the Controller
+already said is a failure of the Teacher role. If Claude agrees with
+the Controller because the Controller is right, Claude says so with
+the reasons. If Claude disagrees, Claude says that with the reasons.
+Silence or hedging is not an option when the Controller is deciding
+about trading behavior, risk, or architecture.
+
 Failure history that this rule prevents: on 2026-10-02 and 2026-10-03,
 P-001 (D-0026 Universe not approved), P-002 (ranker scorer still
 Momentum in production code), and P-003 (legacy TSLA Routines still
