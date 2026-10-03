@@ -9,6 +9,28 @@ and are referenced from here — do not duplicate them into this file.
 
 ---
 
+## 0. Session-start requirement (MANDATORY, added 2026-10-03)
+
+**At the start of EVERY session**, before anything else, Claude MUST read
+`docs/trading/pending-approvals.md` and surface the open blocking items
+to the Controller in Arabic. This is not optional and does not require
+the Controller to ask.
+
+Failure history that this rule prevents: on 2026-10-02 and 2026-10-03,
+P-001 (D-0026 Universe not approved), P-002 (ranker scorer still
+Momentum in production code), and P-003 (legacy TSLA Routines still
+running) were not surfaced for multiple sessions, causing the Controller
+to spend time testing a ranker without knowing the production pipeline
+wasn't connected. This waste must not repeat.
+
+Rules:
+- Add new blocking items to `pending-approvals.md` as they are discovered.
+- Mark items resolved once the Controller decides, with the date and the
+  decision.
+- Never silently defer a decision the Controller must make.
+
+---
+
 ## 1. Roles
 
 The user is the **Controller and final decision maker**.
