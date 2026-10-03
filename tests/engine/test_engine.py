@@ -110,7 +110,7 @@ def _active_trade(trade_repo, *, trade_id="T-1", symbol="TSLA", price=100.0, sha
 def _make_engine(
     trade_repo, proposal_repo, execution_repo, conn, *,
     broker=None, market_data=None, decision_source=None, notifier=None,
-    watchlist=None, trade_evaluator=None,
+    watchlist=None, trade_evaluator=None, political_universe_source=None,
 ):
     broker = broker or FakeBrokerClient()
     market_data = market_data or FakeMarketDataSource()
@@ -125,6 +125,7 @@ def _make_engine(
         trade_proposal_service=trade_proposal_service, execution_service=execution_service,
         market_data=market_data, watchlist=watchlist, decision_source=decision_source,
         notifier=notifier, lock=lock, trade_evaluator=trade_evaluator,
+        political_universe_source=political_universe_source,
     )
     return engine, broker, market_data, decision_source, notifier, execution_service
 
@@ -767,6 +768,163 @@ class TestWatchlistWithTradeEvaluator(unittest.TestCase):
 
         trades = {s for s in ("A", "B") if trade_repo.list_for_symbol(s)}
         self.assertEqual(trades, {"A", "B"})
+
+
+class TestPoliticalSignalEndToEnd(unittest.TestCase):
+    """Phase B.28 end-to-end: political signal must FLOW from universe
+    source → research enrichment → re-evaluation → final rank.
+    This test specifically catches the bug where the signal was
+    enriched AFTER scoring (so it never actually affected the score)."""
+
+    class _FakeResearch:
+        def __init__(self, symbol):
+            self.symbol = symbol
+            self.political_buys_30d = 0
+            self.political_sells_30d = 0
+            self.political_recent_names = []
+            self.political_cluster_score = 0.0
+            self.political_committee_match = False
+            self.political_weighted_signal = 0.0
+            self.political_sell_wave = False
+
+    class _FakeResult:
+        def __init__(self, symbol, score, research, passes=True, reasons=None):
+            self.symbol = symbol
+            self.soft_score = score
+            self.passes_hard_filter = passes
+            self.hard_filter_reasons = reasons or []
+            self.score_breakdown = {"base": score}
+            self.research = research
+
+    class _ReevalCountingEvaluator:
+        """Evaluator stub that mirrors the real one: evaluate_research()
+        is a pure function of research state, so if political_sell_wave
+        is True the result rejects; political_weighted_signal boosts
+        the score."""
+        def __init__(self, base_scores):
+            self._base = base_scores
+            self.rank_calls = 0
+            self.reeval_calls = 0
+
+        def rank(self, candidates):
+            self.rank_calls += 1
+            return [
+                TestPoliticalSignalEndToEnd._FakeResult(
+                    s,
+                    self._base.get(s, 50.0),
+                    TestPoliticalSignalEndToEnd._FakeResearch(s),
+                )
+                for s in candidates
+            ]
+
+        def evaluate_research(self, research):
+            self.reeval_calls += 1
+            # Mirror the real hard-filter: sell_wave rejects.
+            if research.political_sell_wave:
+                return TestPoliticalSignalEndToEnd._FakeResult(
+                    research.symbol, 0.0, research,
+                    passes=False, reasons=["sell wave"],
+                )
+            # Mirror the soft score: political_weighted_signal adds up to +15.
+            base = 50.0
+            political_bonus = min(15.0, research.political_weighted_signal)
+            return TestPoliticalSignalEndToEnd._FakeResult(
+                research.symbol, base + political_bonus, research,
+            )
+
+    class _PoliticalSrcStub:
+        def __init__(self, symbols_by_sig):
+            # symbols_by_sig: {symbol: TickerPoliticalSignal-like dict}
+            self._syms = tuple(symbols_by_sig.keys())
+            self._sigs = symbols_by_sig
+        def get_active_symbols(self):
+            return self._syms
+        def get_signals(self):
+            class _S: pass
+            out = {}
+            for sym, data in self._sigs.items():
+                s = _S()
+                s.politician_buys_30d = data.get("buys", 0)
+                s.politician_sells_30d = data.get("sells", 0)
+                s.recent_names = data.get("names", [])
+                s.cluster_score = data.get("cluster", 0.0)
+                s.committee_match = data.get("cmte", False)
+                s.weighted_signal = data.get("signal", 0.0)
+                s.sell_wave = data.get("sell_wave", False)
+                out[sym] = s
+            return out
+
+    def test_political_signal_actually_boosts_score(self):
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        watchlist = StaticWatchlistSource(("TSLA",))  # TSLA from watchlist
+        # NVDA gets a strong political signal from the universe source.
+        evaluator = self._ReevalCountingEvaluator({"TSLA": 50.0, "NVDA": 50.0})
+        political = self._PoliticalSrcStub({
+            "NVDA": {"buys": 3, "signal": 15.0, "cmte": True,
+                     "names": ["Pelosi", "Crenshaw", "Khanna"]},
+        })
+        engine, broker, market_data, *_ = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            watchlist=watchlist, trade_evaluator=evaluator,
+            political_universe_source=political,
+        )
+        for s in ("TSLA", "NVDA"):
+            market_data.set_price(s, 100.0)
+        engine._lock.acquire(now=_now())
+        engine.run_trigger_check(now=_now())
+
+        # NVDA re-evaluated with political signal → score 65 > TSLA's 50.
+        # Both open trades should exist (both above 60 cutoff on NVDA path).
+        self.assertTrue(trade_repo.list_for_symbol("NVDA"))
+        # TSLA's final score was 50 — below MIN_SCORE 60, so no trade.
+        self.assertFalse(trade_repo.list_for_symbol("TSLA"))
+        # Prove the enrichment loop re-called evaluate_research
+        self.assertGreater(evaluator.reeval_calls, 0)
+
+    def test_political_sell_wave_blocks_trade(self):
+        """A ranked candidate with 3+ whitelist sellers → sell_wave →
+        hard-filter rejects → no proposal is created."""
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        watchlist = StaticWatchlistSource(())  # universe comes from political source
+        evaluator = self._ReevalCountingEvaluator({"BADSTOCK": 85.0})
+        political = self._PoliticalSrcStub({
+            "BADSTOCK": {"buys": 0, "sells": 3, "sell_wave": True,
+                         "names": ["Pelosi", "Crenshaw", "Khanna"]},
+        })
+        engine, broker, market_data, *_ = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            watchlist=watchlist, trade_evaluator=evaluator,
+            political_universe_source=political,
+        )
+        market_data.set_price("BADSTOCK", 100.0)
+        engine._lock.acquire(now=_now())
+        engine.run_trigger_check(now=_now())
+        # Even though base score was 85, sell-wave hard-filter rejects.
+        self.assertFalse(trade_repo.list_for_symbol("BADSTOCK"))
+
+    def test_political_source_failure_doesnt_block(self):
+        """A buggy political universe source must never crash the
+        trigger loop — fall back to watchlist-only."""
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        watchlist = StaticWatchlistSource(("AAPL",))
+        evaluator = self._ReevalCountingEvaluator({"AAPL": 75.0})
+
+        class _Boom:
+            def get_active_symbols(self): raise RuntimeError("x")
+            def get_signals(self): raise RuntimeError("x")
+
+        engine, broker, market_data, _d, notifier, _ = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            watchlist=watchlist, trade_evaluator=evaluator,
+            political_universe_source=_Boom(),
+        )
+        market_data.set_price("AAPL", 100.0)
+        engine._lock.acquire(now=_now())
+        engine.run_trigger_check(now=_now())
+        # AAPL still proposed; political failure logged
+        self.assertTrue(trade_repo.list_for_symbol("AAPL"))
+        self.assertTrue(any(e.event == "political_universe_failed"
+                            for e in notifier.events))
 
 
 class TestOrphanedTradeRecovery(unittest.TestCase):

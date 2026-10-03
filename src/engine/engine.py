@@ -1097,6 +1097,22 @@ class Engine:
                     r.research.political_committee_match = sig.committee_match
                     r.research.political_weighted_signal = sig.weighted_signal
                     r.research.political_sell_wave = sig.sell_wave
+                    # Re-evaluate: the initial rank() scored WITHOUT the
+                    # political signal because the research was fresh
+                    # from the hub. Now that we've injected the signal,
+                    # we must re-score so hard-filter (sell_wave) and
+                    # soft-score (_score_political) actually see it.
+                    new_result = self._evaluator.evaluate_research(r.research)
+                    r.soft_score = new_result.soft_score
+                    r.score_breakdown = new_result.score_breakdown
+                    r.passes_hard_filter = new_result.passes_hard_filter
+                    r.hard_filter_reasons = new_result.hard_filter_reasons
+                # Re-sort: a political boost or sell-wave rejection may
+                # have changed the order.
+                passed = sorted([r for r in ranked if r.passes_hard_filter],
+                                key=lambda r: -r.soft_score)
+                failed = [r for r in ranked if not r.passes_hard_filter]
+                ranked = passed + failed
         except Exception as exc:  # noqa: BLE001
             # Evaluator must never block the trigger loop; fall through
             # to the un-ranked flow so no opportunity is missed.
