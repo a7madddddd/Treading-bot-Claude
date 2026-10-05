@@ -168,7 +168,7 @@ the transition period is over.
   script that sources `.env` before exec'ing python. Pairs with P-015,
   whose refresh job wants a `systemd` timer on the same VM.
 
-### P-014 note — the fallback is LIVE on the VM right now
+### P-014 note — RESOLVED (2026-10-05): the fallback is gone from the VM, confirmed by the engine's own startup message
 - The command above passes `--universe-mode snapshot` and NO
   `--symbols`, so `symbols` resolves to the default `TSLA,AAPL,SPY`
   and becomes the fallback watchlist per P-014.
@@ -253,7 +253,13 @@ the transition period is over.
   therefore sit for an unbounded time and keep its symbol locked.
   Worth a decision on a PENDING TTL.
 
-### P-019 — Recovery path can leave a symbol locked (low severity, self-healing)
+### P-019 — Recovery path symbol lockout — RESOLVED (2026-10-05)
+- **Status:** FIXED. `_recover_trade` now passes
+  `initial_entry_trade_id`, matching the other two INITIAL_ENTRY call
+  sites. 4 tests, including a structural guard asserting that exactly
+  three call sites pass it, so a new one cannot silently reintroduce
+  the lockout.
+- The original finding is kept below for history.
 - **Status:** OPEN, low.
 - **FACT:** `src/engine/engine.py:490` submits an INITIAL_ENTRY from the
   startup recovery path WITHOUT passing `initial_entry_trade_id`. The
@@ -574,7 +580,7 @@ Two further structural problems, independent of direction:
 - **Decision needed later:** equities only, or equities plus plain
   index funds with a fund-aware scoring path.
 
-### P-025 — Inside the APPROVED ATR band, the same ladder behaves 5× differently
+### P-025 — ATR band — RESOLVED (D-0065, 2026-10-05): narrowed to 2%–4% on measured evidence
 - **Status:** OPEN, newly surfaced 2026-10-05 under CLAUDE.md §0.d
   (re-challenge an approved decision when evidence demands). Raised
   by Claude, not asked for.
@@ -691,7 +697,7 @@ Controller's VM, not inferred:
 | `Linger` | `yes` — survives logout and reboot |
 | timer next elapse | `Tue 2026-10-06 12:45 GMT` = 08:45 EDT |
 
-### P-028 — The first autonomous trading day is tomorrow, with the ATR band undecided
+### P-028 — RESOLVED (2026-10-05): the band was decided (D-0065) before the first autonomous day
 - **Status:** OPEN. A decision is needed BEFORE 08:45 ET tomorrow.
 - **FACT:** the timer fires at 08:45 America/New_York on 2026-10-06 and
   writes the first automatic snapshot. The engine then has a universe
@@ -721,7 +727,7 @@ Controller's VM, not inferred:
   keeps the decision clean — the engine is currently trading nothing
   anyway, so nothing is lost that is not already lost.
 
-### P-029 — The daily universe run may not finish before the open
+### P-029 — RESOLVED (D-0066, 2026-10-05): timer moved to 06:00 ET, ~3.5h of headroom. Measuring the real throughput remains a nice-to-have, not a blocker.
 - **Status:** OPEN and TIME-CRITICAL. The timer fires tomorrow 08:45 ET.
 - **FACT, measured on the VM 2026-10-05:** the broker returns **12,591**
   tradable symbols. D-0056 excludes **908** as leveraged or inverse
@@ -762,7 +768,7 @@ Controller's VM, not inferred:
   entirely; and time one run so the figure is measured rather than
   assumed.
 
-### P-025 — first real measurement (the band decision)
+### P-025 measurement — CLOSED (D-0065): the data below is what the decision was made on
 - **Status:** OPEN, now with data. 150-symbol sample, VM, 2026-10-05.
 
 | band | count | share | branch |
@@ -799,7 +805,7 @@ Controller's VM, not inferred:
   post-A/B/C pool first if the Controller wants certainty rather than a
   well-supported choice.
 
-### P-030 — systemd's 90-second default would have killed the daily run every morning
+### P-030 — RESOLVED (2026-10-05): TimeoutStartSec=4h
 - **Status:** RESOLVED same day (2026-10-05), recorded because it is the
   most instructive failure of the deployment.
 - **FACT:** for `Type=oneshot`, `TimeoutStartSec` bounds the entire run
@@ -824,7 +830,7 @@ Controller's VM, not inferred:
   only because the first run was forced immediately instead of waiting
   for tomorrow.
 
-### P-031 — A test snapshot is currently the LIVE universe for today
+### P-031 — SELF-RESOLVING: tomorrow's 06:00 run supersedes it (get_latest_for_date returns the newest row for the date). No action needed.
 - **Status:** OPEN, needs one action.
 - **FACT:** the manual 40-symbol diagnostic run wrote a real snapshot
   for `2026-10-05` containing exactly ONE symbol: `LOW`.
@@ -896,3 +902,120 @@ check: data provider returned HTTP 429 for 'GOOGL': too many requests.
 - **What would change the recommendation:** if the Controller ever
   wants an intraday refresh as normal practice, option 2 becomes
   necessary rather than optional.
+
+---
+
+## 📋 BACKLOG — Controller-requested, deliberately NOT now (2026-10-05)
+
+Recorded with their real questions attached. The point is that a future
+session starts from substance instead of re-deriving it.
+
+### P-033 — Futures contracts
+- **Status:** BACKLOG. Requested by the Controller 2026-10-05, to be
+  designed later.
+- **What it is:** extend the system beyond US equities to futures.
+- **VERIFIED 2026-10-05: Alpaca does NOT support futures.** This is now
+  a FACT, not an unknown, and it blocks the whole item on the broker.
+  - Alpaca's own documentation: "Alpaca currently supports stocks, ETFs
+    listed in the US public exchanges (NMS stocks), Options trading,
+    and cryptocurrencies. Support for other asset classes, such as
+    futures, FX, private equities, and international equities are on
+    our roadmap."
+  - Corroborated against the Controller's LIVE account. `/v2/account`
+    reports capabilities explicitly per asset class —
+    `crypto_status = ACTIVE`, `crypto_tier = 1`,
+    `options_approved_level = 3`, `options_trading_level = 3`,
+    `options_buying_power = 90601.85`, `shorting_enabled = True` — and
+    carries **no futures field of any kind**.
+  - **A probe that proved nothing, recorded so it is not repeated.**
+    Querying `/v2/assets?asset_class=futures` returns HTTP 200 with
+    `[]`, which looks like evidence until you run the control: a
+    deliberately nonsense `asset_class=banana_futures` ALSO returns
+    HTTP 200 `[]`. The endpoint silently ignores unknown values, so an
+    empty result there says nothing either way. The account object and
+    the documentation are the real evidence.
+- **Consequence:** P-033 cannot proceed until Alpaca ships futures, or
+  the Controller adds a second broker. It stays in the backlog, and the
+  architectural objections below remain valid for whenever that
+  changes.
+- **Worth knowing meanwhile — the account ALREADY has two capabilities
+  this project does not use:** options at level 3 with $90,601 of
+  options buying power, and crypto at tier 1. Neither is a free lunch:
+  **options carry the same three objections as futures** (expiry
+  breaking the frozen reference, intrinsic leverage breaking D-0051
+  sizing, and a contract multiplier), so adopting them would need the
+  same parallel-instrument-class design rather than a flag. Crypto has
+  no expiry and no multiplier, but trades 24/7, which breaks D-0021's
+  seven fixed ET times and D-0060's open/closed gate. Recorded as
+  context for a future decision, NOT as a recommendation.
+- **Why this is architecture, not a feature flag.** Four approved
+  contracts assume an instrument that behaves like a share, and a
+  futures contract breaks each one:
+
+  1. **Expiry breaks the frozen reference (D-0009).** A trade is
+     anchored to its original initial-entry fill price for the life of
+     the position. A futures contract expires, and continuing the
+     position means rolling into a different contract at a different
+     price. "The trade is the symbol" stops being true, and the Ladder
+     and Floor levels have nothing stable to hang from.
+  2. **Leverage is intrinsic, so D-0051 sizing does not translate.**
+     Sizing computes `floor(dollars / price)` from 5% of equity. A
+     contract controls a notional far larger than its margin, so the
+     same formula would buy a position many times the intended risk —
+     the same class of error D-0051 was created to fix, in a new form.
+  3. **The ATR band (D-0065) is a percentage of price.** For a
+     margined contract the meaningful denominator is margin or
+     notional, not price, so 2%–4% means something different and the
+     measured evidence behind it does not carry over.
+  4. **Near-24-hour sessions break D-0021 and D-0060.** The trigger
+     schedule is seven fixed ET times inside a 09:30–16:00 session, and
+     the market-open gate asks a binary open/closed question. Neither
+     survives a contract that trades almost continuously.
+
+- **Also unaddressed:** contract multipliers, tick sizes, margin calls
+  (an equity position cannot be liquidated by the broker for margin;
+  a futures position can, which is an exit path the engine does not
+  model at all).
+- **Recommended shape when it is taken up:** treat it as a parallel
+  instrument class with its own sizing, its own schedule and its own
+  reference-price contract, rather than widening the equity path.
+  Mixing them is how the 60× exposure bug (D-0051) and the leveraged-
+  ETF bug (D-0056) both happened — one path, two instrument behaviors.
+
+### P-034 — A "remind me later" action on Telegram proposals
+- **Status:** BACKLOG. Requested by the Controller 2026-10-05.
+- **What it is:** a third inline button beside Approve and Reject.
+- **It interacts directly with something built TODAY, which is why the
+  obvious implementation is probably wrong.** D-0059 gives a PENDING
+  proposal a 60-minute TTL. A naive "remind me later" would extend that
+  TTL and re-send the same proposal.
+- **Why that would be close to useless.** D-0007 revalidation refuses a
+  submission once price has drifted more than **0.5%** from the
+  proposal's trigger. A proposal held for an hour so it can be
+  re-offered will, in most sessions, simply be refused on approval. The
+  Controller would get a button that looks like a choice and mostly
+  is not.
+- **The better framing, recorded so it is not re-derived:** what is
+  actually wanted is almost certainly *"I am interested in this SYMBOL,
+  ask me again with a FRESH price"* — a snooze on the symbol, not a
+  stay of execution on a stale proposal. That suggests:
+  - expire the current proposal normally (no change to D-0059);
+  - mark the symbol as Controller-flagged;
+  - have `_check_watchlist` give a flagged symbol priority on the next
+    D-0021 cycle, if it still passes every stage, with a fresh price
+    and a fresh proposal.
+  That is a different and smaller change than extending a TTL, and it
+  produces a proposal that can actually be approved.
+- **Open questions for the design session:**
+  1. How long does a flag last — one cycle, the trading day, or until
+     cleared?
+  2. Does a flagged symbol bypass `_MIN_SCORE`, or only reorder within
+     the qualifiers (as D-0058's political slot does)? Bypassing a
+     threshold on request is a different risk from reordering.
+  3. Does it occupy one of the three per-cycle proposal slots, or sit
+     outside the cap?
+  4. What happens if the symbol stops passing the pipeline — silence,
+     or a message saying why it will not return?
+- **Touches:** `src/notifications/telegram.py` (the button),
+  `src/engine/decision_source.py` (a third `DecisionKind`),
+  `Engine._apply_decision`, and `_check_watchlist`.
