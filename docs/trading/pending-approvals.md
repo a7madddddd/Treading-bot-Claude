@@ -172,9 +172,18 @@ the transition period is over.
   be inspected from here. This must be checked on the VM before the
   next session open.
 
-### P-002 — Ranker scorer choice
-- **Status:** TESTED, still awaiting Controller decision. Unchanged
-  since 2026-10-03.
+### P-002 — Ranker scorer choice — DEFERRED (D-0057, 2026-10-05)
+- **Status:** Controller decided to DEFER, not to pick. Production
+  keeps D-0048's Stage F unchanged. Re-opened for decision as P-026
+  once live measurement exists. Claude's ranked recommendation for
+  that revisit is recorded in D-0057 and must not be re-derived from
+  scratch.
+- Two audit findings drove the deferral: momentum is a GATE in Stage D
+  (`min_trend_percentile = 0.50`) before it is a weight in Stage F, so
+  swapping the scorer alone cannot change which symbols survive; and
+  every measured number came from 12–22 symbol universes that do not
+  represent the real snapshot.
+- The original finding is kept below for history.
 - **Findings (2026-10-03 backtests):**
   - Momentum: **-0.99% to -1.66%** → fails
   - Mean reversion: **-0.27% to +1.19%** → fragile
@@ -599,3 +608,45 @@ Two further structural problems, independent of direction:
 - **What would change the recommendation:** if the first live
   measurements show Floor exits clustering on high-ATR names, option 1
   becomes urgent rather than optional.
+
+
+### P-026 — Re-decide the Stage F scorer, with real measurements
+- **Status:** OPEN, scheduled not blocked. Deferred by D-0057.
+- **Entry conditions — all three must hold before this is decidable:**
+  1. the daily Universe run is live, so a real snapshot exists each
+     trading day;
+  2. 2–4 weeks of live proposals and their outcomes are recorded;
+  3. each filled trade carries its selection context (its rank, its
+     score breakdown, and — per P-025 — its ATR at entry).
+- **Claude's recommendation, already argued in D-0057, ranked:**
+  1. Trend Filter + Dip Ranking, 2. Breakout, 3. Relax the Stage D
+  momentum gate, 4. Pullback-in-Uptrend, 5. Quality + Liquidity only,
+  6. Mean Reversion, 7. Momentum (current production, ranked last).
+- **The real lever, easy to miss:** Stage D's momentum gate, not Stage
+  F's weight. Stage D discards the bottom half by 30-day return before
+  any scorer runs, and a genuine Breakout candidate has a weak 30-day
+  return by construction — so it is rejected before it can ever be
+  scored. Any revisit that touches only Stage F will appear to change
+  nothing.
+- **What would overturn the recommendation:** live results showing the
+  current Momentum scorer positive on the real universe.
+
+### P-027 — Political picks: reserved slot, distinct tag, daily report
+- **Status:** APPROVED (D-0058, 2026-10-05), implementation pending.
+- Three measures: one of the 3 proposals per cycle reserved for the
+  best qualifying political pick (reverting to normal ranking if none
+  qualifies); a visually distinct Telegram tag carrying politician
+  names and trade dates; and a daily report of what the tracked
+  politicians bought, including symbols that did not become proposals.
+- `weight_political = 15.0` stays UNCHANGED. Raising it to 30 was
+  rejected because it would make attribution impossible — the
+  political component is computed for every candidate, so after
+  blending, no proposal could be traced to the political signal.
+- Political symbols also move INSIDE the pipeline rather than being
+  UNIONed in after it, so they face every safety stage. This closes
+  the bypass where a congressman's illiquid small-cap with a 2% spread
+  reached a proposal with no spread check at all — roughly 6% lost to
+  spread across the ladder's three buys, against a −10% floor.
+- **Deliberately sequential:** the weight question is revisited after a
+  month of comparing the reserved slot's outcomes against the other
+  two slots, with the Controller's own numbers.

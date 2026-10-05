@@ -3576,3 +3576,177 @@ needs measurement, not reasoning. The remaining approved work is the
 Universe-to-engine daily link, the political merge into the pipeline,
 the 60-minute proposal expiry, the market-open gate, and the two VM
 services.
+
+---
+
+## D-0057 — Stage F scorer choice is DEFERRED until live measurement exists
+
+**Date:** 2026-10-05
+**Decided by:** Controller
+**Status:** APPROVED (a decision to defer, deliberately recorded)
+**Supersedes:** nothing. Keeps D-0048's Stage F weights
+(40% momentum / 30% quality / 30% liquidity) in force unchanged.
+
+### Context
+
+P-002 asked which scorer wires into Stage F. 2026-10-03 backtests gave:
+
+| scorer | measured edge |
+|---|---|
+| Momentum (in production) | −0.99% to −1.66% |
+| Mean Reversion | −0.27% to +1.19% |
+| Pullback-in-Uptrend | +0.40% |
+| Breakout | +0.99% |
+
+The obvious reading is "switch to Breakout". Two findings from the
+2026-10-05 code audit say that reading is wrong.
+
+**Finding 1 — momentum is a GATE before it is a weight.** It is used in
+two places, not one:
+- `src/d0026/stages/strategy_fit.py` — Stage D rejects everything below
+  `min_trend_percentile = 0.50`, i.e. the bottom half by 30-day return.
+- `src/d0026/stages/ranking.py` — Stage F then weights it at
+  `momentum_weight = 0.40`.
+
+P-002 only ever concerned Stage F. So of 100 candidates, Stage D
+discards 50 by momentum BEFORE Stage F runs, and swapping Stage F's
+scorer only re-sorts the 50 momentum already chose. A genuine Breakout
+candidate — a stock just leaving a tight range — has a WEAK 30-day
+return by construction, so Stage D rejects it before any scorer sees
+it. Changing Stage F alone cannot deliver Breakout behavior.
+
+**Finding 2 — the measurements do not describe production.** Every
+number above came from hardcoded 12–22 symbol universes (P-004). The
+Controller's real 2026-10-03 snapshot contains `MUFG`, `ILF`, `CGGR`,
+`VOD` — symbols that appeared in no backtest.
+
+### Decision
+
+Do not change the scorer now. Keep D-0048's Stage F as-is. Revisit
+after the system has run and produced its own measurements.
+
+### Claude's recorded recommendation, for the revisit
+
+Seven options were put to the Controller. Ranked by fit with the
+approved ladder, which needs a stock that dips a little and recovers:
+
+| rank | option | why |
+|---|---|---|
+| 1 | Trend Filter + Dip Ranking | the only one that targets all three needs at once |
+| 2 | Breakout | enters at the start of a move, with prior range as support below |
+| 3 | Relax the Momentum Gate (Stage D) | changes WHO gets scored; the real lever behind options 1–2 |
+| 4 | Pullback-in-Uptrend | a weaker form of option 1, no explicit trend gate |
+| 5 | Quality + Liquidity only | ignores trend entirely |
+| 6 | Mean Reversion | unstable across the tested windows |
+| 7 | Momentum (current production) | buys the most extended; conflicts with buy-the-dip |
+
+**Recommended: option 1.** Stated as two questions rather than one
+metric — first a gate ("is the stock in a 90-day uptrend?"), then a
+ranking ("among those, which pulled back most in the last few days?").
+That is literally what the ladder needs: the trend makes recovery
+likely, and the pullback puts the −5% trigger within reach.
+
+This ranking is a **HYPOTHESIS**, not a measurement. Options 1, 3 and
+5 have never been backtested at all, and the four that were ran on
+universes that do not represent production. It is reasoning about fit
+between strategy and selector, and it is recorded so the revisit starts
+from an argument rather than from scratch.
+
+### What would change the recommendation
+
+Live measurement showing the current Momentum scorer producing positive
+results on the REAL universe. That would mean the small-universe
+backtests misled us, and the conflict reasoned about here does not
+bind in practice.
+
+### Next
+
+Tracked as P-026. The revisit needs: a daily Universe actually running,
+2–4 weeks of live proposals and outcomes, and each filled trade's
+selection context recorded.
+
+---
+
+## D-0058 — Political picks get a reserved slot, a distinct tag, and a daily report
+
+**Date:** 2026-10-05
+**Decided by:** Controller
+**Status:** APPROVED — implementation pending
+**Supersedes:** nothing. Leaves `weight_political = 15.0` in
+`src/engine/trade_evaluator.py` UNCHANGED.
+
+### Context
+
+The Controller's position: politicians move the market, so their picks
+deserve special treatment — "I need to work with them in a special
+way". The initial request was to double the political score.
+
+Two facts from the code shaped the final design.
+
+**Fact 1 — political picks currently BYPASS the whole Universe
+pipeline.** `PoliticalUniverseSource` emits up to 5 tickers per day and
+`Engine._check_watchlist` UNIONs them into the candidate list AFTER the
+pipeline has run. So they face no tradability, liquidity, spread, ATR
+or sector check. Concretely: a congressman buying an illiquid small-cap
+with a 2% spread goes straight to a proposal, and the ladder buys three
+times — about 6% lost to spread alone against a −10% floor, before the
+strategy starts. The Controller agreed this is a defect to fix.
+
+**Fact 2 — doubling the weight would destroy measurability.** The
+political component is already computed for EVERY candidate, not only
+political-source ones. Raising its cap to 30 blends it into one number,
+after which no proposal can be attributed to the political signal or
+to anything else — so whether politicians actually help could never be
+established.
+
+A worked example also showed the change is not cosmetic: a stock with
+a maximal political signal and median everything else scores
+`15 + 37 = 52` today (rejected at the 60 threshold) and `30 + 35 = 65`
+after doubling (proposed). Political signal alone would carry a
+mediocre stock.
+
+### Decision — three measures together
+
+1. **Reserved slot.** Of the 3 proposals per cycle
+   (`Engine._TOP_N_PER_CYCLE`), one is reserved for the best
+   politically-backed candidate that has passed the pipeline, the hard
+   filter, and the 60-point threshold. If no political candidate
+   qualifies, the slot reverts to normal ranking — never wasted.
+2. **Distinct notification tag.** A political proposal is visually
+   distinct on Telegram and carries the politician names and trade
+   dates, so the Controller can judge the specific evidence.
+3. **Daily political report.** One message per trading day listing what
+   the tracked politicians bought, INCLUDING symbols that did not
+   become proposals. Information only, zero trading effect.
+
+And, from Fact 1: political symbols are merged into the candidate pool
+BEFORE the pipeline runs, so they pass every safety stage like any
+other symbol. One door for every candidate.
+
+### Rejected alternatives, and why
+
+| option | why not |
+|---|---|
+| Raise political weight 15 → 30 | destroys attribution; political signal alone carries mediocre stocks |
+| Raise to 22 | an arbitrary half-step with no measured basis |
+| Lower the score threshold for political picks only | cleaner than reweighting and genuinely measurable; kept as the fallback if the reserved slot proves too narrow |
+| Larger position size for political picks | **advised against**: it doubles money on a signal never measured even once. Size is the last thing to change, not the first |
+
+### Rationale
+
+The reserved slot delivers what the Controller actually asked for — a
+political idea is GUARANTEED to reach him whenever a valid one exists,
+which raising a weight only makes more likely — while leaving every
+other stock's score untouched. It also creates a clean experiment:
+three proposals a day, one political and labelled, two normal. After a
+month the political slot's outcomes can be compared directly against
+the other two, and the weight question can then be settled with the
+Controller's own numbers instead of an opinion.
+
+The Controller explicitly framed this as sequential: the reserved slot
+now, the weight question revisited afterwards.
+
+### Next
+
+Implementation, with the political merge into the pipeline, as part of
+the Universe-to-engine work.
