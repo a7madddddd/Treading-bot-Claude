@@ -2036,6 +2036,56 @@ clamped to `[0, top_n]`, applied as a pure truncation of the already
 ranked survivors — it never changes WHICH symbols rank, only how many of
 the top are published.
 
+#### REFINEMENT from the Controller, 2026-10-05 — and it improves the metric
+
+The Controller pointed out that the market size is **already recorded by
+the research run itself**, so worrying about it drifting is less of a
+problem than Claude framed it.
+
+He is right, and checking what each run actually records turns his point
+into a better design. Since D-0068 every snapshot carries:
+
+```
+raw_candidates_fetched     <- the broker's asset list, after exclusions
+identity_resolved
+enriched_with_features     <- how many we actually got usable data for
+missing_features
+survivors_to_snapshot
+```
+
+There are **two different ways a run can go half-blind**, and they are
+distinguishable:
+
+| failure | what it looks like | can today's own numbers see it? |
+|---|---|---|
+| enrichment fails for many symbols | `raw` normal, `enriched` low | **yes** — the ratio is right there |
+| the asset list itself comes back short | `raw` low, `enriched` tracks it | **no** — nothing today says it should have been higher |
+
+So the Controller's instinct covers the first case completely and the
+second not at all — history is the only witness to a short list.
+
+**The metric that covers both, with one number:** measure
+**`enriched_with_features`** against the trailing median of
+`enriched_with_features`. A short asset list lowers it; an enrichment
+storm lowers it; both at once lower it twice.
+
+```
+scale = enriched_with_features / median(enriched_with_features, last N)
+effective_top_n = floor(top_n × scale)       clamped to [0, top_n]
+```
+
+**Why `enriched` and not `raw`:** some enrichment failures are normal
+every day. Measuring `raw` against a `raw` baseline would ignore them;
+measuring `enriched` against an `enriched` baseline makes a normal day
+score 1.0 and a degraded day score exactly how degraded it is. Worked:
+
+| day | raw | enriched | scale vs 11,000 | symbols |
+|---|---|---|---|---|
+| normal | 11,683 | 11,000 | 1.00 | 10 |
+| short asset list | 5,000 | 4,700 | 0.43 | 4 |
+| enrichment storm | 11,683 | 5,000 | 0.45 | 4 |
+| both | 5,000 | 2,000 | 0.18 | 1 |
+
 **`baseline` must be measured, not invented.** Using a hardcoded 11,683
 would repeat the mistake D-0065 corrected, and the tradable universe
 drifts as listings change. Since D-0068 every snapshot records
@@ -2091,9 +2141,28 @@ sizing. Each position is still sized identically; there are simply
 fewer of them, so less capital is deployed on a day we saw less of the
 market — the conservative direction.
 
-#### Still to decide (Controller)
+#### Controller decisions taken, 2026-10-05
 
-1. `N` for the trailing median — 20 proposed.
-2. Whether a computed 0 above the hard guard should be an explained
-   empty snapshot (proposed) or should instead raise the hard guard's
-   refusal.
+1. **Round DOWN.** Confirmed.
+2. **A scaled count of 0 writes NOTHING** — *"didn't write anything, you
+   don't have, don't write an empty snapshot."* This matches Claude's
+   corrected recommendation above and is the only option that cannot
+   destroy a good snapshot already published for the same date.
+3. **The baseline comes from what the research run already records**, per
+   the Controller's refinement — specifically the trailing median of
+   `enriched_with_features`, which captures both failure modes.
+
+#### Still to decide
+
+`N` for the trailing median — **20 proposed** (about a month of trading
+days). Fewer swings with any odd day; more lags a real change in the
+market. The median rather than the mean, so one truncated run cannot
+drag the baseline down.
+
+#### Bootstrap, restated for the refined metric
+
+Until N snapshots exist, use the **maximum `enriched_with_features` seen
+so far**, which after the first healthy run is the real figure. Note
+this is deliberately conservative during the first weeks: a maximum is
+never lower than the eventual median, so early scaling errs toward
+fewer positions, not more.
