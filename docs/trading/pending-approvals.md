@@ -1059,3 +1059,116 @@ session starts from substance instead of re-deriving it.
 - **Touches:** `src/notifications/telegram.py` (the button),
   `src/engine/decision_source.py` (a third `DecisionKind`),
   `Engine._apply_decision`, and `_check_watchlist`.
+
+### P-035 — Why 2026-10-05 produced zero proposals (root cause, fully traced)
+- **Status:** DIAGNOSED 2026-10-05, no code change made. Three design
+  gaps it exposed are P-036, P-037, P-038 below — all OPEN and all
+  needing Controller approval because they change selection behavior.
+- **The symptom:** the Controller received no proposal to approve or
+  reject for the whole trading day, plus repeated "market data not
+  available" notifications.
+- **FACT, the causal chain, each step verified on the VM:**
+  1. `universe-refresh.timer` was enabled mid-morning. With
+     `Persistent=true` systemd immediately caught up the missed 06:00 ET
+     slot, so a FULL run (`whitelist=ALL`) started at **14:19:35 UTC =
+     10:19 ET — with the market open**.
+  2. The code running at that moment **predated the P-032 guard**.
+     Proof: `head logs/universe.log` begins at `[exclude] ...` with no
+     `[guard]` line, and `_market_closed_or_forced` prints one on every
+     path. Nothing refused the run.
+  3. That run issued one bars request per symbol and exhausted the
+     broker's rate limit. The engine then got HTTP 429 while polling
+     prices, and `Engine._check_floor_trigger` returns WITHOUT
+     evaluating the floor when market data is unavailable — so the
+     protective Floor and Trailing Floor were degraded on five open
+     positions (AMZN, GOOGL, NVDA, QQQ, TSLA) while everything looked
+     healthy.
+  4. The run was stopped deliberately at **15:31:27 UTC** with SIGTERM.
+     Confirmed, not inferred: `Result=signal`, `ExecMainCode=2`
+     (CLD_KILLED), `ExecMainStatus=15` (SIGTERM). Not an OOM — the VM
+     has 22.9 GB with 19.2 GB free and `dmesg` shows no OOM kill.
+     So it never completed and never wrote a snapshot.
+  5. Separately, a small capped test run wrote today's snapshot at
+     14:52:36 with **one symbol** (`LOW`). Arithmetic proof that it was
+     capped, not rate-starved: the rejection summary totals
+     30 + 6 + 3 = 39 dropped, 1 survivor — a 40-candidate pool, versus
+     the 11,683 a real run starts from.
+  6. The engine therefore spent the entire trading day on a one-symbol
+     universe written by a test.
+- **FACT, a measurement that came out of the failed run.** It reached
+  7,850 of 11,683 symbols in 71 min 48 s = **~109 symbols/min**, so a
+  full run takes **~107 minutes**, not the 58 minutes estimated in
+  `deploy/universe-refresh.timer`. The 06:00 ET start finishes ~07:47
+  ET, 1 h 43 m before the open. The superseded 08:45 start would have
+  finished ~10:32 ET — **after** the open. The move to 06:00 is now
+  justified by measurement rather than by estimate.
+- **Not a defect:** the five open positions are auto-excluded from the
+  pool by design (Controller-approved 2026-10-01), so their absence
+  from the universe is correct.
+- **FACT, the engine itself was healthy throughout.** Verified at
+  17:25 UTC: `systemctl --user is-active trading-engine.service` =
+  `active`, `NRestarts=0`, heartbeat age 30.4 s against a 30 s
+  reconcile interval, account ACTIVE with equity 100,426.18 USD. It
+  restarted cleanly at 15:40:39 UTC, right after the morning's runs
+  were stopped.
+- **FACT, the engine IS in snapshot mode.** Its live command line reads
+  `--universe-mode snapshot`, so the `symbols=('TSLA','AAPL','SPY')`
+  line in the log is the unused argparse default, not a watchlist. A
+  note for future diagnosis: the preflight block that would say this
+  explicitly (`universe: D-0026 snapshot ...`) goes to Telegram via
+  `notifier.send`, NOT to stdout, so its absence from `logs/engine.log`
+  proves nothing either way. The process command line is the evidence.
+- **Still open:** why the one survivor `LOW` produced no proposal.
+  Candidates: the research evaluator's 60/100 minimum, D-0047 portfolio
+  limits with five positions already open, or the macro blackout
+  calendar. **It cannot be answered from the current logs** —
+  `logs/engine.log` has held 1,179 bytes since startup and records
+  nothing about trigger checks, candidate evaluation or rejection
+  reasons. That blindness is the finding; P-038's observability work is
+  the fix, and until then every such question needs a live reproduction
+  rather than a log read.
+
+### P-036 — No minimum size on an approved snapshot — RESOLVED (D-0068, 2026-10-05)
+- **Status:** RESOLVED by D-0068, implemented and tested 2026-10-05 (1515 passed). Original entry below.
+- **Status when raised:** OPEN, raised by Claude 2026-10-05 under CLAUDE.md §0.d.
+  Changes selection behavior, so NOT implemented.
+- **FACT:** today's snapshot carried `is_empty = 0` with exactly one
+  symbol. The pipeline guards the zero case only; one, two or three
+  survivors are accepted as a healthy trading universe.
+- **Failure mode:** any run that is capped, truncated, rate-starved or
+  interrupted writes a plausible-looking snapshot that silently becomes
+  the day's trading policy. That is exactly what happened today, and
+  nothing anywhere reported it.
+- **RECOMMENDATION:** a minimum-survivor threshold (e.g. 5). Below it
+  the snapshot is marked empty with a reason and an IMPORTANT
+  notification is sent, instead of being written as normal. Cheap,
+  fully reversible, and it converts a silent bad day into a message.
+
+### P-037 — A test run and the production run write the same table — RESOLVED (D-0068, 2026-10-05)
+- **Status:** RESOLVED by D-0068, implemented and tested 2026-10-05 (1515 passed). Original entry below.
+- **Status when raised:** OPEN, raised by Claude 2026-10-05. Changes selection
+  behavior, so NOT implemented.
+- **FACT:** `scripts/run_universe_selection.py --max-symbols 40` and the
+  scheduled full run both write a row to `universe_snapshots` keyed only
+  by `effective_trading_date`, and `SnapshotUniverseSource` takes the
+  latest row for today. Nothing marks a row as experimental.
+- **Failure mode:** an interactive experiment becomes the live trading
+  universe, as it did today. The Controller has no way to tell the two
+  apart by looking at the data.
+- **RECOMMENDATION:** `--max-symbols > 0` implies a non-production run.
+  Either refuse to persist it unless `--allow-test-snapshot` is passed,
+  or record the cap in the snapshot and have `SnapshotUniverseSource`
+  skip capped rows. Option A is simpler and fails safe.
+
+### P-038 — The data-quality section of a snapshot is empty — RESOLVED (D-0068, 2026-10-05)
+- **Status:** RESOLVED by D-0068, implemented and tested 2026-10-05 (1515 passed). Original entry below.
+- **Status when raised:** OPEN, raised by Claude 2026-10-05.
+- **FACT:** `data_quality_json` on today's snapshot decoded to nothing —
+  zero entries. The section that exists to report how sound the inputs
+  were reported nothing at all on the single worst universe run to date.
+- **Failure mode:** the one field designed to catch a degraded run is
+  silent exactly when it matters.
+- **RECOMMENDATION:** populate it with at least: symbols fetched,
+  symbols enriched, enrichment failures, and whether a cap was applied.
+  Observability only — it changes no trading decision — but it is the
+  evidence base every future diagnosis will rest on.

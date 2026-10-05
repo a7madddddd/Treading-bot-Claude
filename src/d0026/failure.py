@@ -39,6 +39,14 @@ class CrashCategory(Enum):
     DATA_SOURCE_UNREACHABLE = "data_source_unreachable"
     CORRUPTED_STATE = "corrupted_state"
     CALIBRATION_NOT_READY = "calibration_not_ready"
+    # P-036 (2026-10-05). A run whose candidate pool is far smaller than
+    # a real whole-market fetch did not "legitimately select nothing" --
+    # it never ran on the real universe at all, so its result is not
+    # evidence about the market and must not become a published
+    # snapshot. On 2026-10-05 a 40-candidate test run wrote the day's
+    # snapshot with one symbol, and the engine traded that one-symbol
+    # universe for a whole session with nothing reporting it.
+    INSUFFICIENT_CANDIDATE_POOL = "insufficient_candidate_pool"
 
 
 @dataclass(frozen=True)

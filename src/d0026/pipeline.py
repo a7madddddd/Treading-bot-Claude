@@ -49,6 +49,25 @@ from .repository import SnapshotRepository
 from .snapshot import ApprovedUniverseSnapshot, SnapshotSymbolEntry
 
 
+class InsufficientCandidatePoolError(RuntimeError):
+    """P-036 (2026-10-05). Raised when the provider returns far fewer
+    raw candidates than a real whole-market fetch would.
+
+    This is deliberately a CRASH, not an EMPTY. The distinction in
+    failure.py is "the pipeline completed normally and nothing
+    survived" (EMPTY) versus "this run is not evidence about the
+    market" (CRASH). A 40-candidate run against an 11,683-symbol
+    market is the second: its percentile stages computed percentiles
+    of the wrong population, so even a plausible-looking survivor list
+    means nothing.
+
+    Crashing also has a property an empty snapshot does not: no
+    snapshot is written at all, so a good snapshot already published
+    for the same trading date survives untouched. An empty snapshot
+    would become the latest row for that date and silently replace it.
+    """
+
+
 class CalibrationRequiredError(RuntimeError):
     """Raised by NotCalibratedStageEvaluator (or any evaluator that
     chooses to raise it) when real decision logic is invoked before
@@ -161,6 +180,7 @@ class UniversePipeline:
         universe_source_version: str,
         identity_mapping_version: str,
         feature_enricher: Optional[Callable] = None,
+        min_raw_candidates: int = 0,
     ) -> None:
         """`feature_enricher` (optional): a callable that takes a
         resolved UniverseCandidate and returns a new UniverseCandidate
@@ -170,6 +190,13 @@ class UniversePipeline:
         (Stage A/B will then reject them all as MISSING_MARKET_DATA
         -- a valid EMPTY outcome, no crash). Signature:
             (UniverseCandidate, date, RegimeState) -> UniverseCandidate.
+
+        `min_raw_candidates` (P-036, default 0 = disabled): the smallest
+        raw-candidate pool this run will accept before refusing to
+        publish anything. 0 preserves the historical behavior exactly,
+        which is what every existing caller and test relies on; the
+        production runner sets a real value. See
+        InsufficientCandidatePoolError for why this is a crash.
         """
         missing = set(ORDERED_CANDIDATE_STAGES) - set(stage_evaluators)
         if missing:
@@ -183,11 +210,29 @@ class UniversePipeline:
         self._universe_source_version = universe_source_version
         self._identity_mapping_version = identity_mapping_version
         self._feature_enricher = feature_enricher
+        if min_raw_candidates < 0:
+            raise ValueError("min_raw_candidates must be >= 0")
+        self._min_raw_candidates = min_raw_candidates
 
     def run(self, as_of_date: date, regime_state: RegimeState) -> PipelineOutcome:
         now = datetime.utcnow()
         try:
             return self._run_unsafe(as_of_date, regime_state, now)
+        except InsufficientCandidatePoolError as exc:
+            crash = CrashOutcome(
+                as_of_date=as_of_date,
+                category=CrashCategory.INSUFFICIENT_CANDIDATE_POOL,
+                detail=str(exc),
+            )
+            self._audit_sink.record(
+                PipelineCrashEvent(
+                    as_of_date=as_of_date,
+                    recorded_at=now,
+                    category=crash.category,
+                    detail=crash.detail,
+                )
+            )
+            return crash
         except CalibrationRequiredError as exc:
             crash = CrashOutcome(
                 as_of_date=as_of_date,
@@ -231,6 +276,20 @@ class UniversePipeline:
         )
 
         raw_candidates = self._provider.get_raw_candidates(as_of_date)
+
+        # P-036: refuse before spending any enrichment call. Checked
+        # here rather than after the stages so a truncated run costs
+        # nothing and cannot reach the repository at all.
+        if (self._min_raw_candidates > 0
+                and len(raw_candidates) < self._min_raw_candidates):
+            raise InsufficientCandidatePoolError(
+                f"provider returned {len(raw_candidates)} raw candidates, "
+                f"below the configured minimum of "
+                f"{self._min_raw_candidates}. Refusing to publish: the "
+                f"percentage stages would rank a population that is not "
+                f"the market. No snapshot was written, so any snapshot "
+                f"already published for {as_of_date} is untouched."
+            )
 
         candidates: Tuple[UniverseCandidate, ...] = ()
         all_rejections: Tuple[UniverseSelectionRejection, ...] = ()
@@ -289,6 +348,11 @@ class UniversePipeline:
                 )
             candidates += (candidate,)
 
+        # Snapshot the post-identity, post-enrichment pool before the
+        # stages consume `candidates`, so P-038's counters describe what
+        # entered stage A rather than what survived stage H.
+        candidates_after_identity = candidates
+
         for stage in ORDERED_CANDIDATE_STAGES:
             evaluator = self._stage_evaluators[stage]
             result = evaluator.evaluate(candidates, as_of_date, regime_state)
@@ -343,6 +407,27 @@ class UniversePipeline:
                 for i, c in enumerate(candidates)
             )
 
+        # P-038 (2026-10-05): populate the data-quality summary, which
+        # was hardcoded to () since the pipeline was written. On
+        # 2026-10-05 the worst universe run to date published a snapshot
+        # whose data-quality section was completely empty, so there was
+        # no record of how much of the market the run had actually seen.
+        # Every counter below is derived from values already in hand --
+        # no extra work, no extra API call.
+        enriched = sum(1 for c in candidates_after_identity
+                       if c.features is not None)
+        data_quality: Tuple[Tuple[str, int], ...] = (
+            ("raw_candidates_fetched", len(raw_candidates)),
+            ("identity_resolved", len(candidates_after_identity)),
+            ("identity_rejected",
+             len(raw_candidates) - len(candidates_after_identity)),
+            ("enriched_with_features", enriched),
+            ("missing_features",
+             len(candidates_after_identity) - enriched),
+            ("survivors_to_snapshot", len(candidates)),
+            ("min_raw_candidates_configured", self._min_raw_candidates),
+        )
+
         rejection_counts: Dict[str, int] = {}
         for rejection in all_rejections:
             key = f"{rejection.stage.value}:{rejection.category.value}"
@@ -371,7 +456,7 @@ class UniversePipeline:
             symbols=symbols,
             rejection_summary=tuple(sorted(rejection_counts.items())),
             concentration_check_results=(),
-            data_quality_summary=(),
+            data_quality_summary=data_quality,
             is_empty=is_empty,
             empty_reason=empty_reason,
         )
