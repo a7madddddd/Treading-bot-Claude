@@ -2166,3 +2166,94 @@ so far**, which after the first healthy run is the real figure. Note
 this is deliberately conservative during the first weeks: a maximum is
 never lower than the eventual median, so early scaling errs toward
 fewer positions, not more.
+
+
+### P-054 — Design review of P-053 BEFORE implementing (Controller-requested)
+- **Status:** OPEN. The Controller asked for a critique of the agreed
+  design before any code: *"did it have any bug? did it will make any
+  error in the future?"* Four real problems found, one of them a
+  certain bug; plus one limit that cannot be fixed and one
+  recommendation that changes how it should be introduced.
+
+#### 1. BUG — "last 20 snapshots" is not "last 20 days"
+
+Measured on the Controller's own VM: **7 snapshots across 3 distinct
+trading dates.** At that ratio a 20-snapshot window covers **8.6 trading
+days**, not 20, and a burst of runs on one date fills most of the
+window with that single day.
+
+D-0074/P-037 stopped capped test runs persisting, so this gets better
+going forward, but the stored rows already violate it.
+
+**Fix:** the window must be the last N **distinct
+`effective_trading_date`s**, taking the latest snapshot for each. Never
+the last N rows.
+
+#### 2. BUG — the baseline must exclude the day it is judging
+
+If today's own value is inside the median, a degraded day partially
+defends itself: it drags the median toward its own low figure and so
+scores closer to 1.0 than it deserves. The window must be the N dates
+**before** the one being evaluated.
+
+#### 3. BUG — `top_n = 0` cannot be expressed
+
+`UniverseSelectionConfig` validates `top_n >= 1`
+(`src/d0026/config.py:142`), so a scaled count of 0 cannot be passed
+through the config at all — it raises `ValueError`. The zero case must
+be decided and acted on **before** the config is built, as a refusal,
+which is also what the Controller decided ("don't write an empty
+snapshot"). Writing the obvious code would have crashed the run.
+
+#### 4. WEAKNESS — the first weeks are nearly unprotected
+
+Tomorrow's run is the **first** snapshot that records
+`enriched_with_features` at all; the 7 existing rows have none. A median
+of one value is that value, so the first run defines its own baseline
+and scores 1.00 whatever it is. If that first run is itself degraded,
+the baseline starts low and a second degraded day scores ~1.0 and
+passes.
+
+**Not fully fixable** — a measured mechanism cannot work before the
+measurements exist. What limits it:
+- the D-0068 hard guard still refuses anything under 500 candidates;
+- for the first N dates, use the **maximum** rather than the median,
+  because a maximum cannot be dragged down by a bad day. It errs toward
+  fewer positions, which is the safe direction while blind.
+
+#### 5. SILENT-DRIFT RISK — a slow decline could normalize itself
+
+The median tolerates up to half the window being bad. But if **most**
+days were mildly degraded — say 60% of days at 8,000 instead of 11,000
+— the baseline would follow them down, every day would score ~1.00, and
+nothing would ever report it. The mechanism would be measuring a
+degraded normal against itself.
+
+**Fix:** the daily Telegram summary must carry the **absolute**
+numbers — today's enriched count AND the baseline — not only the ratio
+or the final symbol count. A ratio hides the thing a human would spot
+instantly.
+
+#### 6. THE LIMIT THAT CANNOT BE FIXED
+
+Scaling reduces **exposure**, not **error**. Every D-0048 stage is
+percentile-based, so a percentile computed over a partial pool stays
+wrong however few symbols are finally taken. Four picks from a broken
+run are four less-bad picks, not four good ones. This is a risk-sizing
+mechanism and must never be described as a correctness one.
+
+#### 7. RECOMMENDATION — introduce it in SHADOW MODE first
+
+Implement the calculation and **report** it — "today's scale would have
+been 0.95, so 9 symbols instead of 10" — while the engine keeps
+publishing the normal Top-10, for two to three weeks.
+
+Why: this is a trading-behavior change built on a baseline that does
+not exist yet. Shadow mode gives real numbers for how often it would
+have fired and by how much, before it can cost a single position. It is
+the Controller's own rule — *"calculate for something real, not a
+suggestion"* — applied to the mechanism itself rather than only to its
+inputs.
+
+If the shadow weeks show it firing on days that were genuinely healthy,
+the design is wrong and we learn that for free.
