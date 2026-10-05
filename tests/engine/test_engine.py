@@ -66,6 +66,15 @@ class FakeBrokerClient(BrokerClient):
         # existing assertions keep passing without a per-test rewrite.
         return 80000.0
 
+    # Market-open gate (2026-10-05). Defaults to OPEN so every existing
+    # test keeps its pre-gate behavior; the gate's own tests flip it.
+    market_open = True
+
+    def is_market_open(self) -> bool:
+        if isinstance(self.market_open, Exception):
+            raise self.market_open
+        return self.market_open
+
 
 class FakeMarketDataSource(MarketDataSource):
     def __init__(self, prices: Optional[Dict[str, float]] = None):
@@ -1680,3 +1689,353 @@ class TestNothingToTradeNotification(unittest.TestCase):
         self.assertIn("not an error", event.message)
         self.assertIn("Ladder / Floor / Trailing are unaffected",
                       event.message)
+
+
+class TestProposalExpiry(unittest.TestCase):
+    """Controller-approved 2026-10-05: a PENDING proposal with no
+    decision for 60 minutes expires, and an expired INITIAL_ENTRY
+    releases its symbol.
+
+    Live motivation: KO and V sat PENDING from 2026-10-01 and locked
+    both symbols out indefinitely, because nothing in the system ever
+    expired a pending proposal.
+    """
+
+    TTL = Engine.PROPOSAL_TTL_SECONDS
+
+    @staticmethod
+    def _events(notifier, name):
+        return [e for e in notifier.events if e.event == name]
+
+    def _pending_initial_entry(self, now):
+        """Builds a trade in AWAITING_INITIAL_FILL with one PENDING
+        INITIAL_ENTRY proposal, exactly as _start_new_trade does."""
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        engine, _b, market_data, _d, notifier, _e = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            watchlist=StaticWatchlistSource(("TSLA",)),
+        )
+        market_data.set_price("TSLA", 100.0)
+        engine._lock.acquire(now=now)
+        engine.run_trigger_check(now=now)
+        proposals = proposal_repo.list_for_symbol("TSLA")
+        self.assertEqual(len(proposals), 1)
+        self.assertIs(proposals[0].approval_state, ApprovalState.PENDING)
+        return engine, trade_repo, proposal_repo, notifier, proposals[0]
+
+    def test_pending_proposal_survives_just_under_the_ttl(self):
+        now = _now()
+        engine, _tr, proposal_repo, _n, proposal = \
+            self._pending_initial_entry(now)
+        engine.run_reconciliation_tick(
+            now=now + timedelta(seconds=self.TTL - 1))
+        self.assertIs(proposal_repo.get(proposal.proposal_id).approval_state,
+                      ApprovalState.PENDING)
+
+    def test_pending_proposal_expires_at_the_ttl(self):
+        now = _now()
+        engine, _tr, proposal_repo, notifier, proposal = \
+            self._pending_initial_entry(now)
+        engine.run_reconciliation_tick(now=now + timedelta(seconds=self.TTL))
+        stored = proposal_repo.get(proposal.proposal_id)
+        self.assertIs(stored.approval_state, ApprovalState.EXPIRED)
+        self.assertIsNotNone(stored.expired_at)
+        events = self._events(notifier, "proposal_expired")
+        self.assertEqual(len(events), 1)
+        self.assertIn("60 minutes", events[0].message)
+        self.assertIn("Nothing was bought or sold", events[0].message)
+
+    def test_expired_initial_entry_releases_the_symbol(self):
+        """The KO/V failure. Without this the symbol is locked forever."""
+        now = _now()
+        engine, trade_repo, _pr, _n, _p = self._pending_initial_entry(now)
+        from trade.models import describe_status as _status
+        before = trade_repo.list_for_symbol("TSLA")
+        self.assertEqual(_status(before[0].trade), "AWAITING_INITIAL_FILL")
+
+        engine.run_reconciliation_tick(now=now + timedelta(seconds=self.TTL))
+
+        after = trade_repo.list_for_symbol("TSLA")
+        self.assertEqual(_status(after[0].trade), "ABANDONED")
+
+    def test_symbol_can_be_proposed_again_after_expiry(self):
+        """End to end: the release must actually let a NEW proposal be
+        created for the same symbol on a later cycle."""
+        now = _now()
+        engine, _tr, proposal_repo, _n, first = \
+            self._pending_initial_entry(now)
+        later = now + timedelta(seconds=self.TTL)
+        engine.run_reconciliation_tick(now=later)
+        engine.run_trigger_check(now=later)
+
+        proposals = proposal_repo.list_for_symbol("TSLA")
+        self.assertEqual(len(proposals), 2)
+        ids = {p.proposal_id for p in proposals}
+        self.assertIn(first.proposal_id, ids)
+        fresh = [p for p in proposals
+                 if p.proposal_id != first.proposal_id][0]
+        self.assertIs(fresh.approval_state, ApprovalState.PENDING)
+
+    def test_an_APPROVED_proposal_is_never_ttl_expired(self):
+        """A Controller decision must never be discarded by a timer.
+        Staleness of an APPROVED proposal is D-0007 revalidation's job."""
+        now = _now()
+        engine, _tr, proposal_repo, _n, proposal = \
+            self._pending_initial_entry(now)
+        proposal_repo.record_decision(
+            proposal.proposal_id, approved=True, decided_by="controller",
+            decided_at=now, action=TradeAction.INITIAL_ENTRY,
+        )
+        engine.run_reconciliation_tick(
+            now=now + timedelta(seconds=self.TTL * 5))
+        self.assertIs(proposal_repo.get(proposal.proposal_id).approval_state,
+                      ApprovalState.APPROVED)
+
+    def test_a_REJECTED_proposal_is_not_touched(self):
+        now = _now()
+        engine, _tr, proposal_repo, _n, proposal = \
+            self._pending_initial_entry(now)
+        proposal_repo.record_decision(
+            proposal.proposal_id, approved=False, decided_by="controller",
+            decided_at=now, action=TradeAction.INITIAL_ENTRY,
+        )
+        engine.run_reconciliation_tick(
+            now=now + timedelta(seconds=self.TTL * 5))
+        self.assertIs(proposal_repo.get(proposal.proposal_id).approval_state,
+                      ApprovalState.REJECTED)
+
+    def test_expiring_a_LADDER_proposal_never_abandons_a_live_trade(self):
+        """The dangerous case. A ladder's trade HOLDS SHARES -- marking
+        it abandoned would drop the Floor on a real position."""
+        now = _now()
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        record = _active_trade(trade_repo, trade_id="T-LIVE", symbol="TSLA",
+                               price=100.0, shares=10, now=now)
+        engine, _b, market_data, _d, notifier, _e = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+        )
+        market_data.set_price("TSLA", 100.0)
+        engine._lock.acquire(now=now)
+
+        from proposals.proposal import build_trade_proposal
+        from proposals.models import FloorContext
+        ladder = build_trade_proposal(
+            proposal_id="T-LIVE-ladder_1-aaaa", trade_id="T-LIVE",
+            action=TradeAction.LADDER_1, symbol="TSLA",
+            current_price=100.0, as_of=now, strategy=_strategy(),
+            floor_context=FloorContext.known(90.0),
+        )
+        proposal_repo.save(ladder)
+
+        engine.run_reconciliation_tick(now=now + timedelta(seconds=self.TTL))
+
+        self.assertIs(proposal_repo.get(ladder.proposal_id).approval_state,
+                      ApprovalState.EXPIRED)
+        # The trade itself must be untouched and still ACTIVE.
+        from trade.models import describe_status as _status
+        after = trade_repo.get("T-LIVE")
+        self.assertEqual(_status(after.trade), "ACTIVE")
+        self.assertEqual(after.trade.total_shares, 10)
+
+    def test_expiry_is_reported_once_not_every_tick(self):
+        now = _now()
+        engine, _tr, _pr, notifier, _p = self._pending_initial_entry(now)
+        for extra in (0, 30, 60, 90):
+            engine.run_reconciliation_tick(
+                now=now + timedelta(seconds=self.TTL + extra))
+        self.assertEqual(len(self._events(notifier, "proposal_expired")), 1)
+
+    def test_a_decision_in_the_same_tick_beats_the_timer(self):
+        """The sweep runs AFTER _apply_decisions, so a decision that
+        arrives in the same tick must win."""
+        now = _now()
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        decision_source = InMemoryDecisionSource()
+        engine, _b, market_data, _d, notifier, _e = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            watchlist=StaticWatchlistSource(("TSLA",)),
+            decision_source=decision_source,
+        )
+        market_data.set_price("TSLA", 100.0)
+        engine._lock.acquire(now=now)
+        engine.run_trigger_check(now=now)
+        proposal = proposal_repo.list_for_symbol("TSLA")[0]
+
+        decision_source.submit(ControllerDecision(
+            proposal_id=proposal.proposal_id, kind=DecisionKind.REJECT,
+            decided_by="controller",
+        ))
+        engine.run_reconciliation_tick(now=now + timedelta(seconds=self.TTL))
+
+        self.assertIs(proposal_repo.get(proposal.proposal_id).approval_state,
+                      ApprovalState.REJECTED)
+        self.assertEqual(self._events(notifier, "proposal_expired"), [])
+
+    def test_tapping_a_button_after_expiry_is_not_a_CRITICAL_alarm(self):
+        """With a 60-minute TTL this becomes routine. An alarm that
+        fires on ordinary behavior trains the Controller to ignore
+        alarms."""
+        now = _now()
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        decision_source = InMemoryDecisionSource()
+        engine, _b, market_data, _d, notifier, _e = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            watchlist=StaticWatchlistSource(("TSLA",)),
+            decision_source=decision_source,
+        )
+        market_data.set_price("TSLA", 100.0)
+        engine._lock.acquire(now=now)
+        engine.run_trigger_check(now=now)
+        proposal = proposal_repo.list_for_symbol("TSLA")[0]
+
+        # Tick 1 expires it. Tick 2 carries a late approval.
+        engine.run_reconciliation_tick(now=now + timedelta(seconds=self.TTL))
+        decision_source.submit(ControllerDecision(
+            proposal_id=proposal.proposal_id, kind=DecisionKind.APPROVE,
+            decided_by="controller",
+        ))
+        engine.run_reconciliation_tick(
+            now=now + timedelta(seconds=self.TTL + 60))
+
+        self.assertEqual(self._events(notifier, "decision_conflict"), [])
+        late = self._events(notifier, "decision_on_expired_proposal")
+        self.assertEqual(len(late), 1)
+        self.assertEqual(late[0].level, NotificationLevel.IMPORTANT)
+        self.assertIn("Nothing was bought or sold", late[0].message)
+
+
+class TestMarketOpenGate(unittest.TestCase):
+    """Controller-approved 2026-10-05: ask the BROKER whether the market
+    is open before creating any new proposal.
+
+    The broker is the source of truth instead of a date list because a
+    date list cannot know about a HALF day -- the session after US
+    Thanksgiving closes at 13:00 ET, so the approved 13:30 / 14:30 /
+    15:30 ET triggers would fire into a closed market while every
+    date-based check called it a normal trading day.
+    """
+
+    @staticmethod
+    def _events(notifier, name):
+        return [e for e in notifier.events if e.event == name]
+
+    def _engine(self, market_open):
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        broker = FakeBrokerClient()
+        broker.market_open = market_open
+        engine, _b, market_data, _d, notifier, _e = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            broker=broker, watchlist=StaticWatchlistSource(("TSLA",)),
+        )
+        market_data.set_price("TSLA", 100.0)
+        engine._lock.acquire(now=_now())
+        return engine, trade_repo, proposal_repo, notifier
+
+    def test_market_open_allows_a_new_proposal(self):
+        engine, _tr, proposal_repo, _n = self._engine(True)
+        engine.run_trigger_check(now=_now())
+        self.assertEqual(len(proposal_repo.list_for_symbol("TSLA")), 1)
+
+    def test_market_closed_blocks_every_new_proposal(self):
+        engine, trade_repo, proposal_repo, _n = self._engine(False)
+        engine.run_trigger_check(now=_now())
+        self.assertEqual(proposal_repo.list_for_symbol("TSLA"), [])
+        self.assertEqual(trade_repo.list_for_symbol("TSLA"), [])
+
+    def test_market_closed_is_reported_as_status_not_error(self):
+        engine, _tr, _pr, notifier = self._engine(False)
+        engine.run_trigger_check(now=_now())
+        events = self._events(notifier, "nothing_to_trade_today")
+        self.assertEqual(len(events), 1)
+        self.assertIn("CLOSED", events[0].message)
+        self.assertEqual(events[0].level, NotificationLevel.IMPORTANT)
+
+    def test_broker_error_fails_CLOSED_not_open(self):
+        """Unknown must never be treated as open. A wrong 'open'
+        creates a real order priced off a stale quote."""
+        engine, trade_repo, proposal_repo, notifier = self._engine(
+            RuntimeError("clock unreachable"))
+        engine.run_trigger_check(now=_now())
+        self.assertEqual(proposal_repo.list_for_symbol("TSLA"), [])
+        self.assertEqual(trade_repo.list_for_symbol("TSLA"), [])
+        events = self._events(notifier, "nothing_to_trade_today")
+        self.assertEqual(len(events), 1)
+        self.assertIn("Failing closed", events[0].message)
+        self.assertIn("clock unreachable", events[0].message)
+
+    def test_broker_error_does_not_crash_the_tick(self):
+        engine, _tr, _pr, _n = self._engine(RuntimeError("boom"))
+        engine.run_trigger_check(now=_now())  # must not raise
+
+    def test_closed_market_NEVER_blocks_the_protective_floor(self):
+        """The dangerous case, and the reason the gate sits inside
+        _check_watchlist rather than at the top of the tick.
+
+        An order approved at 15:59 can fill at 16:00:01. If the engine
+        stopped reconciling while the market was shut it would never
+        learn about the fill, never compute that position's Floor, and
+        leave a REAL position unprotected overnight.
+        """
+        now = _now()
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        broker = FakeBrokerClient()
+        broker.market_open = False          # market shut
+        _active_trade(trade_repo, trade_id="T-LIVE", symbol="TSLA",
+                      price=100.0, shares=10, now=now)
+        engine, _b, market_data, _d, notifier, _e = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn, broker=broker,
+            watchlist=StaticWatchlistSource(("TSLA",)),
+        )
+        # Price is below the -10% floor: the protective exit MUST fire
+        # even though the market-open gate says closed.
+        market_data.set_price("TSLA", 89.0)
+        engine._lock.acquire(now=now)
+
+        engine.run_reconciliation_tick(now=now)
+
+        self.assertTrue(
+            any(e.event == "floor_triggered" for e in notifier.events),
+            "the protective Floor must still fire when the market-open "
+            "gate reports closed -- the gate blocks ENTRIES only",
+        )
+        self.assertTrue(
+            broker.submit_calls,
+            "the Floor's SELL must actually reach the broker",
+        )
+
+    def test_closed_market_still_reconciles(self):
+        """Reconciliation must keep running so fills are still learned."""
+        now = _now()
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        broker = FakeBrokerClient()
+        broker.market_open = False
+        engine, _b, market_data, _d, _n, execution_service = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn, broker=broker,
+        )
+        engine._lock.acquire(now=now)
+        engine.run_reconciliation_tick(now=now)  # must not be skipped
+        # Heartbeat advanced => the tick genuinely ran.
+        row = conn.execute(
+            "SELECT heartbeat_at FROM engine_lock WHERE id = 1").fetchone()
+        self.assertIsNotNone(row)
+
+    def test_gate_is_checked_before_the_watchlist_is_even_read(self):
+        """Cheap-first ordering: a closed market must not cost a
+        watchlist read or any evaluator work."""
+        class CountingWatchlist(StaticWatchlistSource):
+            reads = 0
+
+            def get_active_symbols(self):
+                CountingWatchlist.reads += 1
+                return super().get_active_symbols()
+
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        broker = FakeBrokerClient()
+        broker.market_open = False
+        engine, _b, market_data, _d, _n, _e = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn, broker=broker,
+            watchlist=CountingWatchlist(("TSLA",)),
+        )
+        engine._lock.acquire(now=_now())
+        engine.run_trigger_check(now=_now())
+        self.assertEqual(CountingWatchlist.reads, 0)

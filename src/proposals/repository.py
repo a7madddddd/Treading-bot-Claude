@@ -162,6 +162,31 @@ def plan_decision(existing: Optional[TradeProposal], proposal_id: str) -> TradeP
     return existing
 
 
+def plan_expiry(existing: Optional[TradeProposal], proposal_id: str) -> TradeProposal:
+    """PURE, storage-agnostic expire_pending precondition -- no I/O.
+    Mirrors plan_decision's shape exactly.
+
+    Only a PENDING proposal may be expired by the TTL sweep. The three
+    other states are deliberately refused rather than silently skipped,
+    so a caller bug surfaces instead of hiding:
+
+    - APPROVED must NEVER be TTL-expired. The Controller approved it;
+      staleness of an approved proposal is D-0007 revalidation's job
+      (it refuses submission on price drift), not the TTL's. Expiring
+      it here would silently discard a Controller decision.
+    - REJECTED and EXPIRED are terminal history and are never rewritten.
+    """
+
+    if existing is None:
+        raise ProposalDecisionConflictError(f"no proposal found for id {proposal_id!r}")
+    if existing.approval_state != ApprovalState.PENDING:
+        raise ProposalDecisionConflictError(
+            f"proposal {proposal_id!r} is {existing.approval_state.value!r} -- "
+            "only a PENDING proposal may be expired by the TTL sweep"
+        )
+    return existing
+
+
 class ProposalRepository(ABC):
     @abstractmethod
     def save(self, proposal: TradeProposal) -> None:
@@ -195,6 +220,22 @@ class ProposalRepository(ABC):
         does not exist or is not currently PENDING. `action` is
         required -- it ties the recorded decision to exactly one of
         INITIAL_ENTRY, LADDER_1, or LADDER_2."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def expire_pending(
+        self, proposal_id: str, *, expired_at: datetime,
+    ) -> TradeProposal:
+        """Transitions a PENDING proposal to EXPIRED because its
+        Controller-approval window elapsed without a decision.
+
+        Distinct from the supersession path inside save(), which expires
+        an older sibling when a NEWER proposal for the same
+        (trade_id, proposed_action) arrives. This one is time-driven and
+        has no replacement proposal behind it.
+
+        Raises ProposalDecisionConflictError when the proposal does not
+        exist or is not PENDING -- see plan_expiry."""
         raise NotImplementedError
 
     @abstractmethod
@@ -266,6 +307,14 @@ class InMemoryProposalRepository(ProposalRepository):
         )
         self._by_id[proposal_id] = decided
         return decided
+
+    def expire_pending(
+        self, proposal_id: str, *, expired_at: datetime,
+    ) -> TradeProposal:
+        existing = plan_expiry(self._by_id.get(proposal_id), proposal_id)
+        expired = existing.expire(expired_at=expired_at)
+        self._by_id[proposal_id] = expired
+        return expired
 
     def get(self, proposal_id: str) -> Optional[TradeProposal]:
         return self._by_id.get(proposal_id)

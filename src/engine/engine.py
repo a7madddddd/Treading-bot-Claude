@@ -570,6 +570,10 @@ class Engine:
         # Finding #4).
         self._recover_approved_without_execution(now=now)
         self._heartbeat(now=now)
+        # TTL sweep runs AFTER decisions are applied, so a decision that
+        # arrived in this same tick always wins over the timer.
+        self._expire_stale_proposals(now=now)
+        self._heartbeat(now=now)
         for trade_record in self._trade_repo.list_active():
             trade_id = trade_record.trade.trade_id
             self._check_floor_trigger(trade_id, now=now)
@@ -631,6 +635,83 @@ class Engine:
                     now=now,
                     initial_entry_trade_id=proposal.trade_id,
                 )
+
+    def _expire_stale_proposals(self, *, now: datetime) -> None:
+        """Expires PENDING proposals older than PROPOSAL_TTL_SECONDS.
+
+        Two deliberate restrictions, both of which would be real bugs if
+        relaxed:
+
+        1. ONLY PENDING is touched. An APPROVED proposal is a Controller
+           decision and is never discarded by a timer -- D-0007
+           revalidation already refuses a stale approved submission on
+           price drift. (Enforced again inside plan_expiry.)
+
+        2. ONLY an expired INITIAL_ENTRY abandons its trade. A LADDER
+           proposal belongs to a trade that already HOLDS SHARES, and
+           abandoning that trade would drop a live position's Ladder and
+           Floor tracking -- losing the protective floor on a real
+           position. An expired ladder simply lapses; the next D-0021
+           tick re-proposes it from the unchanged frozen reference.
+        """
+
+        for trade_record in self._trade_repo.list_active():
+            trade = trade_record.trade
+            for proposal in self._proposal_repo.list_for_trade(trade.trade_id):
+                if proposal.approval_state is not ApprovalState.PENDING:
+                    continue
+                age_seconds = (now - proposal.proposal_created_at).total_seconds()
+                if age_seconds < self.PROPOSAL_TTL_SECONDS:
+                    continue
+                self._expire_one_proposal(proposal, age_seconds=age_seconds, now=now)
+
+    def _expire_one_proposal(self, proposal, *, age_seconds: float, now: datetime) -> None:
+        try:
+            self._proposal_repo.expire_pending(
+                proposal.proposal_id, expired_at=now,
+            )
+        except ProposalDecisionConflictError:
+            # A decision landed between the list and the write -- the
+            # Controller won the race, which is the correct outcome.
+            # Nothing to report: the decision path notifies on its own.
+            return
+        except Exception as exc:  # noqa: BLE001 - main-loop shield
+            self._notify(
+                level=NotificationLevel.CRITICAL,
+                event="proposal_expiry_failed",
+                message=(
+                    f"Could not expire stale proposal "
+                    f"{proposal.proposal_id} ({proposal.symbol}): {exc}. "
+                    f"It stays PENDING and will be retried next tick."
+                ),
+                symbol=proposal.symbol,
+            )
+            return
+
+        minutes = age_seconds / 60.0
+        self._notify(
+            level=NotificationLevel.IMPORTANT,
+            event="proposal_expired",
+            message=(
+                f"Proposal {proposal.proposal_id} ({proposal.symbol}, "
+                f"{proposal.proposed_action.value}) EXPIRED after "
+                f"{minutes:.0f} minutes with no decision. Its Approve / "
+                f"Reject buttons no longer do anything. Nothing was "
+                f"bought or sold."
+            ),
+            symbol=proposal.symbol,
+        )
+
+        if proposal.proposed_action is TradeAction.INITIAL_ENTRY:
+            # Release the symbol. Without this the trade stays in
+            # AWAITING_INITIAL_FILL and _check_watchlist locks the
+            # symbol out forever -- exactly what happened to KO and V.
+            self._abandon_initial_entry_after_refusal(
+                proposal.trade_id, proposal.proposal_id,
+                reason=(f"no Controller decision within "
+                        f"{self.PROPOSAL_TTL_SECONDS / 60.0:.0f} minutes"),
+                now=now,
+            )
 
     def _check_floor_trigger(self, trade_id: str, *, now: datetime) -> None:
         """Floor detection -- Controller-approved to run on THIS
@@ -934,6 +1015,35 @@ class Engine:
                 action=proposal.proposed_action,
             )
         except ProposalDecisionConflictError as exc:
+            # A normal, expected consequence of the 60-minute TTL: the
+            # Controller comes back after an hour and taps a button on a
+            # proposal that has since expired. That is routine, not a
+            # fault, so it must NOT be reported as CRITICAL -- an alarm
+            # that fires on ordinary behavior trains the Controller to
+            # ignore alarms. Every OTHER conflict (already decided,
+            # unknown id) stays CRITICAL, because those are real.
+            # Re-read rather than trusting the copy fetched before the
+            # call: that copy is a snapshot from earlier in this method,
+            # and the whole point here is to classify a state that may
+            # have changed since. One extra lookup, on the error path
+            # only.
+            current = self._proposal_repo.get(decision.proposal_id)
+            if (current is not None
+                    and current.approval_state is ApprovalState.EXPIRED):
+                self._notify(
+                    level=NotificationLevel.IMPORTANT,
+                    event="decision_on_expired_proposal",
+                    message=(
+                        f"Your decision for {decision.proposal_id} "
+                        f"({proposal.symbol}) arrived after the proposal "
+                        f"had already expired, so it was not applied. "
+                        f"Nothing was bought or sold. The symbol is free "
+                        f"again and may be re-proposed on a later cycle "
+                        f"at a fresh price."
+                    ),
+                    symbol=proposal.symbol,
+                )
+                return
             self._notify(
                 level=NotificationLevel.CRITICAL,
                 event="decision_conflict",
@@ -1097,6 +1207,31 @@ class Engine:
     _TOP_N_PER_CYCLE = 3
     _MIN_SCORE = 60.0
 
+    PROPOSAL_TTL_SECONDS = 3600.0
+    """Controller-approved 2026-10-05: a PENDING proposal that gets no
+    decision within 60 minutes expires, and an expired INITIAL_ENTRY
+    releases its symbol.
+
+    Why exactly 60 minutes, rather than a round guess: it is one
+    D-0021 cycle. The trigger schedule fires hourly on the half hour
+    (engine/schedule.py), so a proposal dies precisely before the next
+    cycle could produce its replacement -- no overlap, no gap, and no
+    second timing concept introduced into the system.
+
+    Why a TTL is needed at all: before this, NOTHING expired a PENDING
+    proposal. It was superseded only when a newer proposal for the same
+    (trade_id, action) was saved -- and for an INITIAL_ENTRY that can
+    never happen, because the trade sits in AWAITING_INITIAL_FILL and
+    _check_watchlist excludes the symbol while it does. Live evidence:
+    KO and V sat PENDING from 2026-10-01 and locked both symbols out
+    indefinitely.
+
+    Why staleness matters beyond the lock: D-0007 revalidation refuses
+    a submission once price has drifted more than 0.5% from the
+    proposal's trigger. An hours-old proposal is therefore very likely
+    to be refused on approval anyway -- so keeping it alive offers the
+    Controller a choice that no longer really exists."""
+
     def _notify_nothing_to_trade(self, reason: str, *, now: datetime) -> None:
         """Controller-approved 2026-10-05: on a day where the Engine has
         nothing it can legitimately propose, say so ONCE, instead of
@@ -1132,6 +1267,61 @@ class Engine:
             symbol=None,
         )
 
+    def _market_open_for_new_proposals(self, *, now: datetime) -> bool:
+        """Controller-approved 2026-10-05: ask the broker whether the
+        market is open before creating ANY new proposal.
+
+        SCOPE -- this gates ONE thing and must never gate more.
+        It is called only from _check_watchlist, so it can stop new
+        proposals and nothing else. Reconciliation, the protective
+        Floor, and the Trailing Floor all run regardless of this
+        answer, and that is not an accident:
+
+            An order approved at 15:59 can fill at 16:00:01, after the
+            close. If the engine stopped reconciling while the market
+            was shut, it would never learn that the fill happened, so
+            it would never compute that position's Floor -- leaving a
+            REAL position unprotected overnight while the engine
+            believed nothing was held.
+
+        Blocking an exit to "be safe" is never safe. Only entries wait.
+
+        FAIL CLOSED. Any error means "unknown", and unknown is treated
+        as closed. The asymmetry is deliberate: a wrong 'open' creates
+        a real order priced off a stale quote, while a wrong 'closed'
+        costs one cycle, and the next D-0021 trigger is an hour later.
+        The Controller stated the preference directly -- "I didn't mind
+        if I lose any chance to buy any item, otherwise I didn't want
+        to make mistakes".
+
+        The broker already retries transient failures three times
+        (common/http_retry.RetryPolicy, wired in run_paper_session), so
+        an exception reaching here is not a single blip.
+        """
+
+        try:
+            is_open = self._execution_service._broker.is_market_open()
+        except Exception as exc:  # noqa: BLE001 - fail closed, never crash
+            self._notify_nothing_to_trade(
+                f"could not reach the broker to confirm the market is "
+                f"open ({type(exc).__name__}: {exc}). Failing closed: no "
+                f"new proposal this cycle. Existing positions are still "
+                f"monitored.",
+                now=now,
+            )
+            return False
+
+        if not is_open:
+            self._notify_nothing_to_trade(
+                "the broker reports the market is CLOSED right now "
+                "(holiday, half-day early close, or an unscheduled "
+                "closure). No new proposals; existing positions are "
+                "still monitored.",
+                now=now,
+            )
+            return False
+        return True
+
     def _check_watchlist(self, *, now: datetime) -> None:
         """Watchlist-driven Trade creation.
 
@@ -1145,6 +1335,9 @@ class Engine:
         (AWAITING_INITIAL_FILL or ACTIVE) is still excluded up-front,
         same as before — the Engine never proposes a duplicate.
         """
+
+        if not self._market_open_for_new_proposals(now=now):
+            return
 
         candidates: list = []
         seen_syms: set = set()

@@ -55,6 +55,9 @@ class TestAbstractInterface(unittest.TestCase):
             def get_account_equity(self):
                 raise NotImplementedError
 
+            def is_market_open(self):
+                raise NotImplementedError
+
         with self.assertRaises(TypeError):
             MissingCancel()  # type: ignore[abstract]
 
@@ -70,6 +73,9 @@ class TestAbstractInterface(unittest.TestCase):
                 raise NotImplementedError
 
             def get_account_equity(self):
+                raise NotImplementedError
+
+            def is_market_open(self):
                 raise NotImplementedError
 
         with self.assertRaises(TypeError):
@@ -92,6 +98,26 @@ class TestAbstractInterface(unittest.TestCase):
         with self.assertRaises(TypeError):
             MissingEquity()  # type: ignore[abstract]
 
+    def test_subclass_missing_is_market_open_cannot_be_instantiated(self):
+        class MissingClock(BrokerClient):
+            def submit_order(self, **kwargs):
+                raise NotImplementedError
+
+            def get_order_by_client_order_id(self, client_order_id):
+                raise NotImplementedError
+
+            def cancel_order(self, client_order_id):
+                raise NotImplementedError
+
+            def get_cash_balance(self):
+                raise NotImplementedError
+
+            def get_account_equity(self):
+                raise NotImplementedError
+
+        with self.assertRaises(TypeError):
+            MissingClock()  # type: ignore[abstract]
+
     def test_complete_subclass_can_be_instantiated(self):
         class Complete(BrokerClient):
             def submit_order(self, **kwargs):
@@ -107,6 +133,9 @@ class TestAbstractInterface(unittest.TestCase):
                 raise NotImplementedError
 
             def get_account_equity(self):
+                raise NotImplementedError
+
+            def is_market_open(self):
                 raise NotImplementedError
 
         Complete()  # must not raise

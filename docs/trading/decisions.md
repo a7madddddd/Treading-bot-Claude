@@ -3750,3 +3750,175 @@ now, the weight question revisited afterwards.
 
 Implementation, with the political merge into the pipeline, as part of
 the Universe-to-engine work.
+
+---
+
+## D-0059 — 60-minute expiry for PENDING proposals
+
+**Date:** 2026-10-05
+**Decided by:** Controller
+**Status:** APPROVED and IMPLEMENTED
+
+### Context
+
+Nothing in the system ever expired a PENDING proposal. A proposal was
+superseded only when a NEWER proposal for the same
+`(trade_id, proposed_action)` was saved — and for an INITIAL_ENTRY that
+can never happen, because the trade sits in AWAITING_INITIAL_FILL and
+`_check_watchlist` excludes the symbol while it does.
+
+Live evidence: `KO` and `V` sat PENDING from 2026-10-01 and locked both
+symbols out indefinitely.
+
+### Decision
+
+A PENDING proposal with no Controller decision for **60 minutes**
+expires. An expired INITIAL_ENTRY also abandons its trade, releasing
+the symbol.
+
+**Why 60 minutes and not a round guess:** it is exactly one D-0021
+cycle. Triggers fire hourly on the half hour, so a proposal dies
+precisely before the next cycle could produce its replacement — no
+overlap, no gap, and no second timing concept added to the system.
+
+**Why staleness matters beyond the lock:** D-0007 revalidation refuses
+a submission once price drifts more than 0.5% from the proposal's
+trigger. An hours-old proposal would very likely be refused on approval
+anyway, so keeping it alive offers a choice that no longer exists.
+
+### Two restrictions that would be real bugs if relaxed
+
+1. **Only PENDING expires.** An APPROVED proposal is a Controller
+   decision and is never discarded by a timer — staleness of an
+   approved proposal is D-0007's job. Enforced in `plan_expiry`, which
+   raises rather than silently skipping, so a caller bug surfaces.
+2. **Only an expired INITIAL_ENTRY abandons its trade.** A LADDER
+   proposal belongs to a trade that already HOLDS SHARES; abandoning it
+   would drop that live position's Ladder and Floor tracking — losing
+   the protective floor on a real position. An expired ladder simply
+   lapses and the next tick re-proposes it from the unchanged frozen
+   reference.
+
+### A consequence that had to be handled, not ignored
+
+With a 60-minute TTL, the Controller returning after an hour and
+tapping a stale button becomes ROUTINE. Previously any
+`ProposalDecisionConflictError` produced a CRITICAL `decision_conflict`
+alarm. An alarm that fires on ordinary behavior trains the Controller
+to ignore alarms, so a late tap on an EXPIRED proposal now sends an
+IMPORTANT `decision_on_expired_proposal` explaining that nothing was
+bought or sold. Every other conflict stays CRITICAL, because those are
+real.
+
+The error path re-reads the proposal from the repository rather than
+trusting the copy fetched earlier in the method — the whole point is to
+classify a state that may have changed since.
+
+### Ordering
+
+The sweep runs AFTER `_apply_decisions` in the reconciliation tick, so
+a decision arriving in the same tick always beats the timer. Covered by
+a test.
+
+### Implementation
+
+- `src/proposals/repository.py` — pure `plan_expiry()` beside
+  `plan_decision()`; `expire_pending()` added to the ABC and the
+  in-memory implementation.
+- `src/proposals/sqlite_repository.py` — `expire_pending()` inside one
+  `transaction()`, precondition delegated to `plan_expiry`, same
+  discipline as `record_decision`.
+- `src/engine/engine.py` — `PROPOSAL_TTL_SECONDS = 3600.0`,
+  `_expire_stale_proposals()`, `_expire_one_proposal()`, called from
+  `run_reconciliation_tick`; the expired-button branch in
+  `_apply_decision`.
+
+### Tests
+
+`TestProposalExpiry`, 10 tests: survives just under the TTL; expires at
+the TTL; **an expired INITIAL_ENTRY releases its symbol** (the KO/V
+failure); the symbol can genuinely be proposed again afterwards;
+APPROVED is never TTL-expired; REJECTED is untouched; **expiring a
+LADDER never abandons a live 10-share trade**; reported once not every
+tick; a decision in the same tick beats the timer; a late button tap is
+IMPORTANT, not CRITICAL.
+
+Suite: 1440 → 1450 passed.
+
+---
+
+## D-0060 — Ask the broker whether the market is open before any new proposal
+
+**Date:** 2026-10-05
+**Decided by:** Controller
+**Status:** APPROVED and IMPLEMENTED
+
+### Context
+
+`src/engine/schedule.py` and `src/scheduler/daemon.py` both flagged in
+their own docstrings that US market holidays (D-0006) were not handled,
+and a repo-wide search confirmed no calendar existed. The engine's main
+loop never gated on market state — `/v2/clock` was read once during
+preflight and never again. On a weekday holiday the 09:30 ET trigger
+fired as if it were a normal day.
+
+### Decision
+
+Ask the BROKER, per tick, before creating any new proposal.
+
+**Why the broker and not a holiday calendar.** A date list cannot know
+about a HALF day. The session after US Thanksgiving closes at 13:00 ET,
+so the approved 13:30, 14:30 and 15:30 ET triggers would all fire into
+a closed market while every date-based check called it a normal trading
+day. The broker's clock is correct there, correct for unscheduled
+closures, and needs no yearly maintenance.
+
+### Scope — the gate blocks ONE thing
+
+It is called from exactly one place, `_check_watchlist`, so it can stop
+new proposals and nothing else. Reconciliation, the protective Floor
+and the Trailing Floor all run regardless. This is not an accident:
+
+> An order approved at 15:59 can fill at 16:00:01. If the engine
+> stopped reconciling while the market was shut, it would never learn
+> the fill happened, so it would never compute that position's Floor —
+> leaving a REAL position unprotected overnight while the engine
+> believed nothing was held.
+
+Blocking an exit to "be safe" is never safe. Only entries wait.
+
+### Fail closed
+
+Any error means "unknown", and unknown is treated as closed. The
+asymmetry is deliberate: a wrong "open" creates a real order priced off
+a stale quote; a wrong "closed" costs one cycle, and the next trigger
+is an hour away. The Controller stated the preference directly — "I
+didn't mind if I lose any chance to buy any item, otherwise I didn't
+want to make mistakes".
+
+The broker already retries transient failures three times
+(`RetryPolicy(max_attempts=3)`, wired in `run_paper_session`), so an
+exception reaching the gate is not a single blip.
+
+### Implementation
+
+- `src/execution/broker_client.py` — abstract `is_market_open()`.
+- `src/execution/alpaca_broker_client.py` — reads `/v2/clock`, raises
+  `BrokerCommunicationError` on transport failure, bad status, bad JSON
+  or a non-boolean `is_open`. Never guesses.
+- `src/engine/engine.py` — `_market_open_for_new_proposals()`, the
+  single call site at the top of `_check_watchlist`. A closed market is
+  reported through the existing per-day `nothing_to_trade_today`
+  channel at IMPORTANT level, not as an error.
+
+### Tests
+
+`TestMarketOpenGate`, 8 tests: open allows a proposal; closed blocks
+every proposal and creates no trade; closed is reported as status not
+error; **a broker error fails CLOSED, not open**; a broker error does
+not crash the tick; **a closed market NEVER blocks the protective
+Floor** (a live 10-share position below its floor still fires its SELL
+to the broker); reconciliation still runs while closed; and the gate is
+checked before the watchlist is even read.
+
+Suite: 1450 → 1459 passed, 45 subtests. No regressions.
