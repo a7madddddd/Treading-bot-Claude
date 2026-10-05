@@ -1,65 +1,92 @@
-# Paper-trading engine. Install to /etc/systemd/system/trading-engine.service
+# Paper-trading engine.
 #
-# Three settings here are NOT defaults and NOT cosmetic. Each one was
-# derived from the code, and getting any of them wrong leaves the system
-# looking supervised while it is actually dead.
+# THIS IS A USER UNIT. Install to ~/.config/systemd/user/, NOT to
+# /etc/systemd/system/. See deploy/README.md.
+#
+# Why a user unit, proven on the Controller's VM 2026-10-05 rather than
+# assumed. A system unit under /etc/systemd/system runs in SELinux
+# domain init_t, and everything this project needs lives under /home,
+# which is labelled user_home_t. Oracle Linux 9 runs SELinux in
+# Enforcing mode, and init_t has no access to user_home_t. Two separate
+# denials were captured from the audit log:
+#
+#   avc: denied { create }  ... name="engine.log"
+#        scontext=system_u:system_r:init_t:s0
+#        tcontext=system_u:object_r:user_home_t:s0
+#
+#   avc: denied { execute } ... name="engine-run.sh"
+#        scontext=system_u:system_r:init_t:s0
+#        tcontext=unconfined_u:object_r:user_home_t:s0
+#
+# Fixing only the first (logging to the journal) exposed the second, and
+# fixing only the second would have exposed a third: the engine WRITES
+# paper_session.sqlite in that same directory, so init_t would be denied
+# there too. The denials are not three bugs; they are one wrong choice.
+#
+# Rejected alternatives:
+#   - setenforce 0 / permissive: disables a security control for the
+#     whole machine to run one script. No.
+#   - chcon -t bin_t on the scripts: works until the next relabel or
+#     `restorecon`, then silently reverts. Needs a semanage rule to
+#     persist, and still leaves the DB-write problem.
+#   - moving the whole project out of /home to /opt: possible, but it
+#     relocates the Controller's working checkout, breaks every path in
+#     our runbooks, and solves by displacement what a user unit solves
+#     directly.
+#
+# A user unit runs in the opc user's own session as unconfined_t, so
+# /home access is simply normal. It also needs no sudo at all.
+#
+# Requires: loginctl enable-linger opc   (so it starts at boot with no
+# login session). Without lingering the engine would only run while
+# someone is logged in -- exactly the failure mode this unit exists to
+# remove.
 
 [Unit]
 Description=Paper trading engine (D-0045 runner, snapshot universe mode)
 After=network-online.target
 Wants=network-online.target
 
-[Service]
-Type=simple
-User=opc
-WorkingDirectory=/home/opc/Treading-bot-Claude
-ExecStart=/home/opc/Treading-bot-Claude/deploy/engine-run.sh
-
-# (1) Restart=always, NOT on-failure.
-#     scripts/run_paper_session.py exits with status 0 when its
-#     --max-hours cap expires -- that is a clean, deliberate shutdown,
-#     and it is exactly what stopped the engine on 2026-10-04. To
-#     Restart=on-failure a status-0 exit looks like success, so it would
-#     never restart. Restart=always covers the cap, a crash, and a
-#     SIGTERM alike.
-Restart=always
-
-# (2) RestartSec must exceed the engine lock's stale threshold.
-#     src/engine/lock.py judges liveness ONLY by heartbeat_at, with
-#     STALE_THRESHOLD_SECONDS = 300. A clean stop releases the lock
-#     (Engine.shutdown() runs in the runner's finally block), but after
-#     a hard kill -- SIGKILL, OOM, power loss -- the row looks live for
-#     up to 5 minutes and a restarting engine refuses to start with
-#     EngineLockHeldError. 310s waits that out on the first try.
-RestartSec=310
-
-# (3) Disable systemd's start-rate limiter.
-#     Default is 5 starts per 10s interval, after which the unit is
-#     parked in a FAILED state and never retried. Combined with (2) that
-#     default would be unreachable, but a future RestartSec change must
-#     not be able to silently brick the supervisor. 0 = never give up.
+# StartLimitIntervalSec belongs in [Unit], NOT [Service]. The first
+# version of this file put it in [Service] and systemd logged
+# "Unknown key name 'StartLimitIntervalSec' in section 'Service',
+# ignoring" -- the setting silently did nothing.
+#
+# Default is 5 starts per 10s, after which the unit is parked in a
+# FAILED state and never retried. That is unreachable with
+# RestartSec=310 today, but a future RestartSec change must not be able
+# to silently brick the supervisor. 0 = never give up.
 StartLimitIntervalSec=0
 
-# Logging goes to the journal, NOT to a file under /home.
-#
-# The first install attempt used
-#   StandardOutput=append:/home/opc/Treading-bot-Claude/logs/engine.log
-# and systemd refused to start the unit with status=209/STDOUT ("failed
-# to set up standard output"). On Oracle Linux 9 with SELinux enforcing,
-# a system service writing into a user home directory is denied by
-# policy -- /home is user_home_t, and services are expected to log to
-# var_log_t or to the journal.
-#
-# Rather than weaken SELinux or relabel a directory, use the journal,
-# which is the idiomatic systemd answer and needs no policy change:
-#   journalctl -u trading-engine -f
-#   journalctl -u trading-engine --since today
-#
-# It also removes a real operational trap: Python buffers stdout when
-# it is redirected to a FILE, which is why /tmp/engine.log sat at 22
-# bytes for over a minute while the engine was healthy. The journal is
-# a pipe, so lines appear as they are written.
+[Service]
+Type=simple
+WorkingDirectory=%h/Treading-bot-Claude
+ExecStart=%h/Treading-bot-Claude/deploy/engine-run.sh
 
+# Restart=always, NOT on-failure.
+#   scripts/run_paper_session.py exits with status 0 when its
+#   --max-hours cap expires. That is a clean, deliberate shutdown, and
+#   it is exactly what stopped the engine on 2026-10-04. To
+#   Restart=on-failure a status-0 exit looks like success, so it would
+#   never restart. Restart=always covers the cap, a crash and a SIGTERM
+#   alike.
+Restart=always
+
+# RestartSec must exceed the engine lock's stale threshold.
+#   src/engine/lock.py judges liveness ONLY by heartbeat_at, with
+#   STALE_THRESHOLD_SECONDS = 300. A clean stop releases the lock
+#   (Engine.shutdown() runs in the runner's finally block), but after a
+#   hard kill -- SIGKILL, OOM, power loss -- the row looks live for up
+#   to 5 minutes and a restarting engine refuses with
+#   EngineLockHeldError. 310s waits that out on the first attempt.
+RestartSec=310
+
+# Logging goes to the journal, never to a file. Besides the SELinux
+# denial above, Python buffers stdout when it is redirected to a FILE --
+# which is why a hand-started engine's /tmp/engine.log sat at 22 bytes
+# for over a minute while the engine was perfectly healthy. The journal
+# is a pipe, so lines appear as they are written.
+#   journalctl --user -u trading-engine -f
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target

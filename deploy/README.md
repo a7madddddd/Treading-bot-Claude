@@ -23,19 +23,44 @@ a day without the refresh is a day with **no new trades at all**.
 
 ## Install
 
+These are **user units** — no `sudo`, and they install into the `opc`
+user's own systemd, not `/etc/systemd/system`. The reason is SELinux,
+and it was proven on this VM rather than assumed: see the comment block
+at the top of `trading-engine.service` for the two captured AVC denials.
+
 ```bash
 cd ~/Treading-bot-Claude
 git pull --no-rebase --no-edit origin claude/youthful-goodall-4cr0ei
 chmod +x deploy/engine-run.sh deploy/universe-refresh.sh
 
-sudo cp deploy/trading-engine.service   /etc/systemd/system/
-sudo cp deploy/universe-refresh.service /etc/systemd/system/
-sudo cp deploy/universe-refresh.timer   /etc/systemd/system/
+mkdir -p ~/.config/systemd/user
+cp deploy/trading-engine.service   ~/.config/systemd/user/
+cp deploy/universe-refresh.service ~/.config/systemd/user/
+cp deploy/universe-refresh.timer   ~/.config/systemd/user/
+systemctl --user daemon-reload
+```
+
+**Lingering is required**, once:
+
+```bash
+sudo loginctl enable-linger opc
+```
+
+Without it the units run only while someone is logged in over SSH, and
+stop when the session closes — exactly the failure this is meant to
+remove.
+
+If an earlier attempt installed SYSTEM units, remove them first:
+
+```bash
+sudo systemctl disable --now trading-engine.service 2>/dev/null
+sudo rm -f /etc/systemd/system/trading-engine.service \
+           /etc/systemd/system/universe-refresh.service \
+           /etc/systemd/system/universe-refresh.timer
 sudo systemctl daemon-reload
 ```
 
-Stop any hand-started engine first, or the new unit will refuse to start
-on the lock held by the old process:
+Stop any hand-started engine, or the unit refuses to start on its lock:
 
 ```bash
 pkill -TERM -f run_paper_session; sleep 12
@@ -44,15 +69,15 @@ pkill -TERM -f run_paper_session; sleep 12
 Then enable both:
 
 ```bash
-sudo systemctl enable --now trading-engine.service
-sudo systemctl enable --now universe-refresh.timer
+systemctl --user enable --now trading-engine.service
+systemctl --user enable --now universe-refresh.timer
 ```
 
 ## Verify
 
 ```bash
-systemctl status trading-engine.service --no-pager
-systemctl list-timers universe-refresh.timer --no-pager
+systemctl --user status trading-engine.service --no-pager
+systemctl --user list-timers universe-refresh.timer --no-pager
 ```
 
 `list-timers` must show the next elapse at **08:45 America/New_York**.
@@ -78,8 +103,8 @@ A heartbeat under ~60s old is healthy (the reconcile interval is 30s).
 Run the refresh once by hand without waiting for the timer:
 
 ```bash
-sudo systemctl start universe-refresh.service
-journalctl -u universe-refresh --since "10 min ago" --no-pager
+systemctl --user start universe-refresh.service
+journalctl --user -u universe-refresh --since "10 min ago" --no-pager
 ```
 
 ## Logs
@@ -87,9 +112,9 @@ journalctl -u universe-refresh --since "10 min ago" --no-pager
 Both units log to the **journal**, not to files:
 
 ```bash
-journalctl -u trading-engine -f              # live
-journalctl -u trading-engine --since today
-journalctl -u universe-refresh --since today
+journalctl --user -u trading-engine -f              # live
+journalctl --user -u trading-engine --since today
+journalctl --user -u universe-refresh --since today
 ```
 
 File logging under `/home` was tried first and systemd refused the unit
