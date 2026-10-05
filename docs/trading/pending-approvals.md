@@ -1209,8 +1209,9 @@ for free.
   Observability only — it changes no trading decision — but it is the
   evidence base every future diagnosis will rest on.
 
-### P-039 — Fixed −4h US Eastern offset breaks when EST returns (1 Nov 2026)
-- **Status:** OPEN, found 2026-10-05 during the pre-run bug hunt the
+### P-039 — Fixed −4h US Eastern offset breaks when EST returns (1 Nov 2026) — RESOLVED (D-0069, 2026-10-05)
+- **Status:** RESOLVED by D-0069, Controller-approved and pushed 2026-10-05. The risk-side impact turned out larger than first reported: a 23-hour under-count on the D-0047 daily cap, not just one quiet hour. Original entry below.
+- **Status when raised:** OPEN, found 2026-10-05 during the pre-run bug hunt the
   Controller asked for. NOT fixed: it touches a risk module, so it waits
   for approval per CLAUDE.md §12.a.
 - **FACT:** two "what is today's trading date" helpers use a hardcoded

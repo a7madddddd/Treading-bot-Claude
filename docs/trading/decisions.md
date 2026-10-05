@@ -4690,3 +4690,90 @@ of trading and left five positions with a degraded Floor check.
 
 Evidence that a real whole-market fetch can legitimately return fewer
 than 500 symbols. Then the threshold is wrong, not the guard.
+
+---
+
+## D-0069
+
+**Date:** 2026-10-05
+**Status:** APPROVED (Controller, 2026-10-05: "Okay, okay. Push that.")
+**Closes:** P-039
+
+### Decision
+
+Replace the hardcoded `-4.0` hour US Eastern offset with
+`ZoneInfo("America/New_York")` in the two helpers that answer "what is
+today's trading date":
+
+- `src/engine/snapshot_watchlist.py` — `_current_effective_date_et`
+- `src/risk/portfolio_snapshot.py` — `_us_market_day_open_utc`
+
+### Why
+
+`-4.0` is US Eastern only during EDT. From 1 November 2026 Eastern is
+UTC−5, so both helpers would compute an Eastern time one hour ahead of
+the real one for the whole winter.
+
+**Engine impact — small, and measured rather than estimated.** Replaying
+a full winter day hour by hour against `zoneinfo`, exactly one UTC hour
+disagreed: 04:00 UTC, which is 23:00 ET the previous evening. Every hour
+that matters was already correct:
+
+| moment (EST) | true | old code |
+|---|---|---|
+| universe run 06:00 | 2026-11-10 | 2026-11-10 |
+| market open 09:30 | 2026-11-10 | 2026-11-10 |
+| market close 16:00 | 2026-11-10 | 2026-11-10 |
+
+**Risk impact — not small, and found while fixing the first.**
+`_us_market_day_open_utc` is the cutoff for "new trades opened today",
+which feeds the D-0047 daily new-trade cap. At 04:30 UTC on 2026-11-10
+it is 23:30 ET on the 9th, so the day being counted is the 9th and its
+true anchor is 2026-11-09 05:00 UTC. The old code anchored at
+2026-11-10 04:00 UTC — **23 hours later** — excluding essentially every
+trade actually opened that Eastern day. The count then reads low and the
+cap admits trades it should refuse. The old docstring claimed the
+approximation "over-counts, never under-counts"; in winter the opposite
+was true.
+
+### Why not the alternatives
+
+**Hardcode `-5.0`:** the identical bug in the other season, returning in
+March 2027.
+
+**Query a network time/timezone service:** it makes "what date is it"
+depend on the network, on a path the risk engine and the Floor check
+use. That is the same class of fault as P-032, where a rate-limited
+broker left the protective Floor unevaluated on five open positions.
+Rejected on that basis.
+
+**IANA database (chosen):** local file, no network, no latency. Verified
+on the production VM before the change — `tzdata-2026c`, NTP-synced
+clock, and the transitions already present:
+
+```
+2026-10-06 -> EDT   2026-11-01 -> EST   2027-03-14 -> EDT
+```
+
+It is also what `src/engine/schedule.py` and
+`src/scheduler/next_fire.py` already use, so this unifies a convention
+rather than adding a third one.
+
+### Known residual risk
+
+If US law changes DST itself, the IANA database needs an OS package
+update. That arrives with normal system updates and needs no code
+change — whereas under the old constant a change in the law would have
+produced a silent seasonal error.
+
+### Tests
+
+`tests/engine/test_p039_dst_trading_date.py` — 14 tests: every hour of a
+summer day and of a winter day matched against `zoneinfo`; controls
+proving the old code was correct in summer and wrong in exactly one
+winter hour (so the tests measure the fix, not something incidental);
+the three moments the trading day is built on; the daily-cap anchor
+never landing in the future in either season; and the 23-hour
+under-count reproduced explicitly. Naive datetimes are read as UTC.
+
+Full suite: **1538 passed, 54 subtests passed**, no regressions.

@@ -19,19 +19,35 @@ import ssl
 import sqlite3
 import urllib.error
 import urllib.request
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, time, timezone
+from zoneinfo import ZoneInfo
 from typing import Callable, List, Mapping, Optional, Tuple
 
 from risk.models import PortfolioSnapshot, PositionView
 
 
-_US_MARKET_TZ_OFFSET_HOURS = -4.0
-"""Rough offset for US Eastern Time from UTC (accepts EST or EDT --
-this snapshot only uses it to compute "today"'s cutoff, and the
-strategy uses D-0021 for anything precise). The 4h approximation
-picks up trades all the way back to 20:00 UTC of the prior day
-during DST, which is safe (over-counts, never under-counts) for a
-daily-cap check."""
+_ET = ZoneInfo("America/New_York")
+"""P-039 (2026-10-05). This was a hardcoded -4.0 hour offset with a
+docstring claiming the approximation "over-counts, never under-counts"
+for the daily-cap check. That claim held only during EDT. Under EST
+(from 1 November 2026) the computed Eastern time runs an hour ahead of
+the real one, so between 04:00 and 05:00 UTC the anchor lands on the
+WRONG day -- and it lands LATER, not earlier.
+
+Measured, not estimated. At 04:30 UTC on 2026-11-10 it is 23:30 ET on
+the 9th, so the day being counted is the 9th and its true anchor is
+2026-11-09 05:00 UTC. The old code anchored at 2026-11-10 04:00 UTC:
+23 hours later, excluding essentially every trade actually opened that
+Eastern day. The daily new-trade count then reads low and the D-0047
+cap admits trades it should refuse -- the opposite of what the old
+docstring promised.
+
+The window is 23:00-00:00 ET, outside the session, so this was never an
+active failure. It is fixed rather than re-documented because a risk
+limit must not depend on the season.
+
+ZoneInfo reads the system IANA database, with no network call on a risk
+path."""
 
 
 class HttpResponse:
@@ -197,8 +213,8 @@ def _us_market_day_open_utc(now_utc: datetime) -> datetime:
     prior calendar day. Precision is intentionally loose here --
     strategy uses D-0021 for timing decisions; this is only for a
     daily-cap count."""
-    tz_offset = timedelta(hours=_US_MARKET_TZ_OFFSET_HOURS)
-    et_now = now_utc + tz_offset
-    et_midnight = datetime.combine(et_now.date(), time(0, 0),
-                                   tzinfo=timezone.utc)
-    return et_midnight - tz_offset
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=timezone.utc)
+    et_now = now_utc.astimezone(_ET)
+    et_midnight = datetime.combine(et_now.date(), time(0, 0), tzinfo=_ET)
+    return et_midnight.astimezone(timezone.utc)
