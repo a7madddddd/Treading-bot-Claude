@@ -2257,3 +2257,78 @@ inputs.
 
 If the shadow weeks show it firing on days that were genuinely healthy,
 the design is wrong and we learn that for free.
+
+### P-055 — P-053 would be INERT where it matters, because a tighter limit already exists
+- **Status:** OPEN — **this invalidates the lever P-053 chose**, found
+  after the Controller asked whether the daily order limits should enter
+  the calculation. They already do, and they bind first.
+- **FACT, read from the code (`src/risk/models.py:37-41`, enforced at
+  `src/risk/enforcer.py:144` and `:159`):**
+
+```
+max_concurrent_trades  = 5     (D-0047, approved)
+max_daily_new_trades   = 3     (D-0047, approved)
+```
+
+  and `Engine._TOP_N_PER_CYCLE = 3` (`src/engine/engine.py:1352`).
+
+- **The real funnel, which P-053 did not account for:**
+
+| stage | cap |
+|---|---|
+| universe publishes | **10** |
+| engine proposes per cycle | 3 |
+| risk allows NEW trades per day | **3** |
+| risk allows concurrent trades | 5 |
+
+  The universe's Top-10 is already more than three times wider than the
+  daily cap can ever consume. **The 10 is not the binding constraint;
+  the 3 is.**
+
+- **Consequence, with the P-053 numbers:**
+
+| fetched | P-053 scaled Top-N | new trades actually possible | change |
+|---|---|---|---|
+| 11,683 | 10 | 3 | — |
+| 9,000 | 7 | 3 | **none** |
+| **5,000** | **4** | **3** | **none** |
+| 3,500 | 2 | 2 | first real effect |
+| 2,000 | 1 | 1 | |
+
+  **The 5,000 row is the exact case P-040 was written about, and P-053
+  would do nothing there.** Scaling only bites below roughly 3,300
+  symbols — and below 500 the D-0068 hard guard already refuses. So the
+  mechanism as designed is inert across almost its entire intended
+  range.
+
+- **Where the lever actually is.** To make the Controller's idea do what
+  he intends, the scaling must apply to **`max_daily_new_trades`**, not
+  to the universe's Top-N:
+
+| fetched | scale | new trades allowed today |
+|---|---|---|
+| 11,683 | 1.00 | 3 |
+| 9,000 | 0.77 | 2 |
+| 5,000 | 0.43 | 1 |
+| 3,000 | 0.26 | 0 → refuse |
+
+  That is a real, graded response: half the market seen, one new trade
+  instead of three.
+
+- **But that is a RISK LIMIT.** `max_daily_new_trades` is a
+  Controller-approved D-0047 number. Making it vary by day is a change
+  to an approved risk limit and needs its own explicit decision — it
+  cannot be a side effect of a universe-selection change.
+
+- **RECOMMENDATION:**
+  1. Scale `max_daily_new_trades`, not `top_n` — that is where the
+     Controller's intent actually lands.
+  2. Keep the universe at Top-10 regardless. A wider candidate list
+     costs nothing when a tighter gate follows it, and narrowing it
+     only removes choice from the ranking.
+  3. Still shadow-mode it first (P-054 §7), now reporting what the
+     daily trade cap WOULD have been.
+- **What would change this recommendation:** if the Controller wants the
+  universe itself narrowed for a reason other than risk sizing — for
+  example to cut research cost per day — then scaling Top-N is right for
+  that reason, and should be justified by it rather than by exposure.
