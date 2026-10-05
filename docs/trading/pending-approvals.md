@@ -1208,3 +1208,64 @@ for free.
   symbols enriched, enrichment failures, and whether a cap was applied.
   Observability only — it changes no trading decision — but it is the
   evidence base every future diagnosis will rest on.
+
+### P-039 — Fixed −4h US Eastern offset breaks when EST returns (1 Nov 2026)
+- **Status:** OPEN, found 2026-10-05 during the pre-run bug hunt the
+  Controller asked for. NOT fixed: it touches a risk module, so it waits
+  for approval per CLAUDE.md §12.a.
+- **FACT:** two "what is today's trading date" helpers use a hardcoded
+  offset rather than a timezone:
+  `src/engine/snapshot_watchlist.py:25` and
+  `src/risk/portfolio_snapshot.py:28`, both
+  `_US_MARKET_TZ_OFFSET_HOURS = -4.0`. US Eastern is UTC−4 only during
+  EDT; from 1 November 2026 it is UTC−5.
+- **FACT, measured not estimated.** Replaying a full winter day hour by
+  hour against `zoneinfo`, exactly **one** UTC hour disagrees:
+
+| UTC | true ET | true date | computed date |
+|---|---|---|---|
+| 04:00 | 23:00 ET | 2026-11-09 | 2026-11-10 |
+
+  Every hour that matters is correct, verified directly:
+
+| moment (EST) | true | computed |
+|---|---|---|
+| universe run 06:00 | 2026-11-10 | 2026-11-10 |
+| market open 09:30 | 2026-11-10 | 2026-11-10 |
+| market close 16:00 | 2026-11-10 | 2026-11-10 |
+
+- **So the practical risk is LOW and must not be overstated:** the one
+  bad hour is 23:00–00:00 ET, outside the session, outside the 06:00
+  run, and outside the D-0021 trigger window. Trading TIMING already
+  uses real `ZoneInfo` (`src/engine/schedule.py`,
+  `src/scheduler/next_fire.py`), so nothing that fires an order is
+  affected.
+- **Why raise it anyway:** it is a landmine with a known detonation
+  date. During that hour the engine asks for tomorrow's snapshot, finds
+  none, and returns an empty watchlist — the same silent shape as the
+  2026-10-05 failure, which took a full day to notice.
+- **RECOMMENDATION:** replace both constants with
+  `ZoneInfo("America/New_York")`, matching what the scheduling modules
+  already do. Behavior inside trading hours is unchanged — that is what
+  the table above establishes — so the change is verifiable as a no-op
+  where it counts and a correction where it does not.
+
+### P-040 — The P-036 pool guard catches truncation, not partial fetches
+- **Status:** OPEN, stated as a known limit of D-0068 rather than a
+  defect in it.
+- **FACT:** `--min-candidates` defaults to 500 against a real pool of
+  ~11,683. It therefore catches a catastrophically short fetch (40, as
+  on 2026-10-05) but would accept a partial one — say 5,000 symbols from
+  a provider that paginated badly — as a normal run.
+- **Why the threshold is not simply raised:** a high threshold turns any
+  legitimate shrinkage of the tradable universe into a refused day, and
+  a refused day costs new entries. 500 is deliberately more than 20×
+  below normal so it only fires on an unmistakable break.
+- **What makes this acceptable today:** D-0068's P-038 counters now put
+  `raw_candidates_fetched` in every snapshot, so a partial fetch is
+  visible after the fact even though it is not refused.
+- **RECOMMENDATION:** revisit once several real runs have recorded their
+  `raw_candidates_fetched`, and set a relative guard (e.g. refuse below
+  60% of the trailing median) from measured values rather than from a
+  number chosen today. Deliberately deferred: inventing that constant
+  now would repeat the mistake D-0065 corrected.
