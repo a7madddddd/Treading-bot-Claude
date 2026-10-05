@@ -1640,7 +1640,24 @@ notifications sent          : NONE
   would surface it, but the design needs an explicit
   cancel-and-verify on exit and a sweep at startup.
 
-- **FIRST VERIFICATION BEFORE ANY CODE:** read `shorting_enabled` on
+- **VERIFICATION RESULT (2026-10-05, run on the live paper account):**
+
+```
+shorting_enabled       True
+multiplier             4
+account_blocked        False
+trading_blocked        False
+```
+
+  **The worst case does NOT drop — it is confirmed live.** Shorting is
+  enabled and the account carries a 4× margin multiplier, so a stray
+  sell against a zero position is **accepted and opens a short**, not
+  rejected. Combined with the absence of any reduce-only flag, this
+  makes cancellation reliability a first-class safety requirement of the
+  design rather than a detail, and it rules out any variant that relies
+  on the broker refusing an over-sell.
+
+- **ORIGINAL VERIFICATION NOTE:** read `shorting_enabled` on
   `/v2/account`. If shorting is disabled on the paper account, a stray
   sell is rejected rather than opening a short, and the worst case of
   the whole design drops by an order of magnitude. If it is enabled,
@@ -1799,3 +1816,32 @@ notifications sent          : NONE
   empty moment is a strategy change nobody chose. (c) is the cheap
   stopgap if (b) is too large for now; (a) is defensible but silently
   loses a ladder the strategy counts on.
+
+
+### P-051 — With `--no-db-push`, the VM's trading state has no backup
+- **Status:** OPEN, raised by Claude 2026-10-05 while explaining the
+  `[db] git push DISABLED` startup line to the Controller.
+- **FACT, verified in `scripts/run_paper_session.py:384-392, 522-527`:**
+  `--no-db-push` disables ONLY the per-tick git commit+push of
+  `paper_session.sqlite`. Local SQLite persistence is untouched — the
+  database is still written to disk continuously — and no
+  `db_persist_failed` notification can be emitted because the callback
+  that would raise it is not installed. The startup line is INFO, not a
+  failure.
+- **Why the flag is right for the VM:** the push existed because the
+  engine used to run in a cloud container that gets reclaimed on
+  inactivity, where GitHub was the only durable store. On a VM with a
+  persistent disk that is unnecessary, and it was also what produced
+  roughly 780 commits per trading day.
+- **The gap it leaves:** `paper_session.sqlite` on the VM now has **no
+  external copy at all**. Alpaca still holds the positions, but it does
+  not hold what this system actually reasons with: the frozen initial
+  entry price (D-0009), the ladder flags, the trailing-floor state, the
+  proposal history. Losing the VM's disk means the engine cannot
+  reconstruct any of that, and every open position loses its ladder and
+  floor references even though the shares still exist at the broker.
+- **RECOMMENDATION:** a once-daily backup after the close — a copy of
+  the SQLite file to a second location, or a single git commit per day
+  rather than per tick. One commit a day is 1/780th of the old cost and
+  removes the single point of failure. Deliberately NOT per-tick: that
+  is the behavior the flag was added to stop.
