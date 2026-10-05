@@ -1591,6 +1591,61 @@ notifications sent          : NONE
   changes the share count and requires the same. The lineage field
   already exists for exactly this.
 
+- **BROKER FACTS, verified against Alpaca's own documentation
+  (2026-10-05), not assumed:**
+  * Equities support `market`, `limit`, `stop`, `stop_limit`, trailing
+    stop, plus bracket/OCO/OTO. So a resting protective order is
+    possible.
+  * `stop_limit` takes `stop_price` (the trigger) and `limit_price` (the
+    worst acceptable fill). This is the only form compatible with the
+    project's standing "no Market Orders" constraint, because a plain
+    `stop` converts to a MARKET order when triggered.
+  * Only `gtc` persists past the current session, and **Alpaca
+    auto-cancels a GTC order at 90 days**. A resting protective order
+    therefore silently disappears after 90 days unless it is refreshed —
+    an operational requirement, not an optional nicety.
+  * **There is no "reduce only" or position-closing flag.** Nothing in
+    the broker prevents a sell order from opening a short, and the
+    documentation does not state what happens when a sell quantity
+    exceeds the held position. So the double-fire risk cannot be
+    delegated to Alpaca; the design must prevent it.
+
+- **PROPOSED SHAPE (not approved, not implemented): a disaster backstop,
+  not a replacement.**
+
+  The resting order sits at the **ORIGINAL floor** — the one frozen from
+  the initial fill at D-0009 — and the engine keeps full authority over
+  the floor and the trailing floor exactly as today.
+
+  Why this resolves the three obstacles:
+
+  1. **Double fire.** The two never compete in normal operation,
+     because the trailing floor is always at or ABOVE the original
+     floor. The engine fires first, every time, by construction. The
+     backstop can only ever fire on a day the engine did not act at all
+     — which is precisely the gap this is meant to close.
+  2. **No market orders.** `stop_limit` with the limit a defined
+     distance below the stop, mirroring the execution range already
+     approved for the engine's own floor order.
+  3. **The trailing floor moves — the backstop does not.** The original
+     floor is frozen and never changes, so no cancel-and-replace is
+     needed on a ratchet. Only a change in SHARE COUNT requires a
+     replacement, and `Trade.update_protective_order` already keeps the
+     cancel-and-replace lineage for exactly that.
+
+  Residual risk to design against, stated plainly: after the engine's
+  own exit the backstop must be cancelled, and if that cancellation
+  fails there is a live stop against a position of zero. D-0073's
+  10-minute drift check already reports a share-count mismatch, which
+  would surface it, but the design needs an explicit
+  cancel-and-verify on exit and a sweep at startup.
+
+- **FIRST VERIFICATION BEFORE ANY CODE:** read `shorting_enabled` on
+  `/v2/account`. If shorting is disabled on the paper account, a stray
+  sell is rejected rather than opening a short, and the worst case of
+  the whole design drops by an order of magnitude. If it is enabled,
+  cancellation reliability becomes a first-class safety requirement.
+
 - **Not implemented, not designed in detail. Parked for discussion.**
 
 ### Checked and NOT a bug
