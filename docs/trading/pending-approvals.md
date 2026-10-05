@@ -1251,7 +1251,9 @@ for free.
   the table above establishes — so the change is verifiable as a no-op
   where it counts and a correction where it does not.
 
-### P-040 — The P-036 pool guard catches truncation, not partial fetches
+### P-040 — The P-036 pool guard catches truncation, not partial fetches — RESOLVED (D-0077, 2026-10-05)
+- **Status:** RESOLVED. The grey zone the hard guard could not judge is now handled by the scaled trade limits rather than by raising the guard's threshold.
+- **Original entry:**
 - **Status:** OPEN, stated as a known limit of D-0068 rather than a
   defect in it.
 - **FACT:** `--min-candidates` defaults to 500 against a real pool of
@@ -1978,7 +1980,9 @@ and whether a push is refused for authentication or for some other
 reason. Guessing which of those is true would repeat the mistake that
 paused the project last time.
 
-### P-053 — Confidence-scaled Top-N (the Controller's idea, 2026-10-05)
+### P-053 — Confidence-scaled Top-N — RESOLVED (D-0077, 2026-10-05), lever moved
+- **Status:** RESOLVED by D-0077, but applied to the two trade-count limits instead of Top-N, after P-055 showed Top-N scaling would be inert.
+- **Original entry:**
 - **Status:** DESIGN PROPOSED, **not implemented**. Changes how many
   positions are opened, so it is trading behavior and waits for explicit
   approval. Supersedes the "revisit later" recommendation in P-040.
@@ -2168,7 +2172,9 @@ never lower than the eventual median, so early scaling errs toward
 fewer positions, not more.
 
 
-### P-054 — Design review of P-053 BEFORE implementing (Controller-requested)
+### P-054 — Design review of P-053 BEFORE implementing — RESOLVED (D-0077, 2026-10-05)
+- **Status:** RESOLVED. All three bugs fixed in D-0077 (distinct dates, baseline excludes today, zero expressible), the bootstrap weakness limited by the maximum rule, silent drift addressed by reporting absolute numbers, and shadow mode adopted.
+- **Original entry:**
 - **Status:** OPEN. The Controller asked for a critique of the agreed
   design before any code: *"did it have any bug? did it will make any
   error in the future?"* Four real problems found, one of them a
@@ -2258,7 +2264,9 @@ inputs.
 If the shadow weeks show it firing on days that were genuinely healthy,
 the design is wrong and we learn that for free.
 
-### P-055 — P-053 would be INERT where it matters, because a tighter limit already exists
+### P-055 — P-053 would be INERT where it matters — RESOLVED (D-0077, 2026-10-05)
+- **Status:** RESOLVED. D-0077 moved the lever to max_daily_new_trades and max_concurrent_trades.
+- **Original entry:**
 - **Status:** OPEN — **this invalidates the lever P-053 chose**, found
   after the Controller asked whether the daily order limits should enter
   the calculation. They already do, and they bind first.

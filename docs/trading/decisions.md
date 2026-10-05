@@ -5437,3 +5437,137 @@ P-051's wider point stands only partly. This is a weekday backup, so a
 weekend loss falls back to Friday's copy, and it depends on GitHub being
 reachable. It is an off-machine copy, which is the part that was
 missing.
+
+---
+
+## D-0077
+
+**Date:** 2026-10-05
+**Status:** APPROVED (Controller, 2026-10-05: *"we need to change the max
+daily new trades and we need to change the max concurrent trades, it
+will be dynamic for both … the two values should be dynamic not
+hard-coded"*)
+**Supersedes:** D-0047's two trade-COUNT limits become per-day values
+derived from measurement. D-0047's exposure fractions and kill switch
+are untouched.
+**Closes:** P-053, P-055. P-040 and P-054 are answered by it.
+**Ships in SHADOW mode** — computed and reported, approved limits still
+enforced, until the Controller sees real numbers.
+
+### Decision
+
+```
+max_daily_new_trades   = floor(3 × scale)
+max_concurrent_trades  = floor(5 × scale)
+scale = enriched_with_features today ÷ a measured baseline, clamped [0, 1]
+```
+
+| market seen today | scale | new trades | concurrent |
+|---|---|---|---|
+| 11,000 of 11,000 | 1.00 | 3 | 5 |
+| 9,000 | 0.82 | 2 | 4 |
+| 5,000 | 0.45 | **1** | 2 |
+| 3,000 | 0.27 | **0 — refuse** | — |
+
+Rounding is DOWN, by the Controller's decision.
+
+### Why these two numbers and not the universe Top-N
+
+P-053 first scaled the universe's Top-N. **P-055 showed that would have
+been inert.** The universe publishes 10 candidates but
+`max_daily_new_trades` is 3, so cutting 10 to 4 changes nothing — 4
+still exceeds 3. The candidate list was never the binding constraint;
+the trade cap always was. Scaling Top-N would have done nothing in the
+5,000-symbol partial-fetch case that motivated the whole line of work.
+
+The universe deliberately stays at Top-10. A wider candidate list costs
+nothing behind a tighter gate, and narrowing it only removes choice from
+the ranking.
+
+### Where the baseline comes from
+
+Never a hardcoded market size — that would repeat what D-0065
+corrected, and it violates the Controller's own rule (2026-10-05) that
+calculations rest on recorded data.
+
+The baseline is the trailing figure for `enriched_with_features`, which
+D-0068 began recording in every snapshot, over the most recent **20
+distinct trading dates strictly before today**:
+
+- **distinct DATES, not rows** — measured on the VM, 7 snapshots sat
+  across 3 dates, so a 20-row window would have covered about 8.6 days
+  and one busy date could have filled most of it;
+- **strictly before today** — otherwise a degraded day drags the median
+  toward its own low figure and scores closer to 1.0 than it deserves;
+- **maximum while bootstrapping** (fewer than 20 dates), because a
+  median of one value is that value: a degraded first run would define
+  its own baseline and a second degraded day would then score ~1.0 and
+  pass. A maximum cannot be dragged down, so it errs toward fewer
+  trades while we are blind;
+- **median afterwards, not mean** — the median does not move until more
+  than half the window is bad, so a two or three day outage cannot
+  redefine "normal", while a mean absorbs part of every bad day.
+
+### Safety properties, each with a test
+
+- **It never loosens.** `scale` is clamped at 1.0, so a day that sees
+  more than usual gets the approved numbers and not one trade more.
+- **It never closes a position.** `max_concurrent_trades` gates NEW
+  trades only (`open_trades < limit`), so a scaled-down cap with
+  positions already open refuses to add and can never force an exit.
+- **It never blocks a LADDER.** A ladder adds to a position already
+  approved and open; blocking it would strand an open trade without its
+  ladder.
+- **It fails OPEN to the approved limits.** If the provider raises, the
+  Controller-approved numbers are enforced unchanged. This is the
+  opposite of the fail-CLOSED rule for the portfolio snapshot, and the
+  asymmetry is the point: a missing snapshot means we do not know
+  current exposure and must refuse; a missing scale only means we
+  cannot tighten below limits already approved as safe.
+- **Zero is expressible.** `PortfolioRiskLimits` validates both counts
+  as `>= 1`, so a scaled zero cannot live inside it — the obvious
+  implementation would have raised `ValueError` on exactly the case
+  that must refuse (P-054 §3). Zero is carried as
+  `trading_allowed=False` and surfaces as a named risk check,
+  `degraded_universe_no_new_trades`.
+
+### Shadow mode, and why
+
+`--dynamic-limits` defaults to **`shadow`**: the decision is computed,
+printed and sent to Telegram, and the **approved limits are what the
+enforcer uses**. `active` enforces it; `off` disables it.
+
+This is a trading-behaviour change resting on a baseline that does not
+exist yet — tomorrow's run is the first snapshot that records the
+counter at all; the 7 existing rows carry none. Shadow mode produces
+real numbers for how often it would have fired and by how much, before
+it can cost a single position. It is the Controller's own rule applied
+to the mechanism itself rather than only to its inputs.
+
+### The limit that cannot be fixed
+
+This reduces EXPOSURE, not error. Every D-0048 stage is
+percentile-based, so a percentile over a partial pool stays wrong
+however few trades are opened. One trade from a broken run is one
+less-bad trade, not a good one. It must never be described as a
+correctness mechanism.
+
+### Tests
+
+`tests/risk/test_d0077_dynamic_limits.py` — 33 tests: the four worked
+examples the Controller agreed, rounding down, never loosening, the
+exposure fractions untouched, no-history changing nothing, the bootstrap
+maximum preventing a degraded first run from defining its own baseline,
+the median ignoring a three-day outage but following a real market
+change, the date-window rules (many rows on one date count once, the
+latest snapshot of a date wins, today never in its own baseline,
+pre-D-0068 rows skipped), zero never constructing an invalid limits
+object, and seven enforcer-integration cases including that a blocked
+day still allows a ladder and that a provider raising falls back to the
+approved limits.
+
+The integration tests use the **real** `PortfolioSnapshot`, not a stub —
+a stub missing `gross_exposure()` passed them while the production path
+raised `AttributeError`, which is how that was caught.
+
+Full suite: **1664 passed, 54 subtests passed**.
