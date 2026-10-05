@@ -1423,6 +1423,39 @@ and the suspicions that did not survive the code.
   `has_live_attempt` is True and no new proposal is created, and the
   `elif` branch re-submits into `ExecutionAlreadySubmittedError`, which
   the engine catches. The trade is stuck in that state indefinitely.
+- **REPRODUCED, not inferred (2026-10-05, Controller asked for
+  re-verification).** A script drove the REAL `ExecutionService`, the
+  REAL `Trade` model and the REAL SQLite repositories, stubbing only the
+  broker and the price feed: initial entry filled 20 @ $250, Ladder 1
+  proposed and approved for 4 shares, broker returned a TERMINAL fill of
+  2. Output:
+
+```
+after initial entry : total_shares=20  ladder1_price=237.5  floor=225.0
+ladder 1 proposal   : qty=4 trigger=$237.5
+submitted           : requested_qty=4
+
+broker actually filled      : 2 extra shares
+REAL position at the broker : 22 shares
+trade.total_shares          : 20 shares
+ladder1_filled flag         : False
+weighted_avg_entry_price    : 250.0
+notifications sent          : NONE
+
+>>> SHARES THE FLOOR WOULD LEAVE BEHIND : 2
+>>> value at the floor price $225.0: $450.00
+```
+
+  Both halves of the finding are confirmed by execution: the shares are
+  unrecorded, and **not one notification is sent**. The weighted average
+  also stays at the pre-ladder 250.0, so every later percentage is
+  computed from a stale base.
+
+- **The "no message" half, verified exhaustively.** Every notification
+  event name the engine can emit was listed (41 of them). The list
+  contains `ladder2_partial_fill_pending_confirmation` and **no
+  `ladder1_*` event of any kind**. The asymmetry is total.
+
 - **RECOMMENDATION (needs Controller approval — it changes execution
   behavior):** mirror the Ladder-2 design, which the Controller already
   approved for exactly this situation. A partial Ladder-1 fill should
