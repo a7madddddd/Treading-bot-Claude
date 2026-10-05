@@ -1105,10 +1105,28 @@ session starts from substance instead of re-deriving it.
 - **Not a defect:** the five open positions are auto-excluded from the
   pool by design (Controller-approved 2026-10-01), so their absence
   from the universe is correct.
+- **FACT, the engine itself was healthy throughout.** Verified at
+  17:25 UTC: `systemctl --user is-active trading-engine.service` =
+  `active`, `NRestarts=0`, heartbeat age 30.4 s against a 30 s
+  reconcile interval, account ACTIVE with equity 100,426.18 USD. It
+  restarted cleanly at 15:40:39 UTC, right after the morning's runs
+  were stopped.
+- **FACT, the engine IS in snapshot mode.** Its live command line reads
+  `--universe-mode snapshot`, so the `symbols=('TSLA','AAPL','SPY')`
+  line in the log is the unused argparse default, not a watchlist. A
+  note for future diagnosis: the preflight block that would say this
+  explicitly (`universe: D-0026 snapshot ...`) goes to Telegram via
+  `notifier.send`, NOT to stdout, so its absence from `logs/engine.log`
+  proves nothing either way. The process command line is the evidence.
 - **Still open:** why the one survivor `LOW` produced no proposal.
-  Candidates: the research layer rejected it, D-0047 portfolio risk
-  limits with five positions already open, or the D-0060 market-open
-  gate. Needs one engine-log read.
+  Candidates: the research evaluator's 60/100 minimum, D-0047 portfolio
+  limits with five positions already open, or the macro blackout
+  calendar. **It cannot be answered from the current logs** —
+  `logs/engine.log` has held 1,179 bytes since startup and records
+  nothing about trigger checks, candidate evaluation or rejection
+  reasons. That blindness is the finding; P-038's observability work is
+  the fix, and until then every such question needs a live reproduction
+  rather than a log read.
 
 ### P-036 — No minimum size on an approved snapshot
 - **Status:** OPEN, raised by Claude 2026-10-05 under CLAUDE.md §0.d.
