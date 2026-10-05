@@ -1496,3 +1496,187 @@ class TestFloorLimitPriceRoundingConsolidated(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestNothingToTradeNotification(unittest.TestCase):
+    """Controller-approved 2026-10-05: when the Engine has nothing it
+    can legitimately propose, it must SAY so once per trading day
+    instead of staying silent. Silence cannot be distinguished from a
+    dead engine or a crashed pipeline.
+
+    Also covers the P-014 companion rule: with no fallback watchlist,
+    an empty universe means no new trade -- and that fact is reported,
+    not hidden.
+    """
+
+    @staticmethod
+    def _nothing_events(notifier):
+        return [e for e in notifier.events
+                if e.event == "nothing_to_trade_today"]
+
+    def test_empty_watchlist_reports_no_snapshot(self):
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        engine, _b, _m, _d, notifier, _e = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            watchlist=StaticWatchlistSource(()),
+        )
+        engine._lock.acquire(now=_now())
+        engine.run_trigger_check(now=_now())
+
+        events = self._nothing_events(notifier)
+        self.assertEqual(len(events), 1)
+        self.assertIn("no universe snapshot for today", events[0].message)
+        self.assertIn("no-universe = no-trade", events[0].message)
+        # And nothing was proposed.
+        self.assertEqual(len(proposal_repo.list_all()
+                             if hasattr(proposal_repo, "list_all") else []), 0)
+
+    def test_no_proposal_is_created_when_watchlist_is_empty(self):
+        """The P-014 guarantee itself: an empty universe creates no
+        Trade at all. Previously a fallback watchlist would have
+        produced TSLA/AAPL/SPY trades here."""
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        engine, _b, _m, _d, _n, _e = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            watchlist=StaticWatchlistSource(()),
+        )
+        engine._lock.acquire(now=_now())
+        engine.run_trigger_check(now=_now())
+        for symbol in ("TSLA", "AAPL", "SPY"):
+            self.assertEqual(
+                trade_repo.list_for_symbol(symbol), [],
+                f"{symbol} must never be traded from a fallback list",
+            )
+
+    def test_reported_once_per_trading_day_not_once_per_tick(self):
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        engine, _b, _m, _d, notifier, _e = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            watchlist=StaticWatchlistSource(()),
+        )
+        engine._lock.acquire(now=_now())
+        # Three D-0021 ticks on the SAME ET trading date.
+        for hour in (13, 14, 15):  # 09:30 / 10:30 / 11:30 ET in UTC
+            engine.run_trigger_check(
+                now=datetime(2026, 10, 6, hour, 30, tzinfo=timezone.utc))
+        self.assertEqual(len(self._nothing_events(notifier)), 1)
+
+    def test_reported_again_on_the_next_trading_day(self):
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        engine, _b, _m, _d, notifier, _e = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            watchlist=StaticWatchlistSource(()),
+        )
+        engine._lock.acquire(now=_now())
+        engine.run_trigger_check(
+            now=datetime(2026, 10, 6, 13, 30, tzinfo=timezone.utc))
+        engine.run_trigger_check(
+            now=datetime(2026, 10, 7, 13, 30, tzinfo=timezone.utc))
+        events = self._nothing_events(notifier)
+        self.assertEqual(len(events), 2)
+        self.assertIn("2026-10-06", events[0].message)
+        self.assertIn("2026-10-07", events[1].message)
+
+    def test_dedup_key_uses_et_date_not_utc_date(self):
+        """22:00 ET on 2026-10-06 is 02:00 UTC on 2026-10-07. Both must
+        count as the SAME ET trading date, so only one message fires.
+        A UTC-based key would wrongly send two."""
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        engine, _b, _m, _d, notifier, _e = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            watchlist=StaticWatchlistSource(()),
+        )
+        engine._lock.acquire(now=_now())
+        engine.run_trigger_check(
+            now=datetime(2026, 10, 6, 20, 0, tzinfo=timezone.utc))   # 16:00 ET
+        engine.run_trigger_check(
+            now=datetime(2026, 10, 7, 2, 0, tzinfo=timezone.utc))    # 22:00 ET same day
+        events = self._nothing_events(notifier)
+        self.assertEqual(len(events), 1)
+        self.assertIn("2026-10-06", events[0].message)
+
+    def test_all_symbols_already_open_reports_that_reason(self):
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        _active_trade(trade_repo, trade_id="T-OPEN", symbol="TSLA")
+        engine, _b, market_data, _d, notifier, _e = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            watchlist=StaticWatchlistSource(("TSLA",)),
+        )
+        # _process_trade runs for the open trade, so it needs a price.
+        market_data.set_price("TSLA", 100.0)
+        engine._lock.acquire(now=_now())
+        engine.run_trigger_check(now=_now())
+        events = self._nothing_events(notifier)
+        self.assertEqual(len(events), 1)
+        self.assertIn("already", events[0].message)
+        self.assertIn("1 universe symbol", events[0].message)
+
+    def test_all_candidates_rejected_by_hard_filter_is_reported(self):
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        # negative score = hard-filter reject, per the fake's convention
+        evaluator = TestWatchlistWithTradeEvaluator._FakeEvaluator(
+            {"A": -1.0, "B": -1.0})
+        engine, _b, market_data, _d, notifier, _e = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            watchlist=StaticWatchlistSource(("A", "B")),
+            trade_evaluator=evaluator,
+        )
+        for s in ("A", "B"):
+            market_data.set_price(s, 100.0)
+        engine._lock.acquire(now=_now())
+        engine.run_trigger_check(now=_now())
+        events = self._nothing_events(notifier)
+        self.assertEqual(len(events), 1)
+        self.assertIn("2 candidate(s) evaluated", events[0].message)
+        self.assertIn("2 rejected by the hard filter", events[0].message)
+        self.assertIn("none passed the hard filter", events[0].message)
+
+    def test_all_candidates_below_min_score_reports_the_best_score(self):
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        evaluator = TestWatchlistWithTradeEvaluator._FakeEvaluator(
+            {"A": 55.0, "B": 42.0})
+        engine, _b, market_data, _d, notifier, _e = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            watchlist=StaticWatchlistSource(("A", "B")),
+            trade_evaluator=evaluator,
+        )
+        for s in ("A", "B"):
+            market_data.set_price(s, 100.0)
+        engine._lock.acquire(now=_now())
+        engine.run_trigger_check(now=_now())
+        events = self._nothing_events(notifier)
+        self.assertEqual(len(events), 1)
+        self.assertIn("best score 55.0 < required 60", events[0].message)
+        # No trade was opened for either symbol.
+        for s in ("A", "B"):
+            self.assertEqual(trade_repo.list_for_symbol(s), [])
+
+    def test_no_message_when_a_proposal_IS_created(self):
+        """The message must only fire on a genuinely empty cycle -- a
+        productive cycle stays quiet about it."""
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        evaluator = TestWatchlistWithTradeEvaluator._FakeEvaluator({"A": 80.0})
+        engine, _b, market_data, _d, notifier, _e = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            watchlist=StaticWatchlistSource(("A",)),
+            trade_evaluator=evaluator,
+        )
+        market_data.set_price("A", 100.0)
+        engine._lock.acquire(now=_now())
+        engine.run_trigger_check(now=_now())
+        self.assertEqual(self._nothing_events(notifier), [])
+        self.assertEqual(len(trade_repo.list_for_symbol("A")), 1)
+
+    def test_message_is_labelled_as_status_not_error(self):
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        engine, _b, _m, _d, notifier, _e = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            watchlist=StaticWatchlistSource(()),
+        )
+        engine._lock.acquire(now=_now())
+        engine.run_trigger_check(now=_now())
+        event = self._nothing_events(notifier)[0]
+        self.assertEqual(event.level, NotificationLevel.IMPORTANT)
+        self.assertIn("not an error", event.message)
+        self.assertIn("Ladder / Floor / Trailing are unaffected",
+                      event.message)

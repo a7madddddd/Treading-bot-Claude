@@ -3041,3 +3041,409 @@ either (a) replace `self._sizing_policy = APPROVED_D0051_POLICY` with a
 cleanly (b) revert this commit; the migration 0007 column stays and is
 harmless (new proposals simply store a quantity-aligned value again).
 Both routes require a new Controller decision superseding D-0051.
+
+---
+
+## D-0052 — Mandatory change-tracking: every change updates the written record in the same session
+
+**Date:** 2026-10-05
+**Decided by:** Controller
+**Status:** APPROVED
+**Supersedes:** nothing. Extends CLAUDE.md §0 and §9 with an explicit
+record-keeping obligation.
+
+### Context
+
+Across 2026-09-29 to 2026-10-04, work repeatedly moved faster than the
+written record. Concrete cost, measured:
+
+- The four engine-heartbeat Routines were disabled on 2026-10-02 at
+  14:46 UTC. No decision entry and no `pending-approvals.md` row
+  recorded that. As a result, the system looked "24/7-protected" in the
+  docs while in reality nothing was watching the engine, and the
+  2026-10-04 engine stop went unnoticed until the Controller saw the
+  absence of Telegram messages.
+- `routines/README.md` still documents four live legacy Routines
+  (`trig_01NeX4pSm5jEHPXBJzCaNWkW`, `trig_01581wxFHJzBnuLXJUUuQtDS`,
+  `trig_01TxPK91QKfqtsHVgexhTxVB`, `trig_01UzNbZZgcGj8Jkj9SZHJwJR`).
+  A live account listing on 2026-10-05 returns none of them — they no
+  longer exist. The repo described a state that was four days stale.
+- `--max-hours 24` was presented to the Controller as "24/7". Nothing
+  in the record said what the flag actually does, so the contradiction
+  was not catchable from the docs.
+
+### Decision
+
+Every create / update / fix / delete / enable / disable in this project
+updates the written record **in the same working session as the
+change**. Three files carry the record:
+
+1. `docs/trading/decisions.md` — append a new `D-NNNN` for anything
+   touching trading behavior, execution, risk, DB schema, architecture,
+   or an approved contract. Append-only; supersede, never rewrite.
+2. `CLAUDE.md` — update when a rule about how Claude works changes.
+3. `docs/trading/pending-approvals.md` — the live "where did we stop"
+   board; one `P-NNN` row per open item, marked RESOLVED with date and
+   cause when it closes, never deleted.
+
+Each update states WHAT changed (file paths + concrete behavior), WHY
+(with a number or example), STATUS (done / partial / blocked and on
+what), TESTS (what ran, what result), and NEXT (the single next step).
+
+A commit that changes code and leaves these three files stale is an
+incomplete commit.
+
+### Rationale
+
+The Controller's stated requirement is that at any moment the repo
+alone answers "where did we stop, what is broken, what is next" —
+without reconstructing it from chat history, which does not survive
+context compaction. Operational state that lives only in a session
+transcript is operationally invisible: the disabled-heartbeat case
+above is exactly that failure, and it cost a full trading day of engine
+downtime.
+
+### Implementation
+
+- `CLAUDE.md` §12 — the rule, in full, including the §0.a addition that
+  a session must also read the last `decisions.md` entry at start.
+- `docs/trading/pending-approvals.md` — rewritten 2026-10-05 against a
+  live audit of the account Routines, the git branch, the SQLite state,
+  and the full test suite, so the board reflects measured state and not
+  remembered state.
+
+### Tests
+
+Process decision; no production code path changed. Full suite re-run on
+2026-10-05 as the audit baseline: **1402 passed, 8 subtests passed**.
+(The D-0051 entry's "1411/1411" counted passed tests plus subtests
+under a different pytest invocation; the collected-test count is 1402.)
+
+### Next
+
+Close the open `P-NNN` items on the refreshed board, in the order the
+Controller chooses.
+
+---
+
+## D-0053 — Code-level audit 2026-10-05: four corrections and five newly proven defects
+
+**Date:** 2026-10-05
+**Decided by:** Claude (findings) — Controller decisions still open
+**Status:** PROPOSED (findings recorded; no code changed by this entry)
+**Supersedes:** nothing. Corrects the record created by the first
+2026-10-05 audit pass.
+
+### Context
+
+The first audit pass on 2026-10-05 inspected the ephemeral cloud
+container that Claude runs in and reported its state as the system's
+state. That was wrong in four ways, all corrected by the Controller:
+
+1. The Oracle Cloud VM host exists, the system is hosted on it, and the
+   engine runs there. B17 is closed, not open.
+2. The Routines were disabled deliberately. They were TSLA test-only
+   and are not used any more.
+3. The API keys were already rotated.
+4. KO and V were not rejected. The Controller was unsure and asked for
+   verification rather than assuming.
+
+The Controller then restated a standing project rule: anything
+containing TSLA, or shaped like the TSLA Routines, is TEST-ONLY;
+production works from the D-0026 / D-0048 dynamic Universe; and the
+system of record is the latest code on the GitHub branch.
+
+The second pass was done against the code and the live DB, with each
+claim proven by a direct call.
+
+### Findings
+
+**F1 — snapshot mode silently falls back to the TSLA test watchlist.**
+`scripts/run_paper_session.py:497` passes
+`fallback_watchlist=symbols`, and `--symbols` defaults to
+`TSLA,AAPL,SPY`. Per `src/engine/snapshot_watchlist.py:48-53` the
+fallback is returned whenever today's snapshot is missing or empty, and
+`()` only when the fallback is `None`. The newest snapshot is for
+2026-10-01, so every snapshot-mode run after that date has been
+eligible to open INITIAL_ENTRY on TSLA, AAPL and SPY. B22 in
+`pre-apply-checklist.md` documents this as a deliberate
+transition-period choice; under the Controller's restated rule the
+transition period is over, which converts it from a choice into a
+defect. Tracked as P-014.
+
+**F2 — nothing refreshes the Universe snapshot; this is the real 24/7
+gap.** The Engine only reads snapshots; the sole writer is
+`scripts/run_universe_selection.py`, a one-shot script.
+`src/engine/snapshot_watchlist.py:47` looks up today's ET date only, so
+a day without a refresh is a day with no universe. `SchedulerDaemon`
+(B29 / D-0023) is complete and tested but unwired: its only entry
+point, `scripts/run_scheduler.py`, registers one job whose callable
+`_real_slot()` merely prints "live routine not yet wired", and no
+universe-refresh job exists anywhere. Tracked as P-015.
+
+**F3 — the engine startup message always claims there is no snapshot.**
+`scripts/run_paper_session.py:648` calls
+`snapshot_repo.get_snapshot_for(now.date())`. That method does not
+exist; `SqliteSnapshotRepository` defines `get_latest_for_date`.
+Verified: the wrong name raises
+`AttributeError: 'SqliteSnapshotRepository' object has no attribute 'get_snapshot_for'`,
+the bare `except Exception` swallows it, `today_snap` becomes `None`,
+and the else branch always sends "No universe snapshot for today yet".
+Querying the same DB with the correct method returns a snapshot for
+2026-10-01, so the message was false, not merely pessimistic. The same
+block also compares a UTC date against the ET date the watchlist source
+uses, which disagree between 00:00 and 04:00 UTC. Introduced by Claude
+in commit `feb422a`; its own comment calls the static fallback
+"(unused)", which F1 disproves. Tracked as P-016.
+
+**F4 — KO and V were never decided, and no PENDING proposal ever
+expires.** DB query: both `KO-d7424af8-initial_entry-42839e85` and
+`V-6d56fb92-initial_entry-ca9af192` are `approval_state = 'pending'`
+with `approval_received_at`, `decided_by`, `approved_action` and
+`expired_at` all NULL (account totals: 5 approved, 7 rejected, 2
+pending). Both trades read `AWAITING_INITIAL_FILL`, so
+`engine.py:1121-1123` excludes those symbols from new proposals while
+that holds. They are not permanently stuck —
+`_recover_trade` (`engine.py:447-467`) re-sends fresh Approve / Reject
+buttons on each engine start. Separately, there is no time-based expiry
+for a PENDING proposal anywhere: `src/proposals/repository.py:243`
+supersedes a pending sibling only when a new proposal for the same
+trade and action is saved. Tracked as P-010.
+
+**F5 — the startup recovery path can leave a symbol locked.**
+`engine.py:490` submits an INITIAL_ENTRY without
+`initial_entry_trade_id`, while the equivalent call sites at
+`engine.py:632` and `engine.py:1026` both pass it. Per
+`_submit_approved`'s docstring (`engine.py:1478-1487`) that argument is
+what abandons the Trade on a terminal pre-fill refusal; without it the
+Trade stays `AWAITING_INITIAL_FILL` and the symbol is locked out.
+Severity is low because `_recover_approved_without_execution`
+(`engine.py:582`) runs every reconciliation tick, covers the same
+condition and does pass the argument, so the gap self-heals in about 30
+seconds at the default `--reconcile-seconds`. Tracked as P-019.
+
+**F6 — no US market holiday calendar.** `src/engine/schedule.py:60` and
+`src/scheduler/daemon.py:21` both flag the D-0006 gap in their own
+docstrings, and a repo-wide search finds no implementation. The main
+loop does not gate ticks on market-open state; `/v2/clock` is read once
+during preflight only. On a weekday holiday the 09:30 ET tick fires
+anyway. Tracked as P-018.
+
+**F7 — saved snapshots lack score and sector detail.** Every symbol
+entry in the 2026-10-01 snapshot has `score_summary: []`,
+`sector: null`, `confidence_status: "not_calibrated"` and
+`risk_status: "not_calibrated"`; its rejection summary is
+`A_tradability: 53`, `C_execution_quality: 10`,
+`D_strategy_mechanics_fit: 4`. A Stage G sector cap cannot be audited
+when the saved sector is null, and the Stage F ranking is not
+reconstructible from the snapshot. Tracked as P-020.
+
+### Decision
+
+No code is changed by this entry. F1, F2 and F6 change trading
+behavior or operational scheduling and therefore require Controller
+approval per CLAUDE.md §2 before implementation. F3, F5 and F7 are
+bug / observability fixes that change no trading behavior and may
+proceed under `docs/development-workflow.md` Phase 4's bug-fix clause,
+but are held until the Controller sets the order of work. F4 needs two
+Controller clicks (recommended: reject both) plus a decision on whether
+a PENDING proposal should have a TTL.
+
+### Rationale
+
+F1 is recorded as the top priority because it is the only finding that
+can put real paper money into a symbol the Controller has explicitly
+designated test-only, and it does so under a flag whose name implies
+the opposite. F2 is second because it is the actual cause of the
+symptom the Controller asked about — the project does not yet run 24/7
+in any sense beyond the engine process staying up, since without a
+daily snapshot the engine has nothing to trade. F3 is third not for its
+severity but because it is what hid F1 and F2 from view: the Controller
+was told every day that no snapshot existed, which made a stale
+universe look like a pipeline that had simply not run yet.
+
+### Tests
+
+No production code changed. Full suite re-run as the audit baseline:
+**1402 passed, 8 subtests passed.** Migration 0007 additionally
+dry-run against a copy of the live DB: `user_version` 6 → 7,
+`initial_quantity` present, 14 of 14 existing rows NULL.
+
+### Next
+
+Controller decides the order. Claude's recommended order is P-014,
+then P-015 together with P-016, then P-010.
+
+---
+
+## D-0054 — No fallback watchlist in snapshot mode; empty universe is reported, not silent
+
+**Date:** 2026-10-05
+**Decided by:** Controller
+**Status:** APPROVED and IMPLEMENTED
+**Supersedes:** the B22 transition-period fallback allowance in
+`docs/trading/pre-apply-checklist.md` (row B22). D-0026 §6 now applies
+strictly in production.
+
+### Context
+
+The Controller restated the standing rule: `TSLA`, `AAPL` and `SPY` are
+TEST-ONLY. They are allowed into a trade in exactly ONE way — if the
+D-0026 Universe itself selects them after research, like any other
+symbol in the market. Never as a hardcoded list, never as a fallback,
+never as a default.
+
+`scripts/run_paper_session.py` violated that. In snapshot mode it
+constructed the universe source with `fallback_watchlist=symbols`,
+where `--symbols` defaults to `TSLA,AAPL,SPY`. Per
+`src/engine/snapshot_watchlist.py` the fallback is returned whenever
+today's snapshot is missing or empty. The newest snapshot was for
+2026-10-01, so every snapshot-mode run from 2026-10-02 onward was
+eligible to open an INITIAL_ENTRY on those three test symbols — under a
+flag named `--universe-mode snapshot`, which implies the opposite. The
+VM's live run (PID 159529) passed no `--symbols` at all, so the default
+was in force there.
+
+### Decision
+
+1. In snapshot mode the fallback is `None`. No universe for the current
+   ET trading date means NO new trade that day. Existing positions are
+   unaffected — Ladder, Floor and Trailing run regardless of watchlist
+   emptiness.
+2. Silence is not acceptable as the signal for "nothing to trade". The
+   Engine sends exactly ONE `nothing_to_trade_today` notification per
+   ET trading date, naming WHICH no-trade case fired, so the Controller
+   can tell a pipeline failure from a normal quiet day, and can tell
+   both from a dead engine.
+
+### Rationale
+
+The Controller's words: "we didn't want to suggest any proposal for a
+day that didn't have any succeeded items to propose. We can say we
+didn't have anything to trade today, so I can know on Telegram the
+system is working fine and we didn't have any bug — just today we
+didn't have anything to trade."
+
+Silence is ambiguous and the ambiguity already cost a day: the
+2026-10-04 engine stop went unnoticed because absence of messages was
+indistinguishable from a quiet market.
+
+### The three reported cases
+
+| Case | Message says |
+|---|---|
+| watchlist empty | no universe snapshot for today; D-0026 no-universe = no-trade |
+| all symbols already have an open trade | `N universe symbol(s) already have an open trade` |
+| candidates evaluated, none accepted | `N candidate(s) evaluated, M rejected by the hard filter`, plus either `none passed the hard filter` or `best score X < required 60` |
+
+Every message ends with "The engine is running normally; existing
+positions continue to be monitored (Ladder / Floor / Trailing are
+unaffected). This is a status message, not an error." Level is
+IMPORTANT, never CRITICAL — it is not a fault.
+
+### Implementation
+
+- `scripts/run_paper_session.py` — snapshot mode now passes
+  `fallback_watchlist=None`.
+- `src/engine/engine.py` — new `Engine._notify_nothing_to_trade`,
+  deduplicated per US-Eastern trading date through the existing
+  `_notified` set. Called from the two empty paths in
+  `_check_watchlist`: no candidates at all, and no candidate accepted
+  after ranking.
+- `src/engine/engine.py` — imports `D0021_TIMEZONE_ET` from
+  `engine/schedule.py` for the ET date, rather than inventing a second
+  timezone convention.
+
+The dedup set is in-memory, so an Engine restart mid-day re-sends the
+message once. Kept deliberately: a restart is itself something the
+Controller should see.
+
+### Tests
+
+New `TestNothingToTradeNotification` in `tests/engine/test_engine.py`,
+10 tests:
+- empty watchlist reports the no-snapshot reason
+- **no Trade is created for TSLA / AAPL / SPY from an empty watchlist**
+  — the P-014 guarantee itself
+- reported once per trading day, not once per tick (3 ticks → 1 message)
+- reported again on the next trading day (2 dates → 2 messages)
+- the dedup key uses the ET date, not the UTC date: 20:00 UTC and
+  02:00 UTC next day are the same ET date → 1 message, where a UTC key
+  would wrongly send 2
+- all symbols already open reports that reason
+- all candidates hard-filtered reports the counts
+- all candidates below min score reports the best score
+- a productive cycle sends NO such message
+- the message is IMPORTANT and labelled "not an error"
+
+Full suite: 1402 → **1412 passed, 8 subtests passed**. No regressions.
+
+Verified against the live DB, not only in tests: with the fix,
+`get_latest_for_date(2026-10-01)` returns the real snapshot
+(`NVDA, KO, AMZN, V`, `is_empty=False`), and the current ET date
+(2026-10-05) correctly returns None.
+
+### Next
+
+P-015 — wire the D-0026 selection run so a snapshot exists every
+trading morning. Until that is done, this decision means the engine
+will correctly trade nothing.
+
+---
+
+## D-0055 — Engine startup message reported "no snapshot" unconditionally
+
+**Date:** 2026-10-05
+**Decided by:** Claude (bug fix, no trading-behavior change)
+**Status:** IMPLEMENTED
+**Supersedes:** the startup-message block added in commit `feb422a`.
+
+### Context
+
+The Controller received this on every engine start, including starts
+where a snapshot existed:
+
+> Engine live in snapshot mode. No universe snapshot for today yet —
+> engine will pick it up on the next cycle once it is written.
+
+Two independent bugs in the same block produced it:
+
+1. It called `snapshot_repo.get_snapshot_for(now.date())`. That method
+   does not exist — `SqliteSnapshotRepository` defines
+   `get_latest_for_date`. Verified directly:
+   `hasattr(SqliteSnapshotRepository, "get_snapshot_for")` is `False`,
+   and the call raises
+   `AttributeError: 'SqliteSnapshotRepository' object has no attribute 'get_snapshot_for'`.
+   A bare `except Exception` swallowed it and set `today_snap = None`,
+   so the else branch fired every time.
+2. It passed `now.date()`, a UTC date, while
+   `SnapshotUniverseSource` looks the snapshot up by the US Eastern
+   trading date. Between 00:00 and 04:00 UTC those differ by one day,
+   so even with (1) fixed the message could contradict the Engine.
+
+Severity is in the consequence, not the code: this is what hid both the
+stale universe (P-015) and the live TSLA fallback (P-014) from the
+Controller for days. He was told daily that no snapshot existed, which
+made a broken pipeline look like a pipeline that had simply not run.
+
+### Decision
+
+Call the real method with the SAME effective-date helper the Engine's
+own watchlist source uses, so the message cannot disagree with the
+Engine. A genuine lookup failure now prints the exception class and
+message instead of being silently reported as "no snapshot". The
+no-snapshot message now also states the consequence explicitly: per
+D-0054, no new trade will be opened today.
+
+### Implementation
+
+`scripts/run_paper_session.py` — uses
+`engine.snapshot_watchlist._current_effective_date_et(now)` and
+`snapshot_repo.get_latest_for_date(effective_date)`.
+
+### Tests
+
+Verified against the live DB rather than only in a test: the fixed call
+returns the real 2026-10-01 snapshot (4 symbols) that the old call
+could never return, and correctly returns None for 2026-10-05.
+Full suite: 1412 passed, 8 subtests passed.

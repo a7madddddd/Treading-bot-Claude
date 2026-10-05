@@ -494,8 +494,21 @@ def main() -> int:
         from d0026.sqlite_repository import SqliteSnapshotRepository
         from engine.snapshot_watchlist import SnapshotUniverseSource
         snapshot_repo = SqliteSnapshotRepository(conn)
+        # Controller-approved 2026-10-05 (P-014): NO fallback watchlist
+        # in snapshot mode. Previously this passed
+        # `fallback_watchlist=symbols`, so a day with no D-0026 snapshot
+        # silently fell back to the `--symbols` default TSLA,AAPL,SPY --
+        # which are TEST-ONLY symbols. They are allowed into a trade in
+        # exactly one way: if the Universe itself selects them after
+        # research, like any other symbol. Never as a hardcoded list.
+        # With fallback_watchlist=None the strict D-0026 §6 rule applies:
+        # no universe for today => no NEW trade today. Existing
+        # positions are unaffected (Ladder / Floor / Trailing run
+        # regardless of watchlist emptiness), and the Engine now sends
+        # one `nothing_to_trade_today` notification per trading day so
+        # an empty universe is visible instead of silent.
         watchlist = SnapshotUniverseSource(
-            snapshot_repo, fallback_watchlist=symbols,
+            snapshot_repo, fallback_watchlist=None,
         )
     else:
         watchlist = StaticWatchlistSource(symbols)
@@ -642,11 +655,36 @@ def main() -> int:
         now = datetime.now(timezone.utc)
         engine.start(now=now)
         # Build a mode-aware startup message so the Controller sees the
-        # ACTUAL universe source, not the (unused) static --symbols fallback.
+        # ACTUAL universe the Engine will trade.
+        #
+        # P-016 fix (2026-10-05). This block had TWO bugs that together
+        # made it report "no snapshot" on every single start, even when
+        # a snapshot existed:
+        #   1. it called `snapshot_repo.get_snapshot_for(...)`, which
+        #      does not exist on SqliteSnapshotRepository -- the method
+        #      is `get_latest_for_date`. The AttributeError was
+        #      swallowed by the bare `except Exception`, so today_snap
+        #      was ALWAYS None.
+        #   2. it passed `now.date()`, a UTC date, while
+        #      SnapshotUniverseSource looks the snapshot up by the US
+        #      Eastern trading date. Between 00:00 and 04:00 UTC those
+        #      differ by a day, so even with (1) fixed the message
+        #      could contradict what the Engine actually reads.
+        # Both are fixed by calling the real method with the SAME
+        # effective-date helper the Engine's own watchlist source uses,
+        # so the message can no longer disagree with the Engine.
         if args.universe_mode == "snapshot":
+            from engine.snapshot_watchlist import _current_effective_date_et
+            effective_date = _current_effective_date_et(now)
             try:
-                today_snap = snapshot_repo.get_snapshot_for(now.date())
-            except Exception:  # noqa: BLE001
+                today_snap = snapshot_repo.get_latest_for_date(effective_date)
+            except Exception as exc:  # noqa: BLE001
+                # Still defensive -- but no longer silent. A real
+                # failure here must be visible, not reported as
+                # "no snapshot".
+                print(f"[universe] snapshot lookup FAILED for "
+                      f"{effective_date}: {type(exc).__name__}: {exc}",
+                      flush=True)
                 today_snap = None
             if today_snap is not None and not today_snap.is_empty:
                 tickers_preview = ", ".join(
@@ -659,9 +697,12 @@ def main() -> int:
                 )
             else:
                 startup_msg = (
-                    "Engine live in snapshot mode. No universe snapshot "
-                    "for today yet — engine will pick it up on the next "
-                    "cycle once it is written."
+                    f"Engine live in snapshot mode. NO universe snapshot "
+                    f"for {effective_date} (ET). Per D-0026 no-universe = "
+                    f"no-trade, and the TSLA/AAPL/SPY fallback was removed "
+                    f"on 2026-10-05, so NO new trade will be opened today "
+                    f"until the D-0026 selection run writes a snapshot. "
+                    f"Existing positions are still monitored."
                 )
         else:
             startup_msg = (
