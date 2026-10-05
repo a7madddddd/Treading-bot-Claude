@@ -467,3 +467,34 @@ implement.
 
 When a change is partly both, the trading-behavior part decides: hold
 the whole commit until approved.
+
+### 12.b — Prove it before it enters the repo (Controller rule, 2026-10-05)
+
+**Controller's reasoning, in his words:** pushing something unproven
+means that when the result is bad, the cost is a whole cycle — pull the
+repo, remove the change, restore the old code, push again, then pull
+again on the VM. The way to avoid that cycle is not to enter it.
+
+So: **experimental and exploratory work is tested FIRST, in Claude's
+own environment, and reaches the repository only after its result is
+seen and the Controller decides it is worth keeping.**
+
+This applies to measurement scripts, research tooling, spike
+implementations and anything built to answer a question rather than to
+serve the running system.
+
+It does NOT apply to:
+- a fix for a defect already diagnosed and agreed,
+- the decision log and `pending-approvals.md`, which are the record and
+  must stay current per §12,
+- anything the Controller explicitly asked to be pushed.
+
+**Local commits are fine and are not a push.** The repository is what
+the Controller's VM pulls from; a commit that never reaches `origin`
+never reaches him. Claude may commit locally to protect work from a
+container reclaim, and must say plainly that it is local-only.
+
+**What matters is the finding, not the tool.** When an experiment
+answers its question, the ANSWER belongs in the docs even if the code
+that produced it is discarded. A recorded measurement keeps its value
+forever; a one-off script usually does not.
