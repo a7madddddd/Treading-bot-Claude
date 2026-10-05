@@ -42,6 +42,35 @@ mathematically inconsistent, unsupported, or unsafe, say so, show the
 numbers, and propose a better alternative — then let the Controller
 decide.
 
+## Calculate from recorded data, never from a chosen number
+
+**Controller rule, 2026-10-05:** *"we need to make our calculation for
+something real, something we already know. Not suggestion, not thinking
+without any real data."*
+
+Any threshold, band, cut-off or baseline that governs trading behavior
+must come from something the system has **measured and recorded**, not
+from a number that felt reasonable while writing the code.
+
+If the measurement does not exist yet:
+
+1. record it first and let it accumulate,
+2. say plainly that the parameter is deferred until there is data,
+3. do **not** ship a placeholder constant in the meantime — a
+   placeholder becomes permanent, and nobody later remembers it was a
+   guess.
+
+Where a guessed number is genuinely unavoidable to get started, it is
+labelled as a bootstrap in the code comment, biased toward the
+conservative side, and paired with the measurement that will replace it.
+
+This rule exists because it has already paid twice:
+- **D-0065** narrowed the ATR band from an assumed 1%–5% to a measured
+  2%–4%, after a 150-symbol run disproved what 12 hand-picked liquid
+  symbols had suggested.
+- **P-053** replaced a hardcoded market size of 11,683 with the trailing
+  median of what each run actually enriched.
+
 ## Tone
 
 Short, direct, numerically grounded. Teach where it helps. Ask when
