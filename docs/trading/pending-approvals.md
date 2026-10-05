@@ -1894,8 +1894,9 @@ notifications sent          : NONE
   command destroying `paper_session.sqlite` while the engine is running.
   A nightly local copy covers that for the cost of one timer.
 
-### P-052 — Daily DB backup to GitHub with a Telegram confirmation (Controller request, 2026-10-05)
-- **Status:** OPEN — research done, design proposed, **blocked on one
+### P-052 — Daily DB backup to GitHub with a Telegram confirmation — RESOLVED (D-0076, 2026-10-05)
+- **Status:** RESOLVED by D-0076. The credential blocker was diagnosed on the VM (HTTPS remote, no helper, no outbound key) and fixed with a repo-scoped SSH deploy key; a real push succeeded.
+- **Status when raised:** OPEN — research done, design proposed, **blocked on one
   credential question**. No code written.
 - **Controller's request, verbatim:** retry the GitHub push, but once
   after the market close, and send a short Telegram message — "database

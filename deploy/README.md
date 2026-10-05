@@ -12,6 +12,7 @@ Two units, approved 2026-10-05.
 |---|---|---|
 | `trading-engine.service` | keeps the engine alive | always |
 | `universe-refresh.timer` | writes today's snapshot | weekdays 06:00 ET |
+| `db-backup.timer` | pushes the database to GitHub | weekdays 16:30 ET |
 
 Both are needed. The engine alone is not enough: it only READS
 snapshots — nothing in `src/engine` writes one — and
@@ -37,6 +38,8 @@ mkdir -p ~/.config/systemd/user
 cp deploy/trading-engine.service   ~/.config/systemd/user/
 cp deploy/universe-refresh.service ~/.config/systemd/user/
 cp deploy/universe-refresh.timer   ~/.config/systemd/user/
+cp deploy/db-backup.service        ~/.config/systemd/user/
+cp deploy/db-backup.timer          ~/.config/systemd/user/
 systemctl --user daemon-reload
 ```
 
@@ -71,7 +74,34 @@ Then enable both:
 ```bash
 systemctl --user enable --now trading-engine.service
 systemctl --user enable --now universe-refresh.timer
+systemctl --user enable --now db-backup.timer
 ```
+
+## The daily database backup (P-052)
+
+`db-backup.timer` is the ONLY thing that pushes `paper_session.sqlite`.
+The engine keeps `--no-db-push`, so the old per-tick behaviour — roughly
+780 commits a trading day — cannot come back by accident.
+
+It requires the VM to authenticate to GitHub. As of 2026-10-05 that is
+an SSH **deploy key** scoped to this one repository with write access:
+`~/.ssh/github_deploy_key`, selected by a `Host github.com` block in
+`~/.ssh/config`, with the remote set to the `git@github.com:` form. The
+private half never leaves the VM and is never committed.
+
+Before the key existed the remote was HTTPS with no credential helper,
+so a push sat forever at `Username for 'https://github.com':` — which is
+exactly how an unattended timer hangs. Verify with:
+
+```bash
+ssh -T git@github.com        # expect: Hi <owner>/<repo>! You've successfully authenticated
+git push --dry-run           # expect: Everything up-to-date, never 'Write access ... not granted'
+```
+
+Every run reports to Telegram: IMPORTANT on a successful push, OPTIONAL
+when nothing changed that day, CRITICAL with the real git error on
+failure. A quiet day is reported deliberately — silence would not let
+the Controller tell "nothing changed" from "the job is broken".
 
 ## Verify
 

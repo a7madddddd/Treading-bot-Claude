@@ -5326,3 +5326,114 @@ the load-bearing phrases of each prohibition. **Result: none missing.**
 
 No code changed; the full suite was re-run regardless: **1614 passed, 54
 subtests passed**.
+
+---
+
+## D-0076
+
+**Date:** 2026-10-05
+**Status:** APPROVED (Controller, 2026-10-05: *"I will try another time
+with the GitHub push after the market close and send me a small message
+that told me the database updated for today … if it's succeed, if not it
+should be sold me a failure"*)
+**Closes:** P-052. Partially addresses P-051.
+
+### Decision
+
+A once-daily backup of `paper_session.sqlite` to GitHub, after the
+close, reporting to Telegram every time.
+
+- `scripts/backup_db.py` — the job
+- `deploy/db-backup.sh` / `.service` / `.timer` — weekdays 16:30
+  America/New_York
+- The engine **keeps `--no-db-push`**
+
+### Why a separate job and not the engine
+
+`_make_db_persister()` already existed and did the same git work at the
+end of every tick, which is what produced roughly 780 commits a trading
+day. Putting it back, even daily, would mean:
+
+- a backup failure could touch a tick that is also evaluating protective
+  exits;
+- the job could compete with a trading tick for the SQLite write lock;
+- nothing structural would stop a future change returning it to
+  per-tick.
+
+Running it as its own unit after the close removes all three. Keeping
+`--no-db-push` on the engine makes the regression impossible rather than
+a matter of care.
+
+### What unblocked it
+
+The Controller reported that an earlier attempt failed for lack of a
+GitHub identity and *"that was pause the entire project."* Diagnosed on
+the VM rather than guessed:
+
+```
+remote             https://github.com/...        <- asks for a password
+credential helper  (none configured)
+~/.ssh/            authorized_keys only          <- inbound only, no outbound key
+ssh git@github.com Permission denied (publickey)
+git push           Username for 'https://github.com':
+```
+
+That last line is exactly how an unattended timer hangs forever. GitHub
+has not accepted passwords over HTTPS for years, so remembering a
+password was never going to work either.
+
+Fixed with an **SSH deploy key scoped to this one repository** with
+write access — chosen over a personal access token because it has no
+expiry to forget and no broader reach. Verified end to end: `ssh -T`
+returned `Hi a7madddddd/Treading-bot-Claude! You've successfully
+authenticated`, and a real push succeeded (`3022db5..e406819`). The
+private half never leaves the VM and is never committed.
+
+### Reporting
+
+Three outcomes, none silent:
+
+| outcome | level | message |
+|---|---|---|
+| pushed | IMPORTANT | "Database updated for <date> ✅", size and commit |
+| nothing changed | OPTIONAL | "nothing changed today … the job ran and is healthy" |
+| failed | CRITICAL | the real git error, plus "still safe on the VM's disk … nothing about trading is affected" |
+
+A quiet day is reported **deliberately**. Silence would not let the
+Controller tell "nothing changed" from "the job is broken" — the same
+ambiguity D-0054 removed from the trading side.
+
+### Safety
+
+Only `paper_session.sqlite` is ever staged or committed (`git commit
+--only`), so nothing else dirty in the working tree can ride along —
+the guarantee the per-tick persister was approved with on 2026-10-01,
+and the reason an experiment can never leave on a backup. The job pulls
+before committing, because otherwise any commit pushed from elsewhere
+would make every subsequent backup a failed non-fast-forward.
+
+### Timing
+
+16:30 ET, half an hour after the 16:00 close: the engine is still
+reconciling at the bell, and a backup taken mid-reconciliation could
+capture a half-applied state. The timezone is named, not computed in
+UTC, so the DST switches cannot move it — the D-0069 reasoning.
+`systemd-analyze calendar` confirms: next elapse Tue 2026-10-06 20:30
+UTC.
+
+### Tests
+
+`tests/scripts/test_db_backup_reporting.py` — 17 tests on the pure
+reporting decision: each outcome's level and wording, that a failure
+after a change is never reported as a success, that no outcome is
+silent, that the commit is scoped to one file, and that `engine-run.sh`
+still carries `--no-db-push`.
+
+Full suite: **1631 passed, 54 subtests passed**.
+
+### What this does NOT solve
+
+P-051's wider point stands only partly. This is a weekday backup, so a
+weekend loss falls back to Friday's copy, and it depends on GitHub being
+reachable. It is an off-machine copy, which is the part that was
+missing.

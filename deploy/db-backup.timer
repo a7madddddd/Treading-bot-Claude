@@ -1,0 +1,25 @@
+# USER TIMER. Install to ~/.config/systemd/user/
+#
+# 16:30 America/New_York, weekdays -- half an hour after the 16:00 close.
+#
+# Why after the close and not at a fixed UTC hour: the engine is still
+# reconciling right at the bell, and a backup taken mid-reconciliation
+# could capture a half-applied state. Thirty minutes is well past the
+# last fill of the session.
+#
+# The timezone is named rather than computed in UTC, so the US DST
+# switches do not silently move this by an hour -- the same reasoning as
+# universe-refresh.timer and D-0069.
+
+[Unit]
+Description=Run the daily database backup after the market close
+
+[Timer]
+OnCalendar=Mon-Fri 16:30 America/New_York
+# If the VM was off at 16:30, back up as soon as it is back rather than
+# skipping the day entirely.
+Persistent=true
+Unit=db-backup.service
+
+[Install]
+WantedBy=timers.target

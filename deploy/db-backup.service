@@ -1,0 +1,27 @@
+# Daily database backup to GitHub.
+#
+# USER UNIT. Install to ~/.config/systemd/user/ -- see
+# trading-engine.service for the SELinux evidence behind that choice.
+#
+# Type=oneshot: it runs, pushes at most one commit, and exits. No
+# Restart=: a failed backup is reported to the Controller on Telegram
+# and retried by tomorrow's timer. Retrying blindly would hammer GitHub
+# instead of telling anyone -- the same reasoning as
+# universe-refresh.service.
+
+[Unit]
+Description=Daily backup of paper_session.sqlite to GitHub (P-052)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+
+# Minutes, not the 4h the universe refresh needs: this pushes one small
+# file. The bound exists so a hung network call cannot sit forever.
+TimeoutStartSec=15min
+WorkingDirectory=%h/Treading-bot-Claude
+ExecStart=%h/Treading-bot-Claude/deploy/db-backup.sh
+
+StandardOutput=append:%h/Treading-bot-Claude/logs/db-backup.log
+StandardError=append:%h/Treading-bot-Claude/logs/db-backup.log
