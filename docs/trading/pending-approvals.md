@@ -720,3 +720,81 @@ Controller's VM, not inferred:
   after. If there is no time for it, option 1 costs one trading day and
   keeps the decision clean — the engine is currently trading nothing
   anyway, so nothing is lost that is not already lost.
+
+### P-029 — The daily universe run may not finish before the open
+- **Status:** OPEN and TIME-CRITICAL. The timer fires tomorrow 08:45 ET.
+- **FACT, measured on the VM 2026-10-05:** the broker returns **12,591**
+  tradable symbols. D-0056 excludes **908** as leveraged or inverse
+  (7.2% of the market), leaving **11,683** to enrich.
+- **FACT:** enrichment is ONE bars request per symbol
+  (`AlpacaFeatureEnricher._fetch_bars`). There is no batch path.
+- **Arithmetic:**
+
+| requests/min | full-run duration |
+|---|---|
+| 200 | ~58 min |
+| 300 | ~39 min |
+| 500 | ~23 min |
+
+  Alpaca's free tier is commonly 200/min. Starting at 08:45 ET that run
+  finishes around **09:43 — after the 09:30 open**, so the first D-0021
+  trigger of the day would still find no snapshot.
+- **Why this was not visible before:** the 2026-10-03 snapshot processed
+  only 77 candidates (rejection summary A:53, C:10, D:4, plus 10
+  survivors), because that run was whitelisted or capped. The timer runs
+  **un-whitelisted** on purpose — every pipeline stage is
+  percentile-based and needs the full pool — so it is the first run to
+  face the real symbol count.
+- **An architectural note, not a bug:** Stage A's volume percentile
+  cannot pre-filter before enrichment, because the volume it ranks on is
+  itself a feature that enrichment produces. So the cost cannot be
+  avoided by reordering stages.
+- **Options:**
+  1. Move the timer earlier — 06:00 ET gives 3.5 hours of headroom and
+     costs nothing. Smallest change, fixes the stated risk.
+  2. Measure the real throughput first (time one capped run), then pick
+     the time from the measured rate instead of an assumed limit.
+  3. Cap the run with `--max-symbols`. Rejected on its own: an
+     arbitrary alphabetical slice of the market is not a universe, and
+     it silently reintroduces the small-pool problem P-001 warns about.
+- **Claude's RECOMMENDATION: 1 and 2 together.** Move the timer to
+  06:00 ET now, because it is free and removes the deadline risk
+  entirely; and time one run so the figure is measured rather than
+  assumed.
+
+### P-025 — first real measurement (the band decision)
+- **Status:** OPEN, now with data. 150-symbol sample, VM, 2026-10-05.
+
+| band | count | share | branch |
+|---|---|---|---|
+| 0–1% | 18 | 12.1% | rejected by Stage D |
+| 1–2% | 33 | 22.1% | slow — ladder rarely fires |
+| 2–3% | 43 | 28.9% | middle |
+| 3–4% | 24 | 16.1% | middle |
+| 4–5% | 16 | 10.7% | fast — floor in ~2 days |
+| >5% | 15 | 10.1% | rejected by Stage D |
+
+- **The fast branch is REAL, not theoretical.** `PTHS` 4.85%, `DYN`
+  4.92%, `MSOS` 4.96% all reach the −10% Floor in **2.0–2.1 average
+  adverse days**. Claude's previous note — written from a hand-picked
+  sample of liquid large caps where nothing exceeded 4% — was wrong to
+  call that branch theoretical. The hand-picked sample was the
+  unrepresentative one.
+- **The slow branch is also real:** 22.1% sit at 1–2%, where −5% is four
+  to five average adverse days away.
+- **Starvation is NOT a risk**, which was the whole reason for
+  measuring. Projected to the 11,683 symbols entering the pipeline:
+  1%–5% ≈ 9,100 survivors; 2%–4% ≈ 5,260. Thousands either way, against
+  a Top-10 output.
+- **METHODOLOGICAL CAVEAT, stated because it bounds the conclusion:**
+  this measures the RAW pool. In the pipeline, Stage D sees only what
+  survived Stages A–C, which keep the most liquid names — and liquid
+  names skew slower. So the post-A/B/C distribution is probably shifted
+  toward the slow end, making the fast tail smaller and the slow
+  problem larger than the table above shows.
+- **Decision needed:** keep 1%–5%, or narrow. Claude's recommendation is
+  **2%–4%**: it removes both tails, is justified by the measured pace
+  table rather than by reasoning alone, and leaves ~5,260 candidates —
+  no starvation. The caveat above argues for confirming on the
+  post-A/B/C pool first if the Controller wants certainty rather than a
+  well-supported choice.
