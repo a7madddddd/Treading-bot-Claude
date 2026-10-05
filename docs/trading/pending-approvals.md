@@ -2048,14 +2048,40 @@ drifts as listings change. Since D-0068 every snapshot records
   `raw_candidates_fetched` seen so far, which after the first healthy
   run is the real market size.
 
-#### The case that needs a decision
+#### The case that needs a decision — and a CORRECTION to Claude's first answer
 
 When `fetched` is above the hard guard but the formula yields **0** — as
-at 1,000 symbols above — the snapshot would be empty. It must be marked
-empty **with a reason naming the scaling**, so the Controller's
-once-a-day `nothing_to_trade_today` message says *why* rather than
-leaving a silent blank day. Anything less reproduces the exact failure
-shape of 2026-10-05.
+at 1,000 symbols above — what should happen?
+
+**Claude first recommended writing an EMPTY snapshot with a reason.
+That recommendation is withdrawn. It is wrong, and dangerously so.**
+
+An empty snapshot is still a *written row*, and
+`SnapshotUniverseSource` takes the **latest** row for the trading date.
+So a degraded run late in the day would write an empty snapshot that
+**replaces a perfectly good one written earlier that morning** — and the
+engine would go from a real Top-10 to nothing, for the rest of the day,
+because of a run that saw less of the market.
+
+That is the identical failure shape as 2026-10-05, where a 40-candidate
+test run replaced the day's universe. D-0068 solved it by making the
+guard a CRASH outcome — **nothing is written at all**, so any snapshot
+already published for that date survives untouched.
+
+**REVISED RECOMMENDATION: a scaled count of 0 refuses, exactly like the
+hard guard**, with its own reason naming the scaling so the two are
+distinguishable in the record, and the same IMPORTANT Telegram message.
+Writing nothing is the only option that cannot destroy a good snapshot.
+
+#### Does the hard guard become redundant?
+
+No, and the reason is the same one. Below ~1,168 symbols the scaling
+already yields 0, so the two overlap in *outcome*. They are kept
+separate because they answer different questions: the guard says "this
+run did not see the market at all", the scaling says "this run saw
+part of the market, and here is proportionally how much to trust it".
+Keeping both means the record says WHICH judgement fired, and a future
+change to one cannot silently remove the other.
 
 #### Scope boundary
 
