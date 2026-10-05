@@ -615,6 +615,11 @@ def main() -> int:
         portfolio_filter=portfolio_filter,
         macro_calendar=macro_calendar,
         political_universe_source=political_universe,
+        # D-0073 (P-045): reuse the SAME builder the D-0047 risk
+        # enforcer already uses, so the drift check adds no new broker
+        # client, endpoint or credential -- only a comparison, every
+        # ten minutes, that reports and never corrects.
+        position_snapshot_builder=snapshot_builder,
     )
 
     # Preflight Telegram summary (before engine.start(), so still safe).

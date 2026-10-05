@@ -296,6 +296,7 @@ class Engine:
         proposal_enricher=None,
         trade_evaluator=None,
         portfolio_filter=None,
+        position_snapshot_builder=None,
         macro_calendar=None,
         political_universe_source=None,
     ) -> None:
@@ -341,6 +342,15 @@ class Engine:
         # D-0050 Phase 14: optional PortfolioFilter runs AFTER the
         # evaluator to enforce sector + correlation caps.
         self._portfolio_filter = portfolio_filter
+        # D-0073 (P-045): the SAME callable the D-0047 risk enforcer
+        # already uses -- LivePortfolioSnapshotBuilder, which returns a
+        # PortfolioSnapshot whose `positions` carry symbol and qty. No
+        # new broker client, no new endpoint, no new credentials. None
+        # disables the check entirely, so every existing caller and test
+        # behaves exactly as before.
+        self._position_snapshot_builder = position_snapshot_builder
+        self._last_drift_check_at: Optional[datetime] = None
+        self._drift_reported: Set[Tuple[str, int, int]] = set()
         # D-0050 Phase 16: optional MacroEventCalendar blocks new
         # proposals in the pre-event window.
         self._macro_calendar = macro_calendar
@@ -554,6 +564,7 @@ class Engine:
                     continue
                 self._execution_service.recover_if_terminal(proposal.proposal_id, now=now)
                 self._maybe_notify_ladder2_pending_confirmation(proposal.proposal_id, now=now)
+                self._maybe_notify_ladder1_partial_fill(proposal.proposal_id, now=now)
 
         # SELL-side (Floor) recovery -- has no proposal to anchor a
         # lookup to, so it needs its own call regardless of the
@@ -637,8 +648,91 @@ class Engine:
             for proposal in self._proposal_repo.list_for_trade(trade_id):
                 if proposal.proposed_action is TradeAction.LADDER_2 and proposal.approval_state is ApprovalState.APPROVED:
                     self._maybe_notify_ladder2_pending_confirmation(proposal.proposal_id, now=now)
+                self._maybe_notify_ladder1_partial_fill(proposal.proposal_id, now=now)
+        self._check_position_drift(now=now)
         self._heartbeat(now=now)
         self._persist_db_best_effort(now=now)
+
+    def _check_position_drift(self, *, now: datetime) -> None:
+        """D-0073 (P-045, Controller-approved 2026-10-05): compare what
+        the broker says we hold with what this engine believes, and
+        REPORT any difference. Detection only.
+
+        Why reporting and not correcting. Writing the broker's number
+        into our state would silently absorb exactly the failures this
+        is meant to expose: a bug of ours that loses shares would be
+        papered over, and a position the Controller bought by hand in
+        the Alpaca app would be adopted into a trade and given a
+        protective floor he never asked for. Detection teaches us;
+        silent correction blinds us.
+
+        Fails open in every direction. No snapshot builder wired -> no
+        check. Broker unreachable -> skipped quietly; this is a
+        reporting aid, and it must never be able to interfere with a
+        tick that is also evaluating protective exits.
+        """
+        if self._position_snapshot_builder is None:
+            return
+        if self._last_drift_check_at is not None:
+            elapsed = (now - self._last_drift_check_at).total_seconds()
+            if elapsed < self.POSITION_DRIFT_INTERVAL_SECONDS:
+                return
+        self._last_drift_check_at = now
+
+        try:
+            snapshot = self._position_snapshot_builder()
+            broker_qty = {
+                p.symbol.upper(): int(round(float(p.qty)))
+                for p in getattr(snapshot, "positions", ())
+            }
+        except Exception:  # noqa: BLE001 - reporting aid, never blocks a tick
+            return
+
+        seen = set()
+        for record in self._trade_repo.list_active():
+            trade = record.trade
+            symbol = trade.symbol.upper()
+            seen.add(symbol)
+            theirs = broker_qty.get(symbol, 0)
+            ours = int(trade.total_shares or 0)
+            if theirs == ours:
+                continue
+            self._notify_once(
+                kind="position_drift",
+                key=f"{symbol}:{theirs}:{ours}",
+                level=NotificationLevel.CRITICAL,
+                event="position_drift_detected",
+                message=(
+                    f"{symbol} — share count does not match the broker\n"
+                    f"\n"
+                    f"Broker says   {theirs} shares\n"
+                    f"We think      {ours} shares\n"
+                    f"\n"
+                    f"Nothing was changed automatically. The auto-sell "
+                    f"protection covers {ours} shares, so "
+                    f"{abs(theirs - ours)} "
+                    f"{'are unprotected' if theirs > ours else 'may already be gone'}."
+                ),
+                symbol=symbol,
+            )
+
+        for symbol, qty in broker_qty.items():
+            if qty == 0 or symbol in seen:
+                continue
+            self._notify_once(
+                kind="position_unknown",
+                key=f"{symbol}:{qty}",
+                level=NotificationLevel.IMPORTANT,
+                event="position_not_tracked",
+                message=(
+                    f"{symbol} — the broker holds {qty} shares that this "
+                    f"engine is not tracking.\n"
+                    f"\n"
+                    f"No trade here owns them, so no auto-sell protection "
+                    f"applies to them. Nothing was changed."
+                ),
+                symbol=symbol,
+            )
 
     def _recover_approved_without_execution(self, *, now: datetime) -> None:
         """Finds proposals in state APPROVED that have no execution
@@ -1259,6 +1353,16 @@ class Engine:
     #   MIN_SCORE        — a candidate must score >= this to become a proposal
     _TOP_N_PER_CYCLE = 3
     _MIN_SCORE = 60.0
+
+    POSITION_DRIFT_INTERVAL_SECONDS = 600.0
+    """D-0073: how often the broker's share counts are compared with
+    ours. NOT every tick: the snapshot costs two broker calls, and at
+    the 30s reconciliation interval that would be 240 extra calls an
+    hour. On 2026-10-05 a burst of broker calls exhausted the rate limit
+    and left the protective Floor unevaluated on five open positions
+    (P-032), so adding a per-tick call to catch a rare divergence would
+    trade a large, certain risk for a small one. Ten minutes catches any
+    drift long before it matters and costs 12 calls an hour."""
 
     OUTAGE_ESCALATION_MISSES = 10
     """P-043: consecutive failed price reads before the engine reports
@@ -2048,6 +2152,61 @@ class Engine:
     # Ladder 2 partial-fill confirmation notification (shared by
     # recovery and the reconciliation tick -- same derivable condition)
     # ------------------------------------------------------------------
+
+    def _maybe_notify_ladder1_partial_fill(self, proposal_id: str, *, now: datetime) -> None:
+        """D-0072: tell the Controller when Ladder 1 fills only partly.
+
+        Ladder 2 has had this message since it was built; Ladder 1 had
+        none. Verified on 2026-10-05 by listing every notification event
+        the Engine can emit -- 41 of them, one for a Ladder 2 partial
+        fill and not a single `ladder1_*` event. A reproduction confirmed
+        the silence: a 4-share Ladder 1 filling 2 produced zero
+        notifications.
+
+        The shares are now recorded automatically (D-0072), so this
+        message reports a fact rather than asking for a decision. It
+        says so explicitly, because the Ladder 2 message asks for one
+        and two near-identical messages meaning different things would
+        be worse than no message at all.
+        """
+        proposal = self._proposal_repo.get(proposal_id)
+        if proposal is None or proposal.proposed_action is not TradeAction.LADDER_1:
+            return
+        execution_record = self._execution_repo.get_by_proposal_id(proposal_id)
+        if execution_record is None:
+            return
+        execution = execution_record.execution
+        if not execution.is_broker_terminal:
+            return
+        if execution.filled_qty == 0 or execution.filled_qty == execution.requested_qty:
+            return
+        trade_record = self._trade_repo.get(proposal.trade_id)
+        if trade_record is None or trade_record.trade.ladder1_filled:
+            return
+
+        trade = trade_record.trade
+        self._notify_once(
+            kind="ladder1_partial_fill",
+            key=proposal_id,
+            level=NotificationLevel.IMPORTANT,
+            event="ladder1_partial_fill_recorded",
+            message=(
+                f"{proposal.symbol} — Ladder 1 partially filled\n"
+                f"\n"
+                f"Wanted   {execution.requested_qty} shares\n"
+                f"Got      {execution.filled_qty} shares\n"
+                f"You now hold {trade.total_shares} shares"
+                + (f" at ${trade.weighted_avg_entry_price:,.2f} average"
+                   if trade.weighted_avg_entry_price else "")
+                + "\n"
+                f"\n"
+                f"The shares are recorded, so the auto-sell protection "
+                f"covers them.\n"
+                f"The rest was not bought and will not be chased. "
+                f"Nothing to approve."
+            ),
+            symbol=proposal.symbol,
+        )
 
     def _maybe_notify_ladder2_pending_confirmation(self, proposal_id: str, *, now: datetime) -> None:
         proposal = self._proposal_repo.get(proposal_id)

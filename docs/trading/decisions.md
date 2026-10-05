@@ -4958,3 +4958,155 @@ missing data is the one thing that must never happen.
   `tests/notifications/test_telegram.py` now assert the new intent
   (shortened research header; `08:00 ET` instead of the UTC ISO stamp).
 - Full suite: **1570 passed, 54 subtests passed**, no regressions.
+
+---
+
+## D-0072
+
+**Date:** 2026-10-05
+**Status:** APPROVED (Controller, 2026-10-05: "let's use the option
+number three, record the same [shares] automatically")
+**Closes:** P-044 (Ladder 1), P-047. Raises P-049.
+
+### Decision
+
+A terminal PARTIAL **Ladder 1** fill now records the shares it actually
+bought onto the Trade, and notifies, **without** setting
+`ladder1_filled`.
+
+The split the Controller approved: *"how many shares do I own"* is a
+FACT and is recorded automatically; *"is this ladder finished"* is a
+trading DECISION and is untouched.
+
+### Why
+
+Reproduced before and after, through the real `ExecutionService`, the
+real `Trade` model and real SQLite:
+
+```
+BEFORE                              AFTER
+REAL position at broker : 22        REAL position at broker : 22
+trade.total_shares      : 20        trade.total_shares      : 22
+ladder1_filled          : False     ladder1_filled          : False
+weighted_avg            : 250.0     weighted_avg            : 248.8636
+notifications           : NONE      notifications           : ['ladder1_partial_fill_recorded']
+SHARES THE FLOOR LEAVES : 2         SHARES THE FLOOR LEAVES : 0
+value at the floor      : $450      value at the floor      : $0
+```
+
+The weighted average now matches the arithmetic truth
+`(20×250 + 2×237.50)/22`, which also puts the trailing-floor activation
+back at $273.75 instead of $275.00.
+
+### How idempotency is guaranteed (P-047)
+
+`recover_if_terminal` re-applies terminal executions on every engine
+startup, and its safety rested entirely on `ladder1_filled` as the
+"already applied" flag — which this path deliberately does not set. An
+incremental `total_shares + filled_qty` would have added the same fill
+again on every restart: 20, 22, 24, 26, silently.
+
+So `ExecutionService.position_from_ledger()` computes an **absolute**
+number from immutable inputs: the frozen `initial_filled_shares` and
+`original_initial_entry_fill_price` (D-0009), plus terminal ladder buy
+fills, minus terminal sell fills. Re-running converges — the same
+guarantee `_apply_protective_exit` already gives the sell side.
+
+**A first draft of that method was wrong and the reproduction caught
+it.** It summed buy execution rows alone and computed 2 shares instead
+of 22, because an initial-entry execution row is not guaranteed to exist
+for every trade. The frozen Trade fields are the authoritative base;
+execution rows add to them.
+
+### Scoped to Ladder 1, deliberately
+
+Ladder 2 keeps its Controller-approved flow — notify, then require
+`confirm_ladder2_partial_fill`. Two reasons, both found by running the
+tests rather than by reasoning:
+
+1. `confirm_ladder2_partial_fill` adds `filled_qty` to the CURRENT
+   `total_shares`. Recording the shares first made the confirmation add
+   them a second time: 10 + 10 became **30** instead of 20.
+2. An unconfirmed Ladder 2 partial is, by that approved design,
+   deliberately not yet part of the position.
+
+`position_from_ledger` therefore skips a Ladder 2 fill until
+`ladder2_filled` is set. **The consequence is P-049: a Ladder 2 partial
+still strands shares until the Controller presses confirm.**
+
+### Tests
+
+`tests/execution/test_d0072_partial_ladder1_position.py` — 18 tests
+driving the real Engine end to end: the shares land in the position, the
+ladder flag stays False, the weighted average is recomputed and actually
+moves, the frozen ladder/floor levels are untouched, one notification is
+sent and only one however many ticks pass, and four idempotency tests
+(20 reconciliation ticks, 5 `recover_if_terminal` calls, 3 full
+`engine.recover()` passes, and the weighted average staying put). Four
+more pin that Ladder 2 is unchanged.
+
+Full suite: **1604 passed, 54 subtests passed**.
+
+---
+
+## D-0073
+
+**Date:** 2026-10-05
+**Status:** APPROVED (Controller, 2026-10-05: "yes you can just notify
+and we will take action because we didn't have any channel to take the
+action")
+**Closes:** P-045 with option A. P-048 records why option C was not
+taken.
+
+### Decision
+
+Every 10 minutes the Engine compares the broker's share count with its
+own and **reports** any difference. Two events, both deduped:
+`position_drift_detected` (CRITICAL) for a tracked symbol whose counts
+disagree, `position_not_tracked` (IMPORTANT) for a symbol the broker
+holds that no trade here owns.
+
+It **never corrects**.
+
+### Why detection and not correction
+
+Writing the broker's number into our state would silently absorb exactly
+the failures this exists to expose. A bug of ours that loses shares
+would be papered over. A position the Controller bought by hand in the
+Alpaca app would be adopted into a trade and given a protective floor he
+never asked for. Detection teaches; silent correction blinds.
+
+### Why not option C (freeze on divergence)
+
+P-048: every Controller decision in this system is
+`(kind, proposal_id)`. A freeze belongs to no proposal, so **there is no
+channel to lift one**. Trading would stop with no way back short of a
+restart or a hand edit of the database. The Controller chose notify-only
+on exactly that reasoning.
+
+### Reusing what exists, and the cost
+
+No new broker client, endpoint or credential: the Engine takes the SAME
+`LivePortfolioSnapshotBuilder` the D-0047 risk enforcer already uses,
+whose `PositionView` already carries `symbol` and `qty`. When no builder
+is wired the check does not exist, so every existing caller and test is
+unchanged.
+
+`POSITION_DRIFT_INTERVAL_SECONDS = 600`, not per tick. The snapshot
+costs two broker calls; at the 30-second reconciliation interval that
+would be 240 extra calls an hour. On 2026-10-05 a burst of broker calls
+exhausted the rate limit and left the protective Floor unevaluated on
+five open positions (P-032). Ten minutes costs 12 calls an hour and
+still catches drift long before it matters.
+
+### Tests
+
+`tests/engine/test_d0073_position_drift.py` — 16 tests: matching counts
+stay silent; the broker holding more, fewer, or nothing at all is
+reported with both numbers; our share count is never modified; an
+untracked symbol never creates a trade; a zero quantity is ignored; the
+same divergence is reported once across 30 ticks; the broker is polled
+at most twice across 20 ticks; and it fails open both when no builder is
+wired and when the broker is unreachable.
+
+Full suite: **1604 passed, 54 subtests passed**.

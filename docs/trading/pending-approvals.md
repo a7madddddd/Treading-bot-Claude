@@ -1388,8 +1388,9 @@ Read end to end: `src/execution/service.py` (858 lines),
 and the protective-exit path. Two confirmed defects, one deferred idea,
 and the suspicions that did not survive the code.
 
-### P-044 — A partial LADDER-1 fill strands real shares with no floor
-- **Status:** OPEN. **The most serious finding of 2026-10-05.** Real
+### P-044 — A partial LADDER-1 fill strands real shares with no floor — RESOLVED (D-0072, 2026-10-05)
+- **Status:** RESOLVED by D-0072 for Ladder 1. Ladder 2 stays as designed; the residual risk there is P-049.
+- **Status when raised:** OPEN. **The most serious finding of 2026-10-05.** Real
   money, silent, and reachable from the live system today.
 - **FACT, three independent gaps that compound:**
   1. `ExecutionService._apply_to_trade_if_terminal` returns without
@@ -1503,8 +1504,9 @@ notifications sent          : NONE
   stranding into something the Controller can act on by hand, and
   changes no execution logic.
 
-### P-045 — The engine never checks its share count against the broker
-- **Status:** OPEN. This is the control that would have caught P-044
+### P-045 — The engine never checks its share count against the broker — RESOLVED (D-0073, 2026-10-05)
+- **Status:** RESOLVED by D-0073 with option A (detect and report, never correct).
+- **Status when raised:** OPEN. This is the control that would have caught P-044
   automatically.
 - **FACT:** `/v2/positions` is read in exactly one place,
   `src/risk/portfolio_snapshot.py:125`, and only for dollar exposure.
@@ -1566,8 +1568,9 @@ notifications sent          : NONE
   fields rather than subtracting from current state, so re-applying is
   idempotent by construction.
 
-### P-047 — Option 3 for P-044 has an idempotency trap (found BEFORE coding)
-- **Status:** OPEN — design constraint for the Controller-approved
+### P-047 — Option 3 for P-044 has an idempotency trap (found BEFORE coding) — RESOLVED (D-0072, 2026-10-05)
+- **Status:** RESOLVED by D-0072's absolute `position_from_ledger`, with four idempotency tests.
+- **Status when raised:** OPEN — design constraint for the Controller-approved
   option 3, recorded before any code was written.
 - **FACT:** `ExecutionService.recover_if_terminal` re-calls
   `_apply_to_trade_if_terminal` on every engine startup recovery, and
@@ -1623,3 +1626,27 @@ notifications sent          : NONE
   option C as a separate, properly-scoped change afterwards. A freeze
   whose release mechanism does not exist is more dangerous than the
   divergence it guards against.
+
+
+### P-049 — A partial LADDER-2 fill still strands shares until confirmed
+- **Status:** OPEN, created by D-0072's deliberate scoping.
+- **FACT:** D-0072 records a partial Ladder 1 automatically. Ladder 2
+  keeps its Controller-approved flow — notify, then require
+  `confirm_ladder2_partial_fill` — so between the fill and the
+  Controller pressing confirm, the shares are real at the broker and
+  absent from `trade.total_shares`. The protective exit would leave them
+  behind, exactly as P-044 described.
+- **Why it was not changed anyway:** recording them first made the
+  confirmation add them a SECOND time (10 + 10 → 30, caught by the
+  existing tests), and the Ladder 2 confirmation flow is approved as it
+  stands. Changing it needs its own decision, not a side effect of
+  another one.
+- **The difference that makes this tolerable:** the Controller is TOLD.
+  Ladder 2 has always had its message; Ladder 1 had none. A loss he can
+  see and choose is not the same failure as one he cannot.
+- **RECOMMENDATION:** extend D-0072 to Ladder 2 — record the shares
+  automatically, and keep the confirmation button for the LADDER
+  COMPLETION decision only, with `confirm_ladder2_partial_fill` setting
+  the flag without re-adding the quantity. That makes both ladders
+  consistent and keeps every decision the Controller already has.
+  Needs approval.
