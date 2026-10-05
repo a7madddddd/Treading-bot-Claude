@@ -618,9 +618,22 @@ def main() -> int:
     )
 
     # Preflight Telegram summary (before engine.start(), so still safe).
+    # The preflight runs before the engine starts, so it must describe
+    # the universe source that will ACTUALLY be used. In snapshot mode
+    # `symbols` is dead input -- since D-0054 removed the fallback, the
+    # static --symbols list is never consulted -- and printing it here
+    # contradicted the startup message sent seconds later (observed by
+    # the Controller on 2026-10-05: preflight said
+    # "symbols: TSLA, AAPL, SPY" while the startup message said there
+    # was no universe at all). Same defect class as D-0055.
+    if args.universe_mode == "snapshot":
+        universe_line = ("universe: D-0026 snapshot "
+                         "(static --symbols is NOT used in this mode)")
+    else:
+        universe_line = f"symbols: {', '.join(symbols)}"
     summary_lines = [
         "[PREFLIGHT] paper session ready",
-        f"symbols: {', '.join(symbols)}",
+        universe_line,
         f"cash: {facts['cash']:.2f} USD",
         f"equity: {facts['equity']:.2f} USD",
         f"market_open: {facts['is_open']}",

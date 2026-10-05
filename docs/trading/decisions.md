@@ -3447,3 +3447,132 @@ Verified against the live DB rather than only in a test: the fixed call
 returns the real 2026-10-01 snapshot (4 symbols) that the old call
 could never return, and correctly returns None for 2026-10-05.
 Full suite: 1412 passed, 8 subtests passed.
+
+---
+
+## D-0056 — Leveraged and inverse products are excluded from the Universe
+
+**Date:** 2026-10-05
+**Decided by:** Controller
+**Status:** APPROVED and IMPLEMENTED
+**Supersedes:** nothing. Adds an eligibility gate ahead of the D-0026
+pipeline. Does NOT change D-0004's ladder levels, D-0008's trailing
+rules, D-0048's parameters, or D-0051's sizing.
+
+### Context
+
+`AlpacaAssetsProvider` requests `asset_class=us_equity`. Alpaca files
+ETFs, leveraged ETFs and inverse ETFs under that same asset class —
+there is no separate class for them — and no stage of the eight-stage
+pipeline filtered on instrument type. The result reached production:
+the Controller's live 2026-10-03 snapshot on the Oracle VM was
+
+`WBD, MUFG, DXD, VOD, MAGS, QQQI, PFE, ILF, CGGR, BCI`
+
+where `DXD` is ProShares UltraShort Dow30, a **−2× leveraged inverse**
+fund.
+
+### Why it is incompatible with the approved ladder
+
+The ladder (D-0004) BUYS MORE as price falls. An inverse fund falls
+when the market RISES, so during an ordinary rally the engine would
+average down into a leveraged bet against that rally. Worked example,
+a 5% index gain over one week:
+
+| index | `DXD` | ladder action |
+|---|---|---|
+| +2.5% | ≈ −5% | Ladder 1 fires, position doubles |
+| +4% | ≈ −8% | Ladder 2 fires, position at maximum |
+| +5% | ≈ −10% | Floor fires, SELL ALL |
+
+Two further structural problems, independent of direction: a
+daily-rebalanced leveraged fund decays over a multi-day hold even if
+the index ends flat; and 2× amplification collapses three separate
+decision points into one session.
+
+### Decision
+
+Leveraged and inverse products are excluded before any pipeline stage
+sees them. The filter defaults to ON — a safety filter must be opted
+out of, never opted into.
+
+**Scope is deliberately narrow.** This decision does NOT answer whether
+ordinary (non-leveraged, non-inverse) funds belong in the Universe.
+The Controller explicitly deferred that: "we didn't want to kill the
+strategy before we study that thing." It is tracked as P-024, and
+`MAGS`, `QQQI`, `ILF`, `CGGR` and `BCI` all still pass this filter.
+
+### Implementation
+
+- `src/d0026/instrument_eligibility.py` — new, pure, no I/O. Three
+  independent rules over the broker's `name` field:
+  1. a standalone multiplier token (`2X`, `3X`, `-1X`, `1.5X`);
+  2. a leverage/inverse word (`ULTRASHORT`, `ULTRAPRO`, `ULTRA`,
+     `LEVERAGED`, `INVERSE`, `BEAR`);
+  3. the word `SHORT` outside a duration context.
+  Versioned as `ELIGIBILITY_POLICY_VERSION = "D0026-INSTR-ELIG-001"`;
+  any rule change is a new version with its own decision entry.
+- `src/d0026/alpaca_provider.py` — new
+  `exclude_leveraged_inverse: bool = True` and a `last_excluded`
+  property carrying the reason for every drop.
+
+### Three judgement calls, stated explicitly
+
+1. **Detection is by name, not by ticker.** A ticker blocklist goes
+   stale the moment a fund is renamed or a ticker reused — exactly the
+   identity trap D-0026 exists to avoid.
+2. **`BULL` is NOT a leverage word.** `Direxion Daily ... Bull 3X
+   Shares` is already caught by the multiplier rule, whereas "bull"
+   alone appears in ordinary fund names and would cause false
+   positives.
+3. **`SHORT` has a duration exception.** In `iShares Short Treasury
+   Bond ETF` and `Vanguard Short-Term Bond ETF`, SHORT is a maturity,
+   not a direction. Those must survive — whether a bond fund belongs
+   in the Universe is P-024's question, not this one's.
+
+### The known limitation, stated rather than hidden
+
+Detection reads the broker's `name` field, and a missing name returns
+ELIGIBLE, because "we could not tell" is not evidence of leverage. So
+if Alpaca ever stops sending names, this filter silently stops
+protecting. That is why `last_excluded` exists: a drop to zero
+exclusions is the signature of the filter no longer working, and it is
+observable rather than assumed.
+
+### Tests
+
+- `tests/d0026/test_instrument_eligibility.py` — 19 tests, 37 subtests.
+  Every fund name used is a REAL product name, never an invented
+  string, since the filter rests on actual issuer naming conventions.
+  Covers: `DXD` itself; 13 real leveraged/inverse funds; 14 ordinary
+  securities that must survive (including all five ordinary funds from
+  the live snapshot); 5 short-DURATION bond funds that must survive
+  while a genuine inverse `ProShares Short QQQ` is still caught;
+  substring false positives (`Shortline`, `Overshort`, `XLK`,
+  `Ex-Energy`, `Max Holdings`, `2XYZ`); missing/empty name; verdict
+  invariants; case insensitivity.
+- `tests/d0026/test_alpaca_provider.py` — 10 new integration tests
+  driving the provider with the Controller's REAL 10-symbol snapshot:
+  `DXD` is dropped, the other nine survive unchanged, the reason is
+  reported, the filter is on by default, it can be disabled, the
+  reason list resets between calls, a nameless asset is kept, and a
+  whitelisted leveraged fund is STILL excluded (the safety filter is
+  not overridable by naming the symbol).
+- Full suite: 1412 → **1440 passed, 45 subtests**. No regressions.
+
+### Also in this commit
+
+`scripts/run_paper_session.py` — the preflight Telegram message printed
+`symbols: TSLA, AAPL, SPY` even in snapshot mode, where that list has
+been dead input since D-0054 removed the fallback. The Controller saw
+it contradict the startup message sent seconds later. Same defect class
+as D-0055. It now prints the universe source actually in use. Display
+only; no trading behavior.
+
+### Next
+
+P-024 (do ordinary funds belong in the Universe at all) stays open and
+needs measurement, not reasoning. The remaining approved work is the
+Universe-to-engine daily link, the political merge into the pipeline,
+the 60-minute proposal expiry, the market-open gate, and the two VM
+services.

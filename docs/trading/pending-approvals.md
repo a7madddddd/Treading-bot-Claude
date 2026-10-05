@@ -376,9 +376,12 @@ any change. A commit that leaves it stale is an incomplete commit.
 
 ## 🚨 ADDED 2026-10-05 (second VM audit) — highest priority
 
-### P-021 — The live Universe selects leveraged and inverse ETFs. One is a −2× inverse fund.
-- **Status:** OPEN. This is the most dangerous finding to date. It is a
-  real money-losing path, not a theoretical one.
+### P-021 — Leveraged and inverse products in the Universe — RESOLVED (D-0056, 2026-10-05)
+- **Status:** APPROVED by the Controller and IMPLEMENTED. Excluded at
+  the provider, before any pipeline stage. Filter defaults to ON.
+  29 new tests; suite 1412 -> 1440 PASS. See D-0056.
+- The ordinary-fund question stays open as P-024.
+- The original finding is kept below for history.
 - **FACT, from the Controller's own VM, snapshot `2026-10-03T16:18:56`,
   the newest snapshot that exists:**
   `WBD, MUFG, DXD, VOD, MAGS, QQQI, PFE, ILF, CGGR, BCI`
