@@ -379,7 +379,7 @@ class TestLadderFlows(unittest.TestCase):
         self.assertFalse(trade.ladder1_filled)
         self.assertEqual(trade.total_shares, 10)
 
-    def test_ladder1_partial_fill_does_not_raise_and_leaves_trade_untouched(self):
+    def test_ladder1_partial_fill_buys_what_existed_and_closes_the_ladder(self):
         # Ladder 1 partial fills have no confirmation path (unlike Ladder
         # 2) -- the fill is simply never applied to Trade, and
         # reconciliation must never raise for this case (it runs inside
@@ -404,13 +404,12 @@ class TestLadderFlows(unittest.TestCase):
         self.assertEqual(len(results), 1)
 
         trade = trade_repo.get("T-1").trade
-        # D-0072 (2026-10-05): the ladder FLAG still stays False -- "is
-        # this ladder finished" remains the Controller's decision. What
-        # changed is that the shares are no longer lost: they are real,
-        # bought and paid for, so the position is recorded and the
-        # protective exit therefore covers them. Before this, the floor
-        # sold 10 and stranded the 4 with no protection at all.
-        self.assertFalse(trade.ladder1_filled)
+        # D-0074 (2026-10-05): a ladder is a PRICE event. The level was
+        # reached, the market had 4 shares, we bought them, and D-0034
+        # forfeits the remainder permanently -- so the ladder is CLOSED
+        # and the shares are in the position. Before this the floor sold
+        # 10 and stranded the 4 with no protection and no message.
+        self.assertTrue(trade.ladder1_filled)
         self.assertEqual(trade.total_shares, 14)
         # The OrderExecution itself still correctly recorded the partial
         # fill.
@@ -852,22 +851,21 @@ class TestLadder2PartialFillCases(unittest.TestCase):
         )
         service.reconcile_unresolved(now=_now() + timedelta(minutes=1))
 
-        # Not auto-applied.
+        # D-0074 (2026-10-05) supersedes D-0034 §4. A ladder is a PRICE
+        # event: the level was reached, the market gave what it had, and
+        # D-0034 already forfeits the remainder permanently -- so the
+        # event is over and is recorded as over, with no confirmation
+        # step left to perform. The shares are part of the position
+        # immediately, which is what the protective exit needs.
         trade = trade_repo.get("T-1").trade
-        self.assertFalse(trade.ladder2_filled)
-        self.assertEqual(trade.total_shares, 10)
+        self.assertTrue(trade.ladder2_filled)
+        self.assertEqual(trade.total_shares, 20)
 
-        # Explicit Controller-approved confirmation applies it.
-        updated = service.confirm_ladder2_partial_fill(
-            "P-L2", decided_by="controller", now=_now() + timedelta(minutes=2)
-        )
-        self.assertTrue(updated.trade.ladder2_filled)
-        self.assertEqual(updated.trade.total_shares, 20)
-
-        # Not repeatable.
+        # The old confirmation entry point now refuses: there is nothing
+        # pending to confirm.
         with self.assertRaises(Ladder2PartialFillNotPendingError):
             service.confirm_ladder2_partial_fill(
-                "P-L2", decided_by="controller", now=_now() + timedelta(minutes=3)
+                "P-L2", decided_by="controller", now=_now() + timedelta(minutes=2)
             )
 
     def test_case_c_zero_terminal_fill_needs_no_approval(self):
@@ -1032,8 +1030,11 @@ class TestReconciliationSweepSurvivesPartialFill(unittest.TestCase):
         results = service.reconcile_unresolved(now=_now() + timedelta(minutes=1))
         self.assertEqual(len(results), 2)
 
+        # D-0074: the partial Ladder 1 is applied and the ladder closed.
+        # The point of this test is unchanged -- a partial fill on one
+        # row must not abort processing of the other row in the sweep.
         trade1 = trade_repo.get("T-1").trade
-        self.assertFalse(trade1.ladder1_filled)
+        self.assertTrue(trade1.ladder1_filled)
 
         trade2 = trade_repo.get("T-2").trade
         self.assertTrue(trade2.initial_order_reconciled)

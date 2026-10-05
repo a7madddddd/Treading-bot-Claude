@@ -441,7 +441,7 @@ class TestDecisionIntakeAndSubmission(unittest.TestCase):
 
         self.assertTrue(any(e.event == "decision_unknown_proposal" for e in notifier.events))
 
-    def test_confirm_ladder2_decision_applies_partial_fill(self):
+    def test_ladder2_partial_fill_is_applied_without_confirmation(self):
         trade_repo, proposal_repo, execution_repo, conn = _repos()
         _active_trade(trade_repo, price=100.0)
         engine, broker, market_data, decisions, notifier, exec_service = _make_engine(
@@ -466,10 +466,18 @@ class TestDecisionIntakeAndSubmission(unittest.TestCase):
         )
         engine.run_reconciliation_tick(now=_now() + timedelta(seconds=3))
 
+        # D-0074 (2026-10-05): a partial fill is applied immediately and
+        # the ladder is closed -- a ladder is a price event, and D-0034
+        # already forfeits the remainder, so there is nothing left to
+        # confirm. The Controller is informed, not asked.
         trade = trade_repo.get("T-1").trade
-        self.assertFalse(trade.ladder2_filled)
-        self.assertTrue(any(e.event == "ladder2_partial_fill_pending_confirmation" for e in notifier.events))
+        self.assertTrue(trade.ladder2_filled)
+        self.assertEqual(trade.total_shares, 20)
+        self.assertTrue(any(e.event == "ladder_partially_filled"
+                            for e in notifier.events))
 
+        # A late CONFIRM decision is now a harmless no-op rather than a
+        # second application: the engine must not double-count it.
         decisions.submit(
             ControllerDecision(proposal_id=proposal.proposal_id, kind=DecisionKind.CONFIRM_LADDER2_PARTIAL_FILL, decided_by="controller")
         )

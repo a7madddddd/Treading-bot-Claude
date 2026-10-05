@@ -4967,6 +4967,32 @@ missing data is the one thing that must never happen.
 **Status:** APPROVED (Controller, 2026-10-05: "let's use the option
 number three, record the same [shares] automatically")
 **Closes:** P-044 (Ladder 1), P-047. Raises P-049.
+**Supersedes:** D-0034 §7, partially — see below. This was missing from
+the first version of this entry and was added when the Controller asked
+for D-0034 to be re-checked on 2026-10-05.
+
+### Relationship to D-0034 (added 2026-10-05)
+
+D-0034 §7 reads:
+
+> "Ladder 1 partial fills are explicitly OUT OF SCOPE for this
+> mechanism: they remain unrepresented in Trade with no confirmation
+> path, **pending a separate, future Controller decision if ever
+> revisited**."
+
+D-0072 **is** that separate future Controller decision, so it supersedes
+§7 and nothing else in D-0034.
+
+**It does not violate D-0034's standing rule.** That rule is: "no
+discretionary/reduced-quantity fill is ever accepted as a **completed
+ladder event** without explicit approval." D-0072 records the SHARES and
+leaves `ladder1_filled` False, so no ladder is marked completed and no
+approval is bypassed. The rule is about completion; D-0072 is about
+ownership.
+
+Every other part of D-0034 is untouched: Ladder 2's reactive
+cancellation, its confirmation requirement, the permanent forfeiture of
+the remainder, and the prohibition on any automatic retry or top-up.
 
 ### Decision
 
@@ -5110,3 +5136,111 @@ at most twice across 20 ticks; and it fails open both when no builder is
 wired and when the broker is unreachable.
 
 Full suite: **1604 passed, 54 subtests passed**.
+
+---
+
+## D-0074
+
+**Date:** 2026-10-05
+**Status:** APPROVED (Controller, 2026-10-05, in his own words: *"the
+ladder hold in the falling, not the partial decrease … we need to buy
+the existing and we need to notify that the exist is only x number of
+shares and you buy them … so the next ladder is minus eight percent"*,
+and *"we wouldn't want to stop at one of the ladders, because the share
+price when it decreases does not wait for us"*)
+**Supersedes:** D-0034 §4 and §7, and D-0072's mechanism (D-0072's
+finding stands; its implementation is replaced by a simpler one).
+**Closes:** P-049, P-050.
+
+### Decision
+
+**A ladder is a PRICE event, not a quantity target.**
+
+| broker's terminal result | what happens now |
+|---|---|
+| full fill | unchanged — applied, ladder closed |
+| **partial fill (>0)** | buy what existed, **record it**, **close the ladder**, inform the Controller, move to the next level |
+| **zero fill** | nothing bought, **ladder stays available** for a later trigger, inform the Controller |
+
+Both ladders behave identically. No confirmation step remains for
+either.
+
+### Why
+
+D-0034 contradicted itself. It forfeits the remainder *permanently*
+("no automatic retry or top-up, ever") and in the same breath calls the
+event *"not a completed ladder"*. If nothing further can ever happen,
+nothing is waiting to complete. The Controller named the root of it: the
+ladder is defined by the fall in price, and the quantity is a result,
+not a condition.
+
+The practical cost of the old framing, both **reproduced** against the
+real service, model and SQLite:
+
+```
+PARTIAL FILL                        BEFORE          AFTER
+position at the broker              22              22
+trade.total_shares                  20              22
+ladder1_filled                      False           True
+notifications                       NONE            ladder_partially_filled
+shares the floor would strand       2  ($450)       0
+
+ZERO FILL                           BEFORE          AFTER
+ladder flagged open                 True            True
+a NEW chance to buy?                NO (stuck)      YES
+notifications                       NONE            ladder_filled_nothing
+```
+
+The zero-fill case was the sharper one: the ladder *looked* open and was
+permanently stuck, because the stale APPROVED proposal made
+`has_live_attempt` true forever. Five further trigger checks at the
+trigger price produced no new chance to buy, and nothing was reported.
+
+### How
+
+- `ExecutionService._apply_to_trade_if_terminal`: a terminal partial now
+  flows into `_apply_ladder_fill` for both ladders. That restores the
+  ordinary idempotency guard — `ladderN_filled` — so D-0072's
+  `position_from_ledger`, `_record_partial_buy_position` and the
+  `list_for_trade` repository method were **removed**, not left as dead
+  code. The change makes the file smaller than before the bug was found.
+- `Engine._attempt_is_spent`: an APPROVED ladder proposal whose
+  execution is terminal with zero fill no longer counts as a live
+  attempt. A read-side judgement derived from the execution row —
+  **no new state, no new persistence, no new decision kind**.
+- `Engine._maybe_notify_ladder_outcome` replaces the two previous
+  notifiers. `ladder_partially_filled` names both quantities, says the
+  shares are protected, and points at the next level;
+  `ladder_filled_nothing` says the level stays open. Both are deduped
+  per proposal.
+- `confirm_ladder2_partial_fill` is retained and now always refuses
+  ("already marked filled"). Kept rather than deleted so a late CONFIRM
+  decision arriving from Telegram is a safe no-op instead of an error
+  path — there is a test for exactly that.
+- `_maybe_cancel_ladder2_remainder` is **unchanged**: cancelling the
+  unfilled remainder promptly is still right, and is what makes the
+  terminal quantity final quickly.
+
+### What was NOT changed
+
+D-0034's reactive cancellation, the permanent forfeiture of the
+remainder, and the prohibition on any automatic retry or top-up all
+stand. The ladder trigger levels (−5%, −8%), the floor (−10%), and the
+rule that the floor outranks any ladder are untouched.
+
+### Tests
+
+`tests/execution/test_d0074_ladder_is_a_price_event.py` — 28 tests: the
+shares land in the position and the ladder closes; the frozen ladder and
+floor levels are untouched; the weighted average is recomputed in full
+precision; one notification per outcome however many ticks pass; four
+idempotency cases (20 ticks, 5 `recover_if_terminal` calls, 3 full
+`engine.recover()` passes); Ladder 2 behaving identically and refusing a
+late confirmation; and eight zero-fill cases including that a new
+attempt becomes possible, that Ladder 2 is not blocked by a dead Ladder
+1, and that the floor is not blocked either.
+
+Four older tests were rewritten to the new intent rather than deleted,
+each with a comment naming this decision.
+
+Full suite: **1614 passed, 54 subtests passed**.

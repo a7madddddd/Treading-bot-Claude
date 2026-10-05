@@ -563,8 +563,7 @@ class Engine:
                     )
                     continue
                 self._execution_service.recover_if_terminal(proposal.proposal_id, now=now)
-                self._maybe_notify_ladder2_pending_confirmation(proposal.proposal_id, now=now)
-                self._maybe_notify_ladder1_partial_fill(proposal.proposal_id, now=now)
+                self._maybe_notify_ladder_outcome(proposal.proposal_id, now=now)
 
         # SELL-side (Floor) recovery -- has no proposal to anchor a
         # lookup to, so it needs its own call regardless of the
@@ -646,9 +645,8 @@ class Engine:
             trade_id = trade_record.trade.trade_id
             self._check_floor_trigger(trade_id, now=now)
             for proposal in self._proposal_repo.list_for_trade(trade_id):
-                if proposal.proposed_action is TradeAction.LADDER_2 and proposal.approval_state is ApprovalState.APPROVED:
-                    self._maybe_notify_ladder2_pending_confirmation(proposal.proposal_id, now=now)
-                self._maybe_notify_ladder1_partial_fill(proposal.proposal_id, now=now)
+                if proposal.approval_state is ApprovalState.APPROVED:
+                    self._maybe_notify_ladder_outcome(proposal.proposal_id, now=now)
         self._check_position_drift(now=now)
         self._heartbeat(now=now)
         self._persist_db_best_effort(now=now)
@@ -1917,9 +1915,11 @@ class Engine:
                 continue
 
             latest = self._latest_proposal_for(trade_id, action)
-            has_live_attempt = latest is not None and latest.approval_state in (
-                ApprovalState.PENDING,
-                ApprovalState.APPROVED,
+            has_live_attempt = (
+                latest is not None
+                and latest.approval_state in (ApprovalState.PENDING,
+                                              ApprovalState.APPROVED)
+                and not self._attempt_is_spent(latest)
             )
 
             if price <= trigger_price and not has_live_attempt:
@@ -1932,6 +1932,38 @@ class Engine:
                 )
             elif latest is not None and latest.approval_state is ApprovalState.APPROVED:
                 self._submit_approved(latest.proposal_id, current_price=price, active_floor_price=active_floor, now=now)
+
+    def _attempt_is_spent(self, proposal) -> bool:
+        """D-0074 (Controller, 2026-10-05): an APPROVED ladder proposal
+        whose order came back TERMINAL with ZERO shares is finished, and
+        must stop blocking the next attempt.
+
+        The Controller's reasoning: "we wouldn't want to stop at one of
+        the ladders, because the share price when it decreases does not
+        wait for us." A ladder that the market could not fill at one
+        instant is not a ladder that is over.
+
+        Reproduced before this existed: a zero-fill left the proposal
+        APPROVED, which made `has_live_attempt` true forever, so no new
+        proposal was ever created and the resubmit branch was refused as
+        already-submitted. Five further trigger checks at the trigger
+        price produced no new chance to buy, and nothing was reported.
+
+        Deliberately a READ-side judgement, with no new state and no new
+        persistence: "spent" is fully derivable from the execution row
+        that already exists. A PARTIAL fill is not spent in this sense --
+        it CLOSES the ladder via ladderN_filled, so the loop above skips
+        it before reaching here.
+        """
+        try:
+            record = self._execution_repo.get_by_proposal_id(
+                proposal.proposal_id)
+        except Exception:  # noqa: BLE001 - never block a ladder on a lookup
+            return False
+        if record is None:
+            return False
+        execution = record.execution
+        return bool(execution.is_broker_terminal and execution.filled_qty == 0)
 
     def _latest_proposal_for(self, trade_id: str, action: TradeAction):
         relevant = [p for p in self._proposal_repo.list_for_trade(trade_id) if p.proposed_action is action]
@@ -2153,24 +2185,26 @@ class Engine:
     # recovery and the reconciliation tick -- same derivable condition)
     # ------------------------------------------------------------------
 
-    def _maybe_notify_ladder1_partial_fill(self, proposal_id: str, *, now: datetime) -> None:
-        """D-0072: tell the Controller when Ladder 1 fills only partly.
+    def _maybe_notify_ladder_outcome(self, proposal_id: str, *,
+                                     now: datetime) -> None:
+        """D-0074: report what a ladder order actually achieved.
 
-        Ladder 2 has had this message since it was built; Ladder 1 had
-        none. Verified on 2026-10-05 by listing every notification event
-        the Engine can emit -- 41 of them, one for a Ladder 2 partial
-        fill and not a single `ladder1_*` event. A reproduction confirmed
-        the silence: a 4-share Ladder 1 filling 2 produced zero
-        notifications.
+        Two outcomes, two different meanings, and the Controller acts on
+        them differently:
 
-        The shares are now recorded automatically (D-0072), so this
-        message reports a fact rather than asking for a decision. It
-        says so explicitly, because the Ladder 2 message asks for one
-        and two near-identical messages meaning different things would
-        be worse than no message at all.
+        * PARTIAL -- the market answered "this much". The shares are
+          recorded and the ladder is CLOSED, so the next level is what
+          matters now. Nothing to approve.
+        * ZERO -- the market did not answer at all. The ladder stays
+          available for a later trigger.
+
+        Before this there was one message for a Ladder 2 partial and
+        nothing at all for a Ladder 1 partial or for any zero fill;
+        verified by listing every event the Engine can emit. A zero fill
+        in particular was completely silent while the ladder sat stuck.
         """
         proposal = self._proposal_repo.get(proposal_id)
-        if proposal is None or proposal.proposed_action is not TradeAction.LADDER_1:
+        if proposal is None or proposal.proposed_action not in _LADDER_ACTIONS:
             return
         execution_record = self._execution_repo.get_by_proposal_id(proposal_id)
         if execution_record is None:
@@ -2178,63 +2212,61 @@ class Engine:
         execution = execution_record.execution
         if not execution.is_broker_terminal:
             return
-        if execution.filled_qty == 0 or execution.filled_qty == execution.requested_qty:
-            return
+        if execution.filled_qty == execution.requested_qty:
+            return  # a full fill is the normal path and needs no notice
+
         trade_record = self._trade_repo.get(proposal.trade_id)
-        if trade_record is None or trade_record.trade.ladder1_filled:
+        if trade_record is None:
+            return
+        trade = trade_record.trade
+        is_ladder1 = proposal.proposed_action is TradeAction.LADDER_1
+        label = "Buy more (-5%)" if is_ladder1 else "Buy more (-8%)"
+        next_step = ("The next level is -8%."
+                     if is_ladder1
+                     else "The auto-sell floor is next, at -10%.")
+
+        if execution.filled_qty == 0:
+            self._notify_once(
+                kind="ladder_zero_fill",
+                key=proposal_id,
+                level=NotificationLevel.IMPORTANT,
+                event="ladder_filled_nothing",
+                message=(
+                    f"{proposal.symbol} — {label}\n"
+                    f"\n"
+                    f"Wanted   {execution.requested_qty} shares\n"
+                    f"Got      0 — none were available at that price\n"
+                    f"\n"
+                    f"You still hold {trade.total_shares} shares.\n"
+                    f"This level stays open and can be tried again. "
+                    f"{next_step}"
+                ),
+                symbol=proposal.symbol,
+            )
             return
 
-        trade = trade_record.trade
+        # Partial: the ladder is closed by now (ladderN_filled is set by
+        # the execution service before this runs).
         self._notify_once(
-            kind="ladder1_partial_fill",
+            kind="ladder_partial_fill",
             key=proposal_id,
             level=NotificationLevel.IMPORTANT,
-            event="ladder1_partial_fill_recorded",
+            event="ladder_partially_filled",
             message=(
-                f"{proposal.symbol} — Ladder 1 partially filled\n"
+                f"{proposal.symbol} — {label}\n"
                 f"\n"
                 f"Wanted   {execution.requested_qty} shares\n"
-                f"Got      {execution.filled_qty} shares\n"
+                f"Got      {execution.filled_qty} — that was all the "
+                f"market had\n"
+                f"\n"
                 f"You now hold {trade.total_shares} shares"
                 + (f" at ${trade.weighted_avg_entry_price:,.2f} average"
                    if trade.weighted_avg_entry_price else "")
-                + "\n"
-                f"\n"
+                + ".\n"
                 f"The shares are recorded, so the auto-sell protection "
                 f"covers them.\n"
-                f"The rest was not bought and will not be chased. "
-                f"Nothing to approve."
-            ),
-            symbol=proposal.symbol,
-        )
-
-    def _maybe_notify_ladder2_pending_confirmation(self, proposal_id: str, *, now: datetime) -> None:
-        proposal = self._proposal_repo.get(proposal_id)
-        if proposal is None or proposal.proposed_action is not TradeAction.LADDER_2:
-            return
-        execution_record = self._execution_repo.get_by_proposal_id(proposal_id)
-        if execution_record is None:
-            return
-        execution = execution_record.execution
-        if not execution.is_broker_terminal:
-            return
-        if execution.filled_qty == 0 or execution.filled_qty == execution.requested_qty:
-            return
-
-        trade_record = self._trade_repo.get(proposal.trade_id)
-        if trade_record is None or trade_record.trade.ladder2_filled:
-            return
-
-        self._notify_once(
-            kind="ladder2_partial_fill",
-            key=proposal_id,
-            level=NotificationLevel.IMPORTANT,
-            event="ladder2_partial_fill_pending_confirmation",
-            message=(
-                f"Ladder 2 for proposal {proposal_id} intended {execution.requested_qty} shares; "
-                f"broker's final terminal fill was {execution.filled_qty}. Awaiting explicit "
-                "Controller approval before recording this as Ladder 2 completion. No automatic "
-                "top-up will be submitted for the remainder."
+                f"This level is done and the rest will not be chased. "
+                f"{next_step} Nothing to approve."
             ),
             symbol=proposal.symbol,
         )
