@@ -100,11 +100,28 @@ for r in c.execute('SELECT * FROM engine_lock'):
 
 A heartbeat under ~60s old is healthy (the reconcile interval is 30s).
 
-Run the refresh once by hand without waiting for the timer:
+Run the refresh once by hand without waiting for the timer.
+
+**Use `--no-block`.** `systemctl start` on a `Type=oneshot` service
+BLOCKS until the service finishes, and a full run takes around an hour —
+so without it your terminal sits there with no output and it looks hung
+when it is actually working. `--no-block` queues the job and returns
+immediately.
+
+If you already started one without it, press `Ctrl+C`: that stops the
+systemctl client waiting, not the service. The job keeps running.
 
 ```bash
-systemctl --user start universe-refresh.service
-journalctl --user -u universe-refresh --since "10 min ago" --no-pager
+systemctl --user start --no-block universe-refresh.service
+tail -f ~/Treading-bot-Claude/logs/universe.log
+```
+
+Watch progress and elapsed time:
+
+```bash
+systemctl --user is-active universe-refresh.service
+systemctl --user show universe-refresh.service -p ActiveEnterTimestamp --value
+tail -15 ~/Treading-bot-Claude/logs/universe.log
 ```
 
 ## Logs
