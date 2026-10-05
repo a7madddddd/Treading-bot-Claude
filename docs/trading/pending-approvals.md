@@ -1270,3 +1270,108 @@ for free.
   60% of the trailing median) from measured values rather than from a
   number chosen today. Deliberately deferred: inventing that constant
   now would repeat the mistake D-0065 corrected.
+
+---
+
+## Bug hunt, 2026-10-05 (Controller-requested: "find the list of bugs")
+
+A deliberate audit of the safety-critical paths, after the day's
+incident. Findings are reported with what was VERIFIED in code, not what
+was suspected. Where a suspicion did not survive reading the code, it is
+recorded as cleared rather than quietly dropped — a list padded with
+non-bugs is worse than a short one.
+
+### P-041 — A market-data outage floods the Controller with CRITICAL alerts
+- **Status:** OPEN. Confirmed by code reading AND by what the Controller
+  experienced on 2026-10-05 ("I have so many messages told me the data
+  not available for the item").
+- **FACT:** `Engine._notify` (`src/engine/engine.py:2113`) sends every
+  call straight to the notifier. There is **no deduplication and no rate
+  limit** — `_notify_once` and its `_notified` set exist, but the
+  market-data failures do not use them.
+- **FACT:** `_check_floor_trigger` runs for every ACTIVE trade on every
+  reconciliation tick (`run_reconciliation_tick`, line 639), and the
+  tick interval is 30 s.
+- **Arithmetic, not estimate:** 5 open positions ÷ 30 s = 10 CRITICAL
+  messages per minute, **600 per hour**, for as long as the outage
+  lasts. There are 7 separate `market_data_unavailable` notify sites.
+- **Why this is a safety bug, not noise:** a Controller buried under 600
+  identical alerts mutes the channel or stops reading it. The next
+  message after that is the one that matters — a Floor execution, a
+  partial fill, a submission failure. The alert channel is the only
+  channel, so degrading it degrades every protection that depends on it.
+- **RECOMMENDATION:** collapse repeated `market_data_unavailable` into
+  one alert per symbol per outage, with a single follow-up when it
+  clears. The existing `_notify_once` mechanism already has the right
+  shape; the outage key would be `(symbol, "market_data_outage")`,
+  cleared on the first successful price read.
+
+### P-042 — A long proposal message can be silently dropped by Telegram
+- **Status:** OPEN. Structural; whether it fires on a given day depends
+  on how much the research APIs return.
+- **FACT:** Telegram's `sendMessage` rejects any `text` longer than 4096
+  characters with HTTP 400. `TelegramNotificationService._format_text`
+  (`src/notifications/telegram.py:112`) applies **no cap**.
+- **FACT:** proposal messages are enriched by `CompositeEnricher`
+  (`src/engine/enrichers.py:291`), which joins the output of every
+  configured sub-enricher with **no overall cap**. The VM's startup log
+  shows five enabled:
+  `Perplexity, Finnhub, AlphaVantage, Tiingo, Polygon`.
+  Only `PerplexityEnricher` caps itself (300 chars) and `PolygonEnricher`
+  caps a headline; the rest are uncapped.
+- **FACT, why the failure is silent:** `Engine._notify` discards the
+  returned `NotificationResult` entirely. A 400 is retried by the
+  transport, fails identically every time, and the engine never learns.
+- **Consequence chain:** the dropped message is the one carrying the
+  inline ✅/❌ buttons. `_start_new_trade` then adds the proposal to
+  `_notified` regardless of outcome, so it is never re-advertised in
+  that session — and D-0068's 60-minute TTL expires it quietly. The
+  Controller sees nothing at any point.
+- **Partly mitigated, honestly:** `recover()` re-notifies PENDING
+  proposals on startup (line 487), so a restart would surface it. But
+  the TTL is 60 minutes and the engine is designed to run for months.
+- **RECOMMENDATION:** cap the text in the Telegram client, where the
+  limit actually lives — truncate at ~3900 characters with a visible
+  marker, so the approval buttons always arrive even when the research
+  blurb is long. Separately, have `_notify` log a non-delivered result.
+  The cap belongs in the client, not in each enricher, because the
+  limit is the transport's and new enrichers must not have to know it.
+
+### P-043 — "Floor not evaluated" has no escalation if it persists
+- **Status:** OPEN, lower priority than P-041/P-042 and recorded as
+  such.
+- **FACT:** on `MarketDataUnavailableError`, `_check_floor_trigger`
+  notifies and returns without evaluating the Floor
+  (`src/engine/engine.py:793-801`). That is the correct immediate
+  behavior — guessing a price to evaluate a protective exit would be
+  worse.
+- **The gap:** there is no state that says "this position's protective
+  exit has not been evaluated for N minutes". One failed read and a
+  two-hour outage produce the same message at the same level, and the
+  only difference is how many copies arrive — which P-041 is about.
+- **RECOMMENDATION:** track consecutive failures per symbol and escalate
+  once past a threshold (e.g. 10 consecutive misses ≈ 5 minutes) with a
+  distinct event name, so a sustained outage is a different alert from a
+  blip. Deliberately NOT proposing an automatic action: selling on
+  missing data is the one thing that must never happen.
+
+### Checked and NOT a bug (recorded so the audit is auditable)
+- **`_notified` grows forever.** True — it is never pruned, and the
+  engine is meant to run for years. But the growth is a few short tuples
+  per day: 10 proposals/day for 10 years is ~36,500 entries, roughly
+  5 MB. Not a leak worth code. Recorded rather than listed, because
+  padding a bug list is its own failure.
+- **Broad `except Exception: pass` in `d0026/regime_classifier.py` and
+  `engine/research_hub.py`.** Both are advisory layers that are
+  documented to fail open, and neither can influence a risk limit or a
+  protective exit. Correct as written.
+- **Telegram transport failures.** `send` retries and returns a result
+  rather than raising, so a failed notification never retries a trade —
+  which is exactly what CLAUDE.md §6 requires.
+- **Pending proposals after a restart.** `recover()` re-fires the
+  notification for every PENDING proposal, so a restart does not strand
+  an approval request.
+- **Today's three new guards are actually wired**, verified by call
+  site: `_expire_stale_proposals` (line 637),
+  `_market_open_for_new_proposals` (line 1401),
+  `_notify_nothing_to_trade` (lines 1367, 1377, 1469, 1575).
