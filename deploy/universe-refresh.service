@@ -17,5 +17,7 @@ Type=oneshot
 User=opc
 WorkingDirectory=/home/opc/Treading-bot-Claude
 ExecStart=/home/opc/Treading-bot-Claude/deploy/universe-refresh.sh
-StandardOutput=append:/home/opc/Treading-bot-Claude/logs/universe.log
-StandardError=append:/home/opc/Treading-bot-Claude/logs/universe.log
+
+# Journal, not a file under /home -- see trading-engine.service for the
+# SELinux reason (status=209/STDOUT on the first install attempt).
+#   journalctl -u universe-refresh --since today

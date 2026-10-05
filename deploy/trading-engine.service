@@ -40,8 +40,26 @@ RestartSec=310
 #     not be able to silently brick the supervisor. 0 = never give up.
 StartLimitIntervalSec=0
 
-StandardOutput=append:/home/opc/Treading-bot-Claude/logs/engine.log
-StandardError=append:/home/opc/Treading-bot-Claude/logs/engine.log
+# Logging goes to the journal, NOT to a file under /home.
+#
+# The first install attempt used
+#   StandardOutput=append:/home/opc/Treading-bot-Claude/logs/engine.log
+# and systemd refused to start the unit with status=209/STDOUT ("failed
+# to set up standard output"). On Oracle Linux 9 with SELinux enforcing,
+# a system service writing into a user home directory is denied by
+# policy -- /home is user_home_t, and services are expected to log to
+# var_log_t or to the journal.
+#
+# Rather than weaken SELinux or relabel a directory, use the journal,
+# which is the idiomatic systemd answer and needs no policy change:
+#   journalctl -u trading-engine -f
+#   journalctl -u trading-engine --since today
+#
+# It also removes a real operational trap: Python buffers stdout when
+# it is redirected to a FILE, which is why /tmp/engine.log sat at 22
+# bytes for over a minute while the engine was healthy. The journal is
+# a pipe, so lines appear as they are written.
+
 
 [Install]
 WantedBy=multi-user.target
