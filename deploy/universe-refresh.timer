@@ -1,17 +1,20 @@
-# Install to /etc/systemd/system/universe-refresh.timer
+# USER TIMER. Install to ~/.config/systemd/user/
 #
 # 08:45 America/New_York, weekdays. Two reasons for that exact time:
 #
 #  - It must COMPLETE before the first D-0021 trigger at 09:30 ET.
 #    SnapshotUniverseSource looks up today's ET date, so a snapshot
-#    written at 09:31 is 45 minutes too late for the first cycle.
-#    The run enriches hundreds of symbols against Alpaca, so it needs
-#    real headroom, not five minutes.
+#    written at 09:31 is 45 minutes too late for the first cycle. The
+#    run enriches hundreds of symbols against Alpaca, so it needs real
+#    headroom, not five minutes.
 #
-#  - The timezone is named explicitly rather than computed in UTC.
-#    The US switches between EST and EDT twice a year; a fixed UTC time
+#  - The timezone is named explicitly rather than computed in UTC. The
+#    US switches between EST and EDT twice a year; a fixed UTC time
 #    would silently drift by an hour on those two weekends and land
 #    AFTER the open. This mirrors D-0041's per-routine timezone rule.
+#    Verified with `systemd-analyze calendar`: next elapse
+#    Tue 2026-10-06 12:45 UTC, which is 08:45 EDT. The VM runs
+#    systemd 252; a named timezone needs v240+.
 
 [Unit]
 Description=Run the D-0026 universe selection every weekday before the open
@@ -19,7 +22,7 @@ Description=Run the D-0026 universe selection every weekday before the open
 [Timer]
 OnCalendar=Mon-Fri 08:45 America/New_York
 # If the VM was powered off at 08:45, run as soon as it is back rather
-# than skipping the day entirely.
+# than skipping the trading day entirely.
 Persistent=true
 Unit=universe-refresh.service
 

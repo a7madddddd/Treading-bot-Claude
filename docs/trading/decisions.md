@@ -4123,3 +4123,95 @@ The units cannot be installed or started from a Claude container — they
 belong to the Controller's VM. The README carries the install and
 verify commands, including the heartbeat check, since an empty log is
 NOT evidence of a dead engine (Python buffers stdout to a file).
+
+---
+
+## D-0063 — The systemd units are USER units, not system units (SELinux)
+
+**Date:** 2026-10-05
+**Decided by:** Claude (deployment correction, no trading-behavior change)
+**Status:** IMPLEMENTED
+**Amends:** D-0062's installation shape. The three settings D-0062
+derived from the code are unchanged and still correct.
+
+### What happened
+
+Installing D-0062's units as SYSTEM units on the Controller's Oracle
+Linux 9 VM failed twice, and the audit log named the cause exactly both
+times.
+
+**Attempt 1 — `status=209/STDOUT`:**
+
+```
+avc: denied { create } for name="engine.log"
+     scontext=system_u:system_r:init_t:s0
+     tcontext=system_u:object_r:user_home_t:s0
+```
+
+**Attempt 2, after moving logging to the journal — `status=203/EXEC`:**
+
+```
+avc: denied { execute } for name="engine-run.sh"
+     scontext=system_u:system_r:init_t:s0
+     tcontext=unconfined_u:object_r:user_home_t:s0
+```
+
+`getenforce` reports **Enforcing**, and the project directory is
+labelled `user_home_t`.
+
+### The real diagnosis
+
+These were not two bugs. A system unit under `/etc/systemd/system` runs
+in SELinux domain `init_t`, and everything this project needs lives
+under `/home`, which is `user_home_t`. `init_t` has no access to it.
+
+Fixing only the logging exposed the exec denial. Fixing only the exec
+would have exposed a third: the engine WRITES `paper_session.sqlite` in
+that same directory, so `init_t` would have been denied there too — and
+that one would have surfaced at runtime, mid-session, instead of at
+install time.
+
+### Decision
+
+Install as USER units in `~/.config/systemd/user/`, with
+`loginctl enable-linger opc` so they start at boot without a login
+session. A user unit runs in the `opc` user's own session as
+`unconfined_t`, so `/home` access is simply normal. It also needs no
+`sudo` at all.
+
+### Rejected alternatives
+
+| option | why not |
+|---|---|
+| `setenforce 0` / permissive | disables a security control for the whole machine to run one script |
+| `chcon -t bin_t` on the scripts | works until the next relabel or `restorecon`, then silently reverts; needs a `semanage` rule to persist, and still leaves the DB-write denial |
+| move the project to `/opt` | relocates the Controller's working checkout and breaks every path in our runbooks; solves by displacement what a user unit solves directly |
+
+### A second, independent bug the same journal caught
+
+```
+/etc/systemd/system/trading-engine.service:41: Unknown key name
+'StartLimitIntervalSec' in section 'Service', ignoring.
+```
+
+`StartLimitIntervalSec` belongs in `[Unit]`, not `[Service]`. D-0062
+put it in `[Service]`, so systemd **ignored it entirely** and the
+start-rate limiter was still at its default of 5 starts per 10 seconds.
+
+This is the quiet kind of failure the unit was written to prevent:
+nothing errored, the supervisor simply had a safety setting that did
+nothing. It is now in `[Unit]` and verified by parsing the file
+section by section.
+
+### Lesson recorded
+
+Both bugs were found by READING the journal and the audit log rather
+than by guessing at the symptom. The first guess at `203/EXEC` would
+reasonably have been "the file is not executable" — it was
+`-rwxr-xr-x`. Only `ausearch -m avc` named the actual cause.
+
+### Verification still owed
+
+`systemctl --user status` showing `active (running)`, plus a fresh
+heartbeat in `engine_lock.sqlite`. An empty journal is not evidence
+either way until the unit reports running.

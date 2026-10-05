@@ -1,11 +1,14 @@
-# Daily D-0026 universe selection. Install to
-# /etc/systemd/system/universe-refresh.service
+# Daily D-0026 universe selection.
+#
+# USER UNIT. Install to ~/.config/systemd/user/ -- see
+# trading-engine.service for the SELinux evidence behind that choice.
 #
 # Type=oneshot: this runs, writes one snapshot, and exits. It is NOT a
-# daemon, and it must NOT be restarted on failure -- a failed run means
-# no snapshot for today, which the engine already reports to the
-# Controller through its once-per-day nothing_to_trade_today message
-# (D-0054). Retrying blindly would hammer the broker's API instead.
+# daemon, and it deliberately has no Restart= -- a failed run means no
+# snapshot for today, which the engine already reports to the Controller
+# through its once-per-day nothing_to_trade_today message (D-0054).
+# Retrying blindly would hammer the broker's API instead of telling
+# anyone.
 
 [Unit]
 Description=Daily D-0026 universe selection (writes today's snapshot)
@@ -14,10 +17,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=opc
-WorkingDirectory=/home/opc/Treading-bot-Claude
-ExecStart=/home/opc/Treading-bot-Claude/deploy/universe-refresh.sh
+WorkingDirectory=%h/Treading-bot-Claude
+ExecStart=%h/Treading-bot-Claude/deploy/universe-refresh.sh
 
-# Journal, not a file under /home -- see trading-engine.service for the
-# SELinux reason (status=209/STDOUT on the first install attempt).
-#   journalctl -u universe-refresh --since today
+# Journal, not a file: journalctl --user -u universe-refresh --since today
