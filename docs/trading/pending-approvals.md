@@ -798,3 +798,45 @@ Controller's VM, not inferred:
   no starvation. The caveat above argues for confirming on the
   post-A/B/C pool first if the Controller wants certainty rather than a
   well-supported choice.
+
+### P-030 — systemd's 90-second default would have killed the daily run every morning
+- **Status:** RESOLVED same day (2026-10-05), recorded because it is the
+  most instructive failure of the deployment.
+- **FACT:** for `Type=oneshot`, `TimeoutStartSec` bounds the entire run
+  and defaults to `DefaultTimeoutStartSec` = **90 seconds**, confirmed
+  in `/etc/systemd/user.conf`.
+- **FACT:** the full D-0026 run enriches 11,683 symbols at one bars
+  request each — roughly **58 minutes** (P-029).
+- **What happened:** enabling the timer fired it immediately
+  (`Persistent=true` catching up the missed 08:45 slot) at 14:19.
+  systemd killed the run 90 seconds later. The only visible trace was
+  `Active: inactive (dead)` — no error, no snapshot, and no journal to
+  read because of the storage problem recorded alongside it.
+- **How it was found:** running the same script by hand succeeded
+  immediately and wrote a snapshot. That isolated the fault to the unit
+  rather than the code, which the journal could not have told us.
+- **Fix:** `TimeoutStartSec=4h`. Bounded rather than `infinity`, so a
+  genuinely hung run is still killed instead of blocking the next day's
+  timer.
+- **Why it matters beyond itself:** this would have failed EVERY
+  morning, silently, while every other check looked healthy — the
+  engine running, the timer scheduled, the units enabled. It was caught
+  only because the first run was forced immediately instead of waiting
+  for tomorrow.
+
+### P-031 — A test snapshot is currently the LIVE universe for today
+- **Status:** OPEN, needs one action.
+- **FACT:** the manual 40-symbol diagnostic run wrote a real snapshot
+  for `2026-10-05` containing exactly ONE symbol: `LOW`.
+- **FACT:** that is now what `SnapshotUniverseSource` returns, so the
+  engine can propose an INITIAL_ENTRY on `LOW` at the next D-0021
+  trigger — from a capped diagnostic run, not a real selection.
+- **Not dangerous:** it is paper trading, every proposal still requires
+  Controller approval, and `LOW` passed the full pipeline including the
+  new 2%–4% ATR band and the leveraged/inverse filter. But a test
+  artifact should not be production state.
+- **FACT:** `get_latest_for_date` returns the NEWEST snapshot for the
+  date, so a proper full run today simply supersedes it. No deletion is
+  needed.
+- **Action:** run the real job once today, which both replaces the
+  one-symbol snapshot and measures the true runtime for P-029.

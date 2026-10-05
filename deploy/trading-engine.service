@@ -81,12 +81,27 @@ Restart=always
 #   EngineLockHeldError. 310s waits that out on the first attempt.
 RestartSec=310
 
-# Logging goes to the journal, never to a file. Besides the SELinux
-# denial above, Python buffers stdout when it is redirected to a FILE --
-# which is why a hand-started engine's /tmp/engine.log sat at 22 bytes
-# for over a minute while the engine was perfectly healthy. The journal
-# is a pipe, so lines appear as they are written.
-#   journalctl --user -u trading-engine -f
+# Logging to a FILE, not the journal.
+#
+# The journal was tried first and is unreadable on this VM:
+# /var/log/journal does not exist and journald.conf has Storage=auto,
+# so the journal is volatile only and `journalctl --user` answers
+# "No journal files were found". A log you cannot read is not a log --
+# it hid the outcome of the first real universe-refresh run.
+#
+# A file is safe HERE specifically because this is a USER unit. The
+# SELinux denial recorded above was init_t (system units) against
+# user_home_t. A user unit runs as unconfined_t in the opc session, so
+# writing under /home is ordinary. This would still fail as a system
+# unit.
+#
+# PYTHONUNBUFFERED is set in engine-run.sh for exactly this reason:
+# Python buffers stdout when it is redirected to a file, which is why a
+# hand-started engine's /tmp/engine.log sat at 22 bytes for over a
+# minute while the engine was perfectly healthy.
+#   tail -f ~/Treading-bot-Claude/logs/engine.log
+StandardOutput=append:%h/Treading-bot-Claude/logs/engine.log
+StandardError=append:%h/Treading-bot-Claude/logs/engine.log
 
 [Install]
 WantedBy=default.target

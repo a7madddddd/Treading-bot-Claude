@@ -247,14 +247,26 @@ def main() -> int:
                if cfg.min_atr_fraction <= m[1] < cfg.max_atr_fraction]
     print("THE DECISION — how many candidates survive each choice")
     print("-" * 68)
-    print(f"{'option':<22} {'surviving':>10} {'share of all':>14}")
+    print(f"{'band':<24} {'surviving':>10} {'share of all':>14}")
     print("-" * 68)
-    print(f"{'keep 1%-5% (today)':<22} {len(in_band):>10} "
+    # The label is DERIVED from the live config, never hardcoded. The
+    # first version printed a fixed "keep 1%-5% (today)" while reading
+    # the numbers from the config -- so the moment D-0065 narrowed the
+    # band to 2%-4%, the tool reported the new count under the OLD
+    # band's name. A measurement tool that mislabels its own baseline is
+    # worse than no tool.
+    current = (f"keep {cfg.min_atr_fraction * 100:.1f}%"
+               f"-{cfg.max_atr_fraction * 100:.1f}% (LIVE)")
+    print(f"{current:<24} {len(in_band):>10} "
           f"{(len(in_band) / total * 100):>13.1f}%")
-    for lo, hi in ((0.015, 0.045), (0.020, 0.040), (0.025, 0.035)):
+    for lo, hi in ((0.010, 0.050), (0.015, 0.045),
+                   (0.020, 0.040), (0.025, 0.035)):
+        if (abs(lo - cfg.min_atr_fraction) < 1e-9
+                and abs(hi - cfg.max_atr_fraction) < 1e-9):
+            continue  # already printed above as the live band
         survivors = [m for m in measured if lo <= m[1] < hi]
-        label = f"narrow to {lo * 100:.1f}%-{hi * 100:.1f}%"
-        print(f"{label:<22} {len(survivors):>10} "
+        label = f"  alternative {lo * 100:.1f}%-{hi * 100:.1f}%"
+        print(f"{label:<24} {len(survivors):>10} "
               f"{(len(survivors) / total * 100):>13.1f}%")
     print("-" * 68)
     print("A narrowing that leaves too few candidates trades quality for")

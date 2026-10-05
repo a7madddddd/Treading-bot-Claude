@@ -109,21 +109,32 @@ journalctl --user -u universe-refresh --since "10 min ago" --no-pager
 
 ## Logs
 
-Both units log to the **journal**, not to files:
+Both units log to **files** under `logs/`:
 
 ```bash
-journalctl --user -u trading-engine -f              # live
-journalctl --user -u trading-engine --since today
-journalctl --user -u universe-refresh --since today
+tail -f  ~/Treading-bot-Claude/logs/engine.log
+tail -40 ~/Treading-bot-Claude/logs/universe.log
 ```
 
-File logging under `/home` was tried first and systemd refused the unit
-with `status=209/STDOUT`: on Oracle Linux 9 with SELinux enforcing, a
-system service may not write into a user home directory. The journal
-needs no policy change, and it also avoids a real trap — Python buffers
-stdout to a FILE, which is why a hand-started engine's log can sit at 22
-bytes for a minute while the engine is perfectly healthy. The journal is
-a pipe, so lines appear immediately.
+This took two attempts, and both are worth knowing:
+
+1. As SYSTEM units, file logging was refused with `status=209/STDOUT` —
+   SELinux denies `init_t` writing to `user_home_t`. That is what drove
+   the move to user units (D-0063).
+2. The journal was then tried, and is **unreadable on this VM**:
+   `/var/log/journal` does not exist and `journald.conf` has
+   `Storage=auto`, so the journal is volatile only and
+   `journalctl --user` answers "No journal files were found". A log you
+   cannot read is not a log — it hid the outcome of the first real
+   universe-refresh run.
+
+Files are safe HERE specifically because these are USER units, which
+run as `unconfined_t`. The same lines in a system unit would fail again.
+
+`PYTHONUNBUFFERED=1` is exported by both wrapper scripts, because Python
+buffers stdout when redirected to a file — which is why a hand-started
+engine's `/tmp/engine.log` sat at 22 bytes for over a minute while the
+engine was perfectly healthy.
 
 ---
 
@@ -151,6 +162,22 @@ systemd's default gives up after 5 starts in 10s and parks the unit in
 a FAILED state. With `RestartSec=310` that limit is unreachable today,
 but a future change to `RestartSec` must not be able to silently brick
 the supervisor.
+
+---
+
+## The setting that silently breaks this unit
+
+`TimeoutStartSec=4h` on `universe-refresh.service` is not optional.
+
+For `Type=oneshot`, `TimeoutStartSec` bounds the WHOLE run and defaults
+to `DefaultTimeoutStartSec` = **90 seconds**. The full run enriches
+11,683 symbols at one bars request each — roughly **58 minutes**.
+
+The default killed the first real run: the timer fired at 14:19 on
+2026-10-05, systemd killed it 90 seconds later, and the only evidence
+was `Active: inactive (dead)` with no snapshot and no error. Running the
+same script by hand succeeded at once, which is what proved the code was
+fine and the unit was not.
 
 ---
 

@@ -17,7 +17,34 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+
+# TimeoutStartSec is THE setting this unit lives or dies by.
+#
+# For Type=oneshot, TimeoutStartSec bounds the WHOLE run, and it
+# defaults to DefaultTimeoutStartSec = 90 SECONDS (confirmed in
+# /etc/systemd/user.conf). The full D-0026 run enriches 11,683 symbols
+# at one bars request each -- roughly 58 MINUTES at Alpaca's common
+# 200/min.
+#
+# So the default killed the very first real run. On 2026-10-05 the
+# timer fired at 14:19 (Persistent=true, catching up the missed slot),
+# systemd killed it 90 seconds later, and the only trace was
+# "Active: inactive (dead)" with no snapshot written -- invisible,
+# because the journal was unreadable on this VM at the time. A manual
+# run of the same script succeeded immediately, which is what proved
+# the code was fine and the unit was not.
+#
+# 4 hours: far beyond any plausible run, while still bounded so a
+# genuinely hung run is eventually killed rather than blocking the next
+# day's timer. `infinity` was rejected for that reason.
+TimeoutStartSec=4h
 WorkingDirectory=%h/Treading-bot-Claude
 ExecStart=%h/Treading-bot-Claude/deploy/universe-refresh.sh
 
-# Journal, not a file: journalctl --user -u universe-refresh --since today
+# File, not the journal -- /var/log/journal does not exist on this VM
+# and Storage=auto makes the journal volatile, so journalctl --user
+# reports "No journal files were found". Safe here because a USER unit
+# runs as unconfined_t; see trading-engine.service.
+#   tail -40 ~/Treading-bot-Claude/logs/universe.log
+StandardOutput=append:%h/Treading-bot-Claude/logs/universe.log
+StandardError=append:%h/Treading-bot-Claude/logs/universe.log
