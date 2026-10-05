@@ -1544,6 +1544,53 @@ notifications sent          : NONE
   ratchet; a partial fill at the broker splits the position; and the
   resting order must be cancelled on any ladder that changes the share
   count. None are blockers, all need deciding.
+- **CODE SEARCH, 2026-10-05 (before any design work, per CLAUDE.md
+  §0.b). The architecture already specifies this and the state layer is
+  already built — it was never connected.**
+
+  Already present:
+  * `Trade` carries `protective_order_id`,
+    `protective_order_stop_price`, `protective_order_status` and
+    `protective_order_lineage` (`src/trade/models.py:110-113`).
+  * `Trade.update_protective_order()` exists, validates the stop price,
+    and appends the replaced id to the lineage so a
+    cancel-and-replace chain is auditable (`models.py:443`).
+  * `SqliteTradeRepository` persists all four fields and enforces
+    uniqueness of the active protective order id, reading the previous
+    id inside the same transaction (`sqlite_repository.py:69-138`).
+  * `docs/architecture/state-management.md` §"Protective order state"
+    describes it as "the current authoritative sell **stop**" — a
+    broker-side stop was the intent from the start (D-0018).
+
+  Never used: `update_protective_order` is called by **no production
+  code path**. The floor is evaluated only by the engine's own polling
+  loop.
+
+  The one genuine gap: `BrokerClient.submit_order()` takes only
+  `limit_price` (`src/execution/broker_client.py:71-78`) — there is no
+  stop price, no order type and no time-in-force, so no stop order can
+  be placed today.
+
+- **The decision that matters most, and it is a safety one.** With a
+  resting stop at the broker AND the engine's own floor check, BOTH can
+  fire on the same position. Selling 20 shares twice does not sell 40 —
+  it sells 20 and **opens a 20-share SHORT**, which is outside the
+  approved strategy entirely. Any design here must make one of the two
+  authoritative and the other stand down, and that rule has to be
+  decided before a line is written.
+
+- **Second decision: a plain stop is forbidden by the approved
+  strategy.** A stop order becomes a MARKET order when triggered, and
+  the project's standing constraint is "no Market Orders". So it must be
+  a stop-LIMIT — which can fail to fill in a gap-down, meaning the
+  protection that was supposed to be more reliable can simply not
+  execute. That trade-off is the heart of the choice, not a detail.
+
+- **Third: the trailing floor moves (D-0008).** Every ratchet requires
+  cancelling and replacing the resting order, and every ladder fill
+  changes the share count and requires the same. The lineage field
+  already exists for exactly this.
+
 - **Not implemented, not designed in detail. Parked for discussion.**
 
 ### Checked and NOT a bug
