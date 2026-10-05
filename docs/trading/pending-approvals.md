@@ -1378,3 +1378,123 @@ non-bugs is worse than a short one.
   site: `_expire_stale_proposals` (line 637),
   `_market_open_for_new_proposals` (line 1401),
   `_notify_nothing_to_trade` (lines 1367, 1377, 1469, 1575).
+
+---
+
+## Execution-path audit, 2026-10-05 (Controller-requested)
+
+Read end to end: `src/execution/service.py` (858 lines),
+`Engine._process_trade`'s ladder loop, `Trade.freeze_initial_reference`,
+and the protective-exit path. Two confirmed defects, one deferred idea,
+and the suspicions that did not survive the code.
+
+### P-044 — A partial LADDER-1 fill strands real shares with no floor
+- **Status:** OPEN. **The most serious finding of 2026-10-05.** Real
+  money, silent, and reachable from the live system today.
+- **FACT, three independent gaps that compound:**
+  1. `ExecutionService._apply_to_trade_if_terminal` returns without
+     recording a ladder fill when
+     `execution.filled_qty != execution.requested_qty`
+     (`src/execution/service.py:572`). The code says so in its own
+     comment: for LADDER_1 "no confirmation path exists (not approved)
+     -- the fill simply stays unrepresented in Trade".
+  2. `ExecutionService.submit_protective_exit` sells the caller's
+     `trade.total_shares` and explicitly refuses to sell more than the
+     Trade believes it holds (`service.py:700`).
+  3. There is **no notification at all** for a partial LADDER-1 fill.
+     `_maybe_notify_ladder2_pending_confirmation` exists for Ladder 2;
+     Ladder 1 has no equivalent anywhere in `engine.py`.
+- **Worked example, with numbers:**
+
+| step | real position at Alpaca | `trade.total_shares` |
+|---|---|---|
+| Initial entry fills 20 @ $250 | 20 | 20 |
+| Ladder 1 approved for 5 @ $237.50 | 20 | 20 |
+| **only 3 fill, order terminal** | **23** | **20** |
+| price reaches the floor, $225 | 23 | 20 |
+| floor sells `total_shares` | **3 left** | 0 |
+
+  Those 3 shares sit at the broker with **no trade, no floor, no
+  monitoring and no message**. At $225 that is $675 that can fall to
+  zero with nothing watching it. The weighted average entry is also
+  stale, so every later percentage is computed from a wrong base.
+- **Why it does not self-heal:** `ladder1_filled` stays False, so the
+  ladder loop keeps evaluating it; but the proposal stays APPROVED, so
+  `has_live_attempt` is True and no new proposal is created, and the
+  `elif` branch re-submits into `ExecutionAlreadySubmittedError`, which
+  the engine catches. The trade is stuck in that state indefinitely.
+- **RECOMMENDATION (needs Controller approval — it changes execution
+  behavior):** mirror the Ladder-2 design, which the Controller already
+  approved for exactly this situation. A partial Ladder-1 fill should
+  (a) send an IMPORTANT notification naming the filled and requested
+  quantities, and (b) offer the same explicit confirmation that
+  `confirm_ladder2_partial_fill` provides, so the shares are recorded
+  on the Trade and therefore covered by the floor. Until then the risk
+  is live.
+- **Smaller, strictly-safe alternative if the full path is too big for
+  now:** send the notification only. That alone converts a silent
+  stranding into something the Controller can act on by hand, and
+  changes no execution logic.
+
+### P-045 — The engine never checks its share count against the broker
+- **Status:** OPEN. This is the control that would have caught P-044
+  automatically.
+- **FACT:** `/v2/positions` is read in exactly one place,
+  `src/risk/portfolio_snapshot.py:125`, and only for dollar exposure.
+  Nothing anywhere compares Alpaca's actual `qty` for a symbol with
+  `trade.total_shares`.
+- **Consequence:** any divergence — a partial fill (P-044), a manual
+  trade placed by the Controller in the Alpaca UI, a corporate action,
+  a broker-side cancellation — is invisible forever. The engine
+  protects the position it *believes* it has.
+- **RECOMMENDATION:** a read-only drift check on each reconciliation
+  tick: for every ACTIVE trade, compare the broker's `qty` with
+  `trade.total_shares` and send ONE notification per divergence (using
+  the D-0070 dedup pattern, so it cannot flood). **No automatic
+  correction** — the engine must not silently rewrite its own state
+  from the broker; the Controller decides. Observability only, which
+  makes it the cheapest and least risky of the open items.
+
+### P-046 — Protective floor as a resting broker-side order (Controller's idea, deferred)
+- **Status:** DEFERRED by the Controller, 2026-10-05: "about the floor
+  point, note it down, we will return for it and discuss it."
+- **The Controller's observation, which is correct:** the floor level is
+  computed from the initial entry price, which is frozen (D-0009) and
+  persisted, and the position itself exists at Alpaca independently of
+  our process. So the floor LEVEL is known from the moment the entry
+  fills and never changes.
+- **The idea that follows:** place a resting stop/stop-limit SELL at the
+  broker at that level, once, at entry. Protection would then survive a
+  market-data outage, an engine crash, a VM reboot, and a container
+  reclaim — today it survives none of those, because the floor is only
+  evaluated by our own polling loop.
+- **Known trade-offs to work through before deciding:** a resting order
+  fires on an intraday spike our 30-second polling might never see
+  (safer or worse depending on the Controller's intent); the trailing
+  floor (D-0008) moves, so the resting order must be replaced on every
+  ratchet; a partial fill at the broker splits the position; and the
+  resting order must be cancelled on any ladder that changes the share
+  count. None are blockers, all need deciding.
+- **Not implemented, not designed in detail. Parked for discussion.**
+
+### Checked and NOT a bug
+- **A partial INITIAL ENTRY fill.** Suspected to strand shares the same
+  way, because `_apply_to_trade_if_terminal` labels a partial initial
+  fill `InitialOrderStatus.CANCELLED`. It does not:
+  `Trade.freeze_initial_reference` branches on `filled_shares == 0`, not
+  on the status label, so a partial initial fill still computes
+  `ladder1_price`, `ladder2_price` and `original_floor_price` and sets
+  `total_shares = filled_shares` (`src/trade/models.py:246-273`). The
+  position is protected. The suspicion was wrong and is recorded as
+  wrong.
+- **`reconcile_unresolved` aborting a sweep on one bad row.** It catches
+  per row, logs with `logger.exception`, and leaves the row unresolved
+  so it retries next pass. Correct.
+- **Re-submitting an already-submitted ladder every tick.** The `elif`
+  branch does call `_submit_approved` again, but
+  `ExecutionAlreadySubmittedError` is raised and caught. A no-op, not a
+  duplicate order.
+- **The protective exit double-applying.** `_apply_protective_exit`
+  derives the target `total_shares` from the execution's own immutable
+  fields rather than subtracting from current state, so re-applying is
+  idempotent by construction.
