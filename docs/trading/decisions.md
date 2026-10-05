@@ -4967,6 +4967,32 @@ missing data is the one thing that must never happen.
 **Status:** APPROVED (Controller, 2026-10-05: "let's use the option
 number three, record the same [shares] automatically")
 **Closes:** P-044 (Ladder 1), P-047. Raises P-049.
+**Supersedes:** D-0034 §7, partially — see below. This was missing from
+the first version of this entry and was added when the Controller asked
+for D-0034 to be re-checked on 2026-10-05.
+
+### Relationship to D-0034 (added 2026-10-05)
+
+D-0034 §7 reads:
+
+> "Ladder 1 partial fills are explicitly OUT OF SCOPE for this
+> mechanism: they remain unrepresented in Trade with no confirmation
+> path, **pending a separate, future Controller decision if ever
+> revisited**."
+
+D-0072 **is** that separate future Controller decision, so it supersedes
+§7 and nothing else in D-0034.
+
+**It does not violate D-0034's standing rule.** That rule is: "no
+discretionary/reduced-quantity fill is ever accepted as a **completed
+ladder event** without explicit approval." D-0072 records the SHARES and
+leaves `ladder1_filled` False, so no ladder is marked completed and no
+approval is bypassed. The rule is about completion; D-0072 is about
+ownership.
+
+Every other part of D-0034 is untouched: Ladder 2's reactive
+cancellation, its confirmation requirement, the permanent forfeiture of
+the remainder, and the prohibition on any automatic retry or top-up.
 
 ### Decision
 
