@@ -1448,8 +1448,42 @@ notifications sent          : NONE
 
   Both halves of the finding are confirmed by execution: the shares are
   unrecorded, and **not one notification is sent**. The weighted average
-  also stays at the pre-ladder 250.0, so every later percentage is
-  computed from a stale base.
+  also stays at the pre-ladder 250.0.
+
+- **CORRECTION to the line above, after checking what the weighted
+  average actually drives.** "Every later percentage is computed from a
+  stale base" was too broad and is withdrawn. Verified in code:
+  `Trade.record_ladder_fill` states and enforces that it "never touches
+  `original_floor_price`, `ladder1_price`, or `ladder2_price`" — those
+  come from the FROZEN original entry (D-0001/D-0009), so the ladder
+  triggers and the original −10% floor are **unaffected** by the stale
+  average.
+
+  Exactly one thing is affected, and it is on the protective side:
+  `Trade.activate_trailing` sets
+  `activation_threshold = weighted_avg_entry_price * 1.10`, and the
+  trailing floor is `activation_threshold * 0.95` (D-0008).
+
+| | true | stale (what the system holds) |
+|---|---|---|
+| weighted average | $248.8636 | $250.0000 |
+| trailing activates at | $273.75 | $275.00 |
+| trailing floor set at | $260.0625 | $261.2500 |
+
+  **The dangerous case is a rally that peaks between the two
+  thresholds.** A peak at $274.00 activates the trailing floor under the
+  true average and does **not** activate it under the stale one. The
+  position then falls back protected only by the original floor at
+  $225.00 instead of $260.06 — **$35.06 per share, $701.25 on the 20
+  shares the trade believes it holds**, on top of the 2 stranded shares.
+
+- **Why the trailing floor does not rescue the stranded shares either.**
+  Both the original and the trailing floor exit through the same call,
+  `submit_protective_exit(trade_id, quantity=trade.total_shares, ...)`
+  (`src/engine/engine.py:837`). The trailing floor sells the same
+  understated count, so it inherits the stranding rather than fixing
+  it — and its activation point is computed from the stale average as
+  shown above.
 
 - **The "no message" half, verified exhaustively.** Every notification
   event name the engine can emit was listed (41 of them). The list
