@@ -223,52 +223,9 @@ class PortfolioRiskEnforcer:
     trigger loop that would otherwise service other trades' Floors."""
 
     def __init__(self, *, limits: PortfolioRiskLimits,
-                 snapshot_builder: SnapshotBuilder,
-                 limits_provider=None) -> None:
-        """`limits_provider` (D-0077, optional): a zero-argument callable
-        returning a `risk.dynamic_limits.LimitDecision`, so the two trade
-        COUNT limits can respond to how much of the market the day's
-        research actually saw.
-
-        When it is None — the default, and what every existing caller
-        does — behaviour is byte-identical to before: the fixed,
-        Controller-approved `limits` are enforced.
-
-        It fails OPEN to the approved limits, deliberately. If the
-        provider raises, the Controller-approved numbers are enforced
-        unchanged. That is the opposite of the fail-CLOSED rule for the
-        snapshot builder, and the asymmetry is the point: a missing
-        portfolio snapshot means we do not know the current exposure and
-        must refuse, while a missing scale only means we cannot tighten
-        below limits the Controller already approved as safe.
-        """
+                 snapshot_builder: SnapshotBuilder) -> None:
         self._limits = limits
         self._snapshot_builder = snapshot_builder
-        self._limits_provider = limits_provider
-
-    def _effective(self):
-        """Returns (limits, blocked_reason). `blocked_reason` is a string
-        when the day's data says no new trade may be opened at all."""
-        if self._limits_provider is None:
-            return self._limits, None
-        try:
-            decision = self._limits_provider()
-        except Exception:  # noqa: BLE001 - fail OPEN to approved limits
-            return self._limits, None
-        if decision is None:
-            return self._limits, None
-        if not decision.trading_allowed:
-            return self._limits, decision.reason
-        return decision.limits, None
-
-    def _blocked(self, reason: str) -> RiskCheckResult:
-        return RiskCheckResult(
-            verdict=RiskVerdict.VIOLATED,
-            checks=(RiskCheck(
-                name="degraded_universe_no_new_trades", passed=False,
-                reason=reason,
-            ),),
-        )
 
     def _safe_snapshot(self):
         try:
@@ -291,24 +248,16 @@ class PortfolioRiskEnforcer:
         snapshot, err = self._safe_snapshot()
         if snapshot is None:
             return self._snapshot_unavailable(err)
-        limits, blocked = self._effective()
-        if blocked:
-            return self._blocked(blocked)
         return evaluate_new_trade(symbol=symbol,
                                   proposed_notional=proposed_notional,
-                                  snapshot=snapshot, limits=limits)
+                                  snapshot=snapshot, limits=self._limits)
 
     def check_ladder_addition(self, *, symbol: str,
                               proposed_notional: float) -> RiskCheckResult:
         snapshot, err = self._safe_snapshot()
         if snapshot is None:
             return self._snapshot_unavailable(err)
-        # A ladder ADDS to a position that already exists and was
-        # already approved. The degraded-universe block is about opening
-        # NEW exposure, so it deliberately does not apply here -- it must
-        # never strand an open trade without its ladder.
-        limits, _blocked_reason = self._effective()
         return evaluate_ladder_addition(
             symbol=symbol, proposed_notional=proposed_notional,
-            snapshot=snapshot, limits=limits,
+            snapshot=snapshot, limits=self._limits,
         )

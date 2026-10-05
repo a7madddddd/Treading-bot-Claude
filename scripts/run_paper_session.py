@@ -381,16 +381,6 @@ def main() -> int:
                              "Each sub-source is independent; a missing API "
                              "key or a failed fetch is silently skipped. "
                              "Strictly advisory -- never blocks a proposal.")
-    parser.add_argument("--dynamic-limits", choices=("off", "shadow", "active"),
-                        default="shadow",
-                        help="D-0077: scale max_daily_new_trades and "
-                             "max_concurrent_trades by how much of the "
-                             "market the day's research actually saw. "
-                             "'shadow' (default) COMPUTES and REPORTS the "
-                             "scaled limits but enforces the approved "
-                             "ones, so the Controller sees real numbers "
-                             "before it can cost a position. 'active' "
-                             "enforces them. 'off' disables it entirely.")
     parser.add_argument("--no-db-push", action="store_true",
                         help="Disable the per-tick git commit+push of "
                              "paper_session.sqlite. Local SQLite persistence "
@@ -493,73 +483,9 @@ def main() -> int:
         broker_secret_key=secret, sqlite_conn=conn,
         retry_policy=retry_policy,
     )
-    # D-0077: the two trade-COUNT limits respond to how much of the
-    # market today's research saw. Default is SHADOW -- computed and
-    # reported, approved limits still enforced -- because this is a
-    # trading-behaviour change resting on a baseline that does not exist
-    # until several days of runs have been recorded.
-    _base_limits = PortfolioRiskLimits()  # D-0047 defaults
-    _limits_provider = None
-    if args.dynamic_limits != "off":
-        from risk.dynamic_limits import decide as _decide_limits
-        from risk.dynamic_limits import load_recent_enriched
-        from engine.snapshot_watchlist import _current_effective_date_et
-
-        _limit_cache: dict = {}
-
-        def _limits_provider():  # noqa: F811 - deliberate rebinding
-            """Computed once per trading date, then cached.
-
-            Cached because the enforcer is consulted on every submission
-            and this reads the snapshot table; the inputs cannot change
-            within a trading date anyway, since the universe run happens
-            once before the open.
-            """
-            today = _current_effective_date_et(datetime.now(timezone.utc))
-            hit = _limit_cache.get(today)
-            if hit is not None:
-                return hit
-
-            snap = snapshot_repo.get_latest_for_date(today) if \
-                args.universe_mode == "snapshot" else None
-            enriched = None
-            if snap is not None:
-                enriched = dict(snap.data_quality_summary).get(
-                    "enriched_with_features")
-            history = load_recent_enriched(conn, before_date=today, limit=20)
-            decision = _decide_limits(base=_base_limits,
-                                      today_enriched=enriched,
-                                      history=history)
-
-            print(f"[limits] {args.dynamic_limits}: {decision.reason} "
-                  f"(baseline from {decision.baseline_source})", flush=True)
-            try:
-                notifier.send(NotificationEvent(
-                    level=NotificationLevel.IMPORTANT,
-                    event=("daily_limits_scaled"
-                           if args.dynamic_limits == "active"
-                           else "daily_limits_shadow"),
-                    message=(
-                        ("Daily limits — SHADOW, nothing enforced yet\n\n"
-                         if args.dynamic_limits == "shadow" else
-                         "Daily limits for today\n\n")
-                        + decision.reason
-                    ),
-                    symbol=None, extra=(),
-                ))
-            except Exception:  # noqa: BLE001 - never block a submission
-                pass
-
-            _limit_cache.clear()
-            _limit_cache[today] = decision
-            # In shadow mode the decision is reported but NOT returned,
-            # so the approved limits are what the enforcer uses.
-            return decision if args.dynamic_limits == "active" else None
-
     risk_enforcer = PortfolioRiskEnforcer(
-        limits=_base_limits,
+        limits=PortfolioRiskLimits(),  # D-0047 defaults
         snapshot_builder=snapshot_builder,
-        limits_provider=_limits_provider,
     )
     execution_service = ExecutionService(execution_repo, proposal_repo,
                                          trade_repo, broker,
