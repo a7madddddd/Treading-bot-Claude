@@ -580,6 +580,46 @@ Two further structural problems, independent of direction:
 - **Decision needed later:** equities only, or equities plus plain
   index funds with a fund-aware scoring path.
 
+#### P-024 — measurement result (2026-10-05, run on the VM)
+- **FACT, how it was measured.** `scripts/measure_atr_distribution.py`
+  (read-only: no snapshot, no DB write, no Telegram) classifies each
+  symbol as `stock` / `fund` / `unknown` from the broker's asset NAME,
+  because `/v2/assets` returns `class="us_equity"` for an operating
+  company and an ETF alike — there is no structural field separating
+  them. `unknown` is reported, never silently folded into either side.
+- **FACT, two independent samples agree:**
+
+| sample | stock mean ATR | stock in band | fund mean ATR | fund in band |
+|---|---|---|---|---|
+| 200 symbols (Claude container) | 3.48% | 54.3% | 1.01% | 5.6% |
+| 300 symbols (VM, `opc`) | 3.75% | 50.0% | 0.83% | 6.2% |
+
+  VM classification counts: stock 92 (35.0%), fund 64 (24.3%),
+  unknown 107 (40.7%).
+- **FACT, what this answers.** Study question 1 of P-024 ("does the
+  scoring already exclude funds in practice?") is answered by a
+  different and stronger mechanism than scoring: **D-0065's 2%–4% ATR
+  band excludes 93.8% of funds at Stage D**, before the research layer
+  scores anything. A fund's mean ATR of 0.83% is less than half the
+  2% floor. The 16-point `fundamentals` forfeit (ceiling 84 against a
+  60 threshold) is therefore a second line of defence, not the first.
+- **FACT, what this does NOT answer.** Study questions 2 and 3 — ladder
+  behavior on funds — remain unmeasured, and cannot be measured from a
+  distribution table. They need filled trades.
+- **RECOMMENDATION: do NOT add a separate ETF rule.** Reason: a new
+  filter would duplicate, with a hand-picked constant, an exclusion
+  that an existing measured parameter already performs on 93.8% of
+  cases. The ~6% of funds that do pass are precisely the volatile ones
+  the ladder is built for, so excluding them by instrument type rather
+  than by behavior would be a category rule standing in for a risk
+  rule.
+- **What would change the recommendation:** a real 06:00 ET snapshot in
+  which a fund reaches the Top-10. That is the only evidence that moves
+  this from theory to practice, and it costs nothing to wait for.
+- **Status:** OPEN — awaiting Controller decision (close with "no
+  separate ETF rule", or keep open until a fund appears in a real
+  Top-10).
+
 ### P-025 — ATR band — RESOLVED (D-0065, 2026-10-05): narrowed to 2%–4% on measured evidence
 - **Status:** OPEN, newly surfaced 2026-10-05 under CLAUDE.md §0.d
   (re-challenge an approved decision when evidence demands). Raised
