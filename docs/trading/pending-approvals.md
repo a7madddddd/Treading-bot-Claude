@@ -543,3 +543,56 @@ Two further structural problems, independent of direction:
      disadvantage (ladder never triggers)?
 - **Decision needed later:** equities only, or equities plus plain
   index funds with a fund-aware scoring path.
+
+### P-025 — Inside the APPROVED ATR band, the same ladder behaves 5× differently
+- **Status:** OPEN, newly surfaced 2026-10-05 under CLAUDE.md §0.d
+  (re-challenge an approved decision when evidence demands). Raised
+  by Claude, not asked for.
+- **FACT, approved parameters (D-0048):**
+  `min_atr_fraction = 0.01`, `max_atr_fraction = 0.05` — a symbol
+  qualifies if its average daily true range is between 1% and 5% of
+  price.
+- **FACT, approved ladder (D-0004):** add at −5%, add at −8%, exit at
+  −10%, measured from the frozen initial fill price.
+- **The problem:** those two approved decisions interact, and nothing
+  reconciles them. How fast the ladder walks depends entirely on where
+  in the band a symbol sits:
+
+| ATR | days of average adverse move to −5% | to −8% | to −10% |
+|---|---|---|---|
+| 1% | ≈ 5 | ≈ 8 | ≈ 10 |
+| 5% | ≈ 1 | ≈ 1.6 | ≈ 2 |
+
+- **What it means in practice.** At the bottom of the band the ladder
+  almost never fires and the Floor is effectively unreachable, so the
+  strategy degrades into a plain single buy with no laddering at all.
+  At the top of the band all three levels are routinely crossed inside
+  one week, so the full three-layer position is built and then stopped
+  out — the Floor becomes the normal outcome rather than the
+  last-resort exit `strategy.md` §1 calls it.
+- **Why this is the same class of error as D-0051.** D-0051 fixed a
+  60× spread in DOLLAR exposure caused by a fixed share count meeting
+  a wide price range. This is a 5× spread in TIME-to-trigger caused by
+  fixed percentage levels meeting a wide volatility range. Same shape:
+  one approved constant meeting another approved range, with no rule
+  connecting them.
+- **Options (none implemented; all change trading behavior):**
+  1. Narrow the ATR band, e.g. 2%–4%, so the ladder's pace is
+     comparable across symbols. Cheapest, fully reversible, shrinks
+     the candidate pool.
+  2. Scale the ladder levels by the symbol's own ATR, e.g. trigger at
+     −1.5 × ATR and −2.5 × ATR instead of fixed −5% / −8%. Most
+     correct in principle, but it changes the approved strategy's core
+     numbers and needs its own decision and backtest.
+  3. Leave it and MEASURE first — record each filled trade's ATR at
+     entry alongside its outcome, then decide with real data.
+- **Claude's RECOMMENDATION: option 3 now, then option 1.** Reason:
+  this is a hypothesis about pace, not an observed loss. The project
+  has no live measurement yet, and changing two approved numbers on
+  reasoning alone is exactly what D-0052 and §0.d were written to
+  prevent in the other direction. Recording ATR-at-entry costs one
+  column and no behavior change, and it makes options 1 and 2
+  decidable with evidence within a few weeks of real trading.
+- **What would change the recommendation:** if the first live
+  measurements show Floor exits clustering on high-ATR names, option 1
+  becomes urgent rather than optional.
