@@ -117,22 +117,54 @@ the transition period is over.
   false.
 - **Decision needed:** none. Pure bug fix, no trading-behavior change.
 
-### P-017 — `--max-hours` is a self-termination cap, not a 24/7 mechanism
-- **Status:** OPEN, pending one fact only the Controller can supply.
-- **FACT:** `scripts/run_paper_session.py:356` — `--max-hours` defaults
-  to `6.0`. The main loop at line 690 runs
-  `while not stop_flag and time.monotonic() < deadline`, where
-  `deadline = time.monotonic() + args.max_hours * 3600.0`. When it
-  expires the process sends `paper_session_ended` and exits cleanly.
-- **FACT:** this is what stopped the engine on 2026-10-04 — it was
-  launched on 2026-10-03 at 18:07 UTC with `--max-hours 24`.
-- **UNKNOWN:** what the Oracle VM currently launches the engine with,
-  and whether a `systemd` unit restarts it. I cannot read the VM from
-  here.
-- **Decision needed:** confirm the VM's launch command and restart
-  policy. For genuine 24/7 the engine needs a large or absent cap plus
-  an external supervisor that restarts it, since a clean exit on cap
-  expiry looks like success to any supervisor watching exit status.
+### P-017 — The engine has no supervisor; it is restarted by hand
+- **Status:** OPEN. Facts now CONFIRMED by the Controller's own VM
+  session on 2026-10-05, so this is no longer UNKNOWN.
+- **Host (confirmed):** Oracle Cloud VM, user `opc`, host
+  `trading-bot-vnic`, project at `/home/opc/Treading-bot-Claude`,
+  interpreter `python3.11`, credentials in a local `.env` file on the
+  VM. The project is NOT on the Controller's Windows machine; Windows
+  is only the SSH client.
+- **FACT, from the VM log:** `[shutdown] max-hours cap (24.0h) reached`
+  — the 2026-10-04 stop was the `--max-hours` cap, exactly as
+  predicted, not a crash.
+- **FACT:** the engine is currently launched by hand with
+  `nohup ... & disown`, PID 159529, with
+  `--universe-mode snapshot --max-hours 168 --enable-research --no-db-push --skip-confirm`.
+- **Three ways that run ends with nothing restarting it:**
+  1. the 168-hour cap expires (around 2026-10-12),
+  2. the VM reboots — `nohup` does not survive a reboot,
+  3. the process crashes.
+- **FACT making the cap worse than a crash:** on cap expiry the process
+  exits with status 0. A supervisor configured with
+  `Restart=on-failure` would treat that as success and never restart
+  it. Only `Restart=always` covers it.
+- **FACT, relevant to any auto-restart:** `src/engine/lock.py` judges
+  liveness ONLY by `heartbeat_at`, with
+  `STALE_THRESHOLD_SECONDS = 300.0`. On a clean stop the lock IS
+  released (`Engine.shutdown()` runs in the runner's `finally`), but
+  after a hard kill a restart within 5 minutes hits
+  `EngineLockHeldError` and exits. A supervisor therefore needs
+  `RestartSec` greater than 300, or systemd's start-rate limit
+  disabled, or it will give up and park the unit in a failed state.
+- **FACT:** `--max-hours` has no "unlimited" value — it is
+  `type=float, default=6.0` and the loop always builds a deadline from
+  it.
+- **Decision needed:** install a supervisor. Recommended: a `systemd`
+  service with `Restart=always`, `RestartSec=310`,
+  `StartLimitIntervalSec=0`, a very large `--max-hours`, and a wrapper
+  script that sources `.env` before exec'ing python. Pairs with P-015,
+  whose refresh job wants a `systemd` timer on the same VM.
+
+### P-014 note — the fallback is LIVE on the VM right now
+- The command above passes `--universe-mode snapshot` and NO
+  `--symbols`, so `symbols` resolves to the default `TSLA,AAPL,SPY`
+  and becomes the fallback watchlist per P-014.
+- **UNKNOWN:** whether the VM's own `paper_session.sqlite` holds a
+  snapshot for the current trading date. Since 2026-10-03 the VM runs
+  with `--no-db-push`, so its DB is not the one in this repo and cannot
+  be inspected from here. This must be checked on the VM before the
+  next session open.
 
 ### P-002 — Ranker scorer choice
 - **Status:** TESTED, still awaiting Controller decision. Unchanged
@@ -213,21 +245,32 @@ the transition period is over.
   one tick, about 30 seconds at the default `--reconcile-seconds`.
 - **Decision needed:** none. Consistency fix, no behavior change.
 
-### P-020 — Saved snapshots are missing score and sector detail
-- **Status:** OPEN, data quality.
-- **FACT:** in the 2026-10-01 snapshot every symbol entry has
-  `score_summary: []`, `sector: null`,
-  `identity_confidence: "provisional"`,
-  `confidence_status: "not_calibrated"` and
-  `risk_status: "not_calibrated"`.
-- **FACT:** the rejection summary for that run is
-  `A_tradability: 53`, `C_execution_quality: 10`,
-  `D_strategy_mechanics_fit: 4` — 67 symbols dropped, 4 survived.
-- **Consequence:** a Stage G sector cap cannot be audited after the
-  fact when the saved sector is null, and the Stage F ranking that
-  chose these four symbols is not reconstructible from the snapshot.
-- **Decision needed:** none yet. Tied to P-002 and P-015 — worth
-  resolving in the same pass as whichever universe work is approved.
+### P-020 — Snapshot audit trail is thin — CORRECTED, not a defect
+- **Status:** OPEN as a known limitation, NOT a bug. Claude's first
+  wording called it a defect; that was wrong.
+- **FACT:** `score_summary: []` is BY DESIGN.
+  `src/d0026/ranking.py` keeps `RANKING_METRIC_DEFINITIONS = ()`
+  deliberately empty, and `compute_ranking_score_summary` returns `()`
+  unconditionally with that registry, raising `NotImplementedError` if
+  a non-empty one is ever supplied — "D-0026 CALIBRATION = BLOCKED".
+  Declaring any metric there requires its own Controller decision.
+- **FACT:** `sector: null` is also BY DESIGN and hardcoded at
+  `src/d0026/snapshot.py:275`, whose docstring states: "``sector`` is
+  not sourced anywhere in the current Phase A models and is left
+  ``None`` — not guessed."
+- **FACT:** a sector provider IS wired into the enricher
+  (`scripts/run_universe_selection.py:209`), so Stage G can enforce its
+  ≤ 30% sector cap from the candidate's `source_reference`. Only the
+  snapshot's own audit field is left None.
+- **Real remaining consequence:** a published snapshot cannot be
+  audited after the fact — the Stage F ordering that chose its symbols
+  is not reconstructible from the stored row, and the sector cap that
+  Stage G applied is not visible in it. The ordering itself is carried
+  only as the ORDER of survivors, per the comment in
+  `src/d0026/stages/ranking.py`.
+- **Decision needed:** none now. It becomes relevant when P-002 is
+  decided, because a calibrated Stage F is exactly what unlocks a
+  populated `score_summary`.
 
 ### P-011 — Live DB is one schema version behind the code
 - **Status:** OPEN, verified safe, no decision needed.
