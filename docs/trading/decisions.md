@@ -3447,3 +3447,679 @@ Verified against the live DB rather than only in a test: the fixed call
 returns the real 2026-10-01 snapshot (4 symbols) that the old call
 could never return, and correctly returns None for 2026-10-05.
 Full suite: 1412 passed, 8 subtests passed.
+
+---
+
+## D-0056 — Leveraged and inverse products are excluded from the Universe
+
+**Date:** 2026-10-05
+**Decided by:** Controller
+**Status:** APPROVED and IMPLEMENTED
+**Supersedes:** nothing. Adds an eligibility gate ahead of the D-0026
+pipeline. Does NOT change D-0004's ladder levels, D-0008's trailing
+rules, D-0048's parameters, or D-0051's sizing.
+
+### Context
+
+`AlpacaAssetsProvider` requests `asset_class=us_equity`. Alpaca files
+ETFs, leveraged ETFs and inverse ETFs under that same asset class —
+there is no separate class for them — and no stage of the eight-stage
+pipeline filtered on instrument type. The result reached production:
+the Controller's live 2026-10-03 snapshot on the Oracle VM was
+
+`WBD, MUFG, DXD, VOD, MAGS, QQQI, PFE, ILF, CGGR, BCI`
+
+where `DXD` is ProShares UltraShort Dow30, a **−2× leveraged inverse**
+fund.
+
+### Why it is incompatible with the approved ladder
+
+The ladder (D-0004) BUYS MORE as price falls. An inverse fund falls
+when the market RISES, so during an ordinary rally the engine would
+average down into a leveraged bet against that rally. Worked example,
+a 5% index gain over one week:
+
+| index | `DXD` | ladder action |
+|---|---|---|
+| +2.5% | ≈ −5% | Ladder 1 fires, position doubles |
+| +4% | ≈ −8% | Ladder 2 fires, position at maximum |
+| +5% | ≈ −10% | Floor fires, SELL ALL |
+
+Two further structural problems, independent of direction: a
+daily-rebalanced leveraged fund decays over a multi-day hold even if
+the index ends flat; and 2× amplification collapses three separate
+decision points into one session.
+
+### Decision
+
+Leveraged and inverse products are excluded before any pipeline stage
+sees them. The filter defaults to ON — a safety filter must be opted
+out of, never opted into.
+
+**Scope is deliberately narrow.** This decision does NOT answer whether
+ordinary (non-leveraged, non-inverse) funds belong in the Universe.
+The Controller explicitly deferred that: "we didn't want to kill the
+strategy before we study that thing." It is tracked as P-024, and
+`MAGS`, `QQQI`, `ILF`, `CGGR` and `BCI` all still pass this filter.
+
+### Implementation
+
+- `src/d0026/instrument_eligibility.py` — new, pure, no I/O. Three
+  independent rules over the broker's `name` field:
+  1. a standalone multiplier token (`2X`, `3X`, `-1X`, `1.5X`);
+  2. a leverage/inverse word (`ULTRASHORT`, `ULTRAPRO`, `ULTRA`,
+     `LEVERAGED`, `INVERSE`, `BEAR`);
+  3. the word `SHORT` outside a duration context.
+  Versioned as `ELIGIBILITY_POLICY_VERSION = "D0026-INSTR-ELIG-001"`;
+  any rule change is a new version with its own decision entry.
+- `src/d0026/alpaca_provider.py` — new
+  `exclude_leveraged_inverse: bool = True` and a `last_excluded`
+  property carrying the reason for every drop.
+
+### Three judgement calls, stated explicitly
+
+1. **Detection is by name, not by ticker.** A ticker blocklist goes
+   stale the moment a fund is renamed or a ticker reused — exactly the
+   identity trap D-0026 exists to avoid.
+2. **`BULL` is NOT a leverage word.** `Direxion Daily ... Bull 3X
+   Shares` is already caught by the multiplier rule, whereas "bull"
+   alone appears in ordinary fund names and would cause false
+   positives.
+3. **`SHORT` has a duration exception.** In `iShares Short Treasury
+   Bond ETF` and `Vanguard Short-Term Bond ETF`, SHORT is a maturity,
+   not a direction. Those must survive — whether a bond fund belongs
+   in the Universe is P-024's question, not this one's.
+
+### The known limitation, stated rather than hidden
+
+Detection reads the broker's `name` field, and a missing name returns
+ELIGIBLE, because "we could not tell" is not evidence of leverage. So
+if Alpaca ever stops sending names, this filter silently stops
+protecting. That is why `last_excluded` exists: a drop to zero
+exclusions is the signature of the filter no longer working, and it is
+observable rather than assumed.
+
+### Tests
+
+- `tests/d0026/test_instrument_eligibility.py` — 19 tests, 37 subtests.
+  Every fund name used is a REAL product name, never an invented
+  string, since the filter rests on actual issuer naming conventions.
+  Covers: `DXD` itself; 13 real leveraged/inverse funds; 14 ordinary
+  securities that must survive (including all five ordinary funds from
+  the live snapshot); 5 short-DURATION bond funds that must survive
+  while a genuine inverse `ProShares Short QQQ` is still caught;
+  substring false positives (`Shortline`, `Overshort`, `XLK`,
+  `Ex-Energy`, `Max Holdings`, `2XYZ`); missing/empty name; verdict
+  invariants; case insensitivity.
+- `tests/d0026/test_alpaca_provider.py` — 10 new integration tests
+  driving the provider with the Controller's REAL 10-symbol snapshot:
+  `DXD` is dropped, the other nine survive unchanged, the reason is
+  reported, the filter is on by default, it can be disabled, the
+  reason list resets between calls, a nameless asset is kept, and a
+  whitelisted leveraged fund is STILL excluded (the safety filter is
+  not overridable by naming the symbol).
+- Full suite: 1412 → **1440 passed, 45 subtests**. No regressions.
+
+### Also in this commit
+
+`scripts/run_paper_session.py` — the preflight Telegram message printed
+`symbols: TSLA, AAPL, SPY` even in snapshot mode, where that list has
+been dead input since D-0054 removed the fallback. The Controller saw
+it contradict the startup message sent seconds later. Same defect class
+as D-0055. It now prints the universe source actually in use. Display
+only; no trading behavior.
+
+### Next
+
+P-024 (do ordinary funds belong in the Universe at all) stays open and
+needs measurement, not reasoning. The remaining approved work is the
+Universe-to-engine daily link, the political merge into the pipeline,
+the 60-minute proposal expiry, the market-open gate, and the two VM
+services.
+
+---
+
+## D-0057 — Stage F scorer choice is DEFERRED until live measurement exists
+
+**Date:** 2026-10-05
+**Decided by:** Controller
+**Status:** APPROVED (a decision to defer, deliberately recorded)
+**Supersedes:** nothing. Keeps D-0048's Stage F weights
+(40% momentum / 30% quality / 30% liquidity) in force unchanged.
+
+### Context
+
+P-002 asked which scorer wires into Stage F. 2026-10-03 backtests gave:
+
+| scorer | measured edge |
+|---|---|
+| Momentum (in production) | −0.99% to −1.66% |
+| Mean Reversion | −0.27% to +1.19% |
+| Pullback-in-Uptrend | +0.40% |
+| Breakout | +0.99% |
+
+The obvious reading is "switch to Breakout". Two findings from the
+2026-10-05 code audit say that reading is wrong.
+
+**Finding 1 — momentum is a GATE before it is a weight.** It is used in
+two places, not one:
+- `src/d0026/stages/strategy_fit.py` — Stage D rejects everything below
+  `min_trend_percentile = 0.50`, i.e. the bottom half by 30-day return.
+- `src/d0026/stages/ranking.py` — Stage F then weights it at
+  `momentum_weight = 0.40`.
+
+P-002 only ever concerned Stage F. So of 100 candidates, Stage D
+discards 50 by momentum BEFORE Stage F runs, and swapping Stage F's
+scorer only re-sorts the 50 momentum already chose. A genuine Breakout
+candidate — a stock just leaving a tight range — has a WEAK 30-day
+return by construction, so Stage D rejects it before any scorer sees
+it. Changing Stage F alone cannot deliver Breakout behavior.
+
+**Finding 2 — the measurements do not describe production.** Every
+number above came from hardcoded 12–22 symbol universes (P-004). The
+Controller's real 2026-10-03 snapshot contains `MUFG`, `ILF`, `CGGR`,
+`VOD` — symbols that appeared in no backtest.
+
+### Decision
+
+Do not change the scorer now. Keep D-0048's Stage F as-is. Revisit
+after the system has run and produced its own measurements.
+
+### Claude's recorded recommendation, for the revisit
+
+Seven options were put to the Controller. Ranked by fit with the
+approved ladder, which needs a stock that dips a little and recovers:
+
+| rank | option | why |
+|---|---|---|
+| 1 | Trend Filter + Dip Ranking | the only one that targets all three needs at once |
+| 2 | Breakout | enters at the start of a move, with prior range as support below |
+| 3 | Relax the Momentum Gate (Stage D) | changes WHO gets scored; the real lever behind options 1–2 |
+| 4 | Pullback-in-Uptrend | a weaker form of option 1, no explicit trend gate |
+| 5 | Quality + Liquidity only | ignores trend entirely |
+| 6 | Mean Reversion | unstable across the tested windows |
+| 7 | Momentum (current production) | buys the most extended; conflicts with buy-the-dip |
+
+**Recommended: option 1.** Stated as two questions rather than one
+metric — first a gate ("is the stock in a 90-day uptrend?"), then a
+ranking ("among those, which pulled back most in the last few days?").
+That is literally what the ladder needs: the trend makes recovery
+likely, and the pullback puts the −5% trigger within reach.
+
+This ranking is a **HYPOTHESIS**, not a measurement. Options 1, 3 and
+5 have never been backtested at all, and the four that were ran on
+universes that do not represent production. It is reasoning about fit
+between strategy and selector, and it is recorded so the revisit starts
+from an argument rather than from scratch.
+
+### What would change the recommendation
+
+Live measurement showing the current Momentum scorer producing positive
+results on the REAL universe. That would mean the small-universe
+backtests misled us, and the conflict reasoned about here does not
+bind in practice.
+
+### Next
+
+Tracked as P-026. The revisit needs: a daily Universe actually running,
+2–4 weeks of live proposals and outcomes, and each filled trade's
+selection context recorded.
+
+---
+
+## D-0058 — Political picks get a reserved slot, a distinct tag, and a daily report
+
+**Date:** 2026-10-05
+**Decided by:** Controller
+**Status:** APPROVED — implementation pending
+**Supersedes:** nothing. Leaves `weight_political = 15.0` in
+`src/engine/trade_evaluator.py` UNCHANGED.
+
+### Context
+
+The Controller's position: politicians move the market, so their picks
+deserve special treatment — "I need to work with them in a special
+way". The initial request was to double the political score.
+
+Two facts from the code shaped the final design.
+
+**Fact 1 — political picks currently BYPASS the whole Universe
+pipeline.** `PoliticalUniverseSource` emits up to 5 tickers per day and
+`Engine._check_watchlist` UNIONs them into the candidate list AFTER the
+pipeline has run. So they face no tradability, liquidity, spread, ATR
+or sector check. Concretely: a congressman buying an illiquid small-cap
+with a 2% spread goes straight to a proposal, and the ladder buys three
+times — about 6% lost to spread alone against a −10% floor, before the
+strategy starts. The Controller agreed this is a defect to fix.
+
+**Fact 2 — doubling the weight would destroy measurability.** The
+political component is already computed for EVERY candidate, not only
+political-source ones. Raising its cap to 30 blends it into one number,
+after which no proposal can be attributed to the political signal or
+to anything else — so whether politicians actually help could never be
+established.
+
+A worked example also showed the change is not cosmetic: a stock with
+a maximal political signal and median everything else scores
+`15 + 37 = 52` today (rejected at the 60 threshold) and `30 + 35 = 65`
+after doubling (proposed). Political signal alone would carry a
+mediocre stock.
+
+### Decision — three measures together
+
+1. **Reserved slot.** Of the 3 proposals per cycle
+   (`Engine._TOP_N_PER_CYCLE`), one is reserved for the best
+   politically-backed candidate that has passed the pipeline, the hard
+   filter, and the 60-point threshold. If no political candidate
+   qualifies, the slot reverts to normal ranking — never wasted.
+2. **Distinct notification tag.** A political proposal is visually
+   distinct on Telegram and carries the politician names and trade
+   dates, so the Controller can judge the specific evidence.
+3. **Daily political report.** One message per trading day listing what
+   the tracked politicians bought, INCLUDING symbols that did not
+   become proposals. Information only, zero trading effect.
+
+And, from Fact 1: political symbols are merged into the candidate pool
+BEFORE the pipeline runs, so they pass every safety stage like any
+other symbol. One door for every candidate.
+
+### Rejected alternatives, and why
+
+| option | why not |
+|---|---|
+| Raise political weight 15 → 30 | destroys attribution; political signal alone carries mediocre stocks |
+| Raise to 22 | an arbitrary half-step with no measured basis |
+| Lower the score threshold for political picks only | cleaner than reweighting and genuinely measurable; kept as the fallback if the reserved slot proves too narrow |
+| Larger position size for political picks | **advised against**: it doubles money on a signal never measured even once. Size is the last thing to change, not the first |
+
+### Rationale
+
+The reserved slot delivers what the Controller actually asked for — a
+political idea is GUARANTEED to reach him whenever a valid one exists,
+which raising a weight only makes more likely — while leaving every
+other stock's score untouched. It also creates a clean experiment:
+three proposals a day, one political and labelled, two normal. After a
+month the political slot's outcomes can be compared directly against
+the other two, and the weight question can then be settled with the
+Controller's own numbers instead of an opinion.
+
+The Controller explicitly framed this as sequential: the reserved slot
+now, the weight question revisited afterwards.
+
+### Next
+
+Implementation, with the political merge into the pipeline, as part of
+the Universe-to-engine work.
+
+---
+
+## D-0059 — 60-minute expiry for PENDING proposals
+
+**Date:** 2026-10-05
+**Decided by:** Controller
+**Status:** APPROVED and IMPLEMENTED
+
+### Context
+
+Nothing in the system ever expired a PENDING proposal. A proposal was
+superseded only when a NEWER proposal for the same
+`(trade_id, proposed_action)` was saved — and for an INITIAL_ENTRY that
+can never happen, because the trade sits in AWAITING_INITIAL_FILL and
+`_check_watchlist` excludes the symbol while it does.
+
+Live evidence: `KO` and `V` sat PENDING from 2026-10-01 and locked both
+symbols out indefinitely.
+
+### Decision
+
+A PENDING proposal with no Controller decision for **60 minutes**
+expires. An expired INITIAL_ENTRY also abandons its trade, releasing
+the symbol.
+
+**Why 60 minutes and not a round guess:** it is exactly one D-0021
+cycle. Triggers fire hourly on the half hour, so a proposal dies
+precisely before the next cycle could produce its replacement — no
+overlap, no gap, and no second timing concept added to the system.
+
+**Why staleness matters beyond the lock:** D-0007 revalidation refuses
+a submission once price drifts more than 0.5% from the proposal's
+trigger. An hours-old proposal would very likely be refused on approval
+anyway, so keeping it alive offers a choice that no longer exists.
+
+### Two restrictions that would be real bugs if relaxed
+
+1. **Only PENDING expires.** An APPROVED proposal is a Controller
+   decision and is never discarded by a timer — staleness of an
+   approved proposal is D-0007's job. Enforced in `plan_expiry`, which
+   raises rather than silently skipping, so a caller bug surfaces.
+2. **Only an expired INITIAL_ENTRY abandons its trade.** A LADDER
+   proposal belongs to a trade that already HOLDS SHARES; abandoning it
+   would drop that live position's Ladder and Floor tracking — losing
+   the protective floor on a real position. An expired ladder simply
+   lapses and the next tick re-proposes it from the unchanged frozen
+   reference.
+
+### A consequence that had to be handled, not ignored
+
+With a 60-minute TTL, the Controller returning after an hour and
+tapping a stale button becomes ROUTINE. Previously any
+`ProposalDecisionConflictError` produced a CRITICAL `decision_conflict`
+alarm. An alarm that fires on ordinary behavior trains the Controller
+to ignore alarms, so a late tap on an EXPIRED proposal now sends an
+IMPORTANT `decision_on_expired_proposal` explaining that nothing was
+bought or sold. Every other conflict stays CRITICAL, because those are
+real.
+
+The error path re-reads the proposal from the repository rather than
+trusting the copy fetched earlier in the method — the whole point is to
+classify a state that may have changed since.
+
+### Ordering
+
+The sweep runs AFTER `_apply_decisions` in the reconciliation tick, so
+a decision arriving in the same tick always beats the timer. Covered by
+a test.
+
+### Implementation
+
+- `src/proposals/repository.py` — pure `plan_expiry()` beside
+  `plan_decision()`; `expire_pending()` added to the ABC and the
+  in-memory implementation.
+- `src/proposals/sqlite_repository.py` — `expire_pending()` inside one
+  `transaction()`, precondition delegated to `plan_expiry`, same
+  discipline as `record_decision`.
+- `src/engine/engine.py` — `PROPOSAL_TTL_SECONDS = 3600.0`,
+  `_expire_stale_proposals()`, `_expire_one_proposal()`, called from
+  `run_reconciliation_tick`; the expired-button branch in
+  `_apply_decision`.
+
+### Tests
+
+`TestProposalExpiry`, 10 tests: survives just under the TTL; expires at
+the TTL; **an expired INITIAL_ENTRY releases its symbol** (the KO/V
+failure); the symbol can genuinely be proposed again afterwards;
+APPROVED is never TTL-expired; REJECTED is untouched; **expiring a
+LADDER never abandons a live 10-share trade**; reported once not every
+tick; a decision in the same tick beats the timer; a late button tap is
+IMPORTANT, not CRITICAL.
+
+Suite: 1440 → 1450 passed.
+
+---
+
+## D-0060 — Ask the broker whether the market is open before any new proposal
+
+**Date:** 2026-10-05
+**Decided by:** Controller
+**Status:** APPROVED and IMPLEMENTED
+
+### Context
+
+`src/engine/schedule.py` and `src/scheduler/daemon.py` both flagged in
+their own docstrings that US market holidays (D-0006) were not handled,
+and a repo-wide search confirmed no calendar existed. The engine's main
+loop never gated on market state — `/v2/clock` was read once during
+preflight and never again. On a weekday holiday the 09:30 ET trigger
+fired as if it were a normal day.
+
+### Decision
+
+Ask the BROKER, per tick, before creating any new proposal.
+
+**Why the broker and not a holiday calendar.** A date list cannot know
+about a HALF day. The session after US Thanksgiving closes at 13:00 ET,
+so the approved 13:30, 14:30 and 15:30 ET triggers would all fire into
+a closed market while every date-based check called it a normal trading
+day. The broker's clock is correct there, correct for unscheduled
+closures, and needs no yearly maintenance.
+
+### Scope — the gate blocks ONE thing
+
+It is called from exactly one place, `_check_watchlist`, so it can stop
+new proposals and nothing else. Reconciliation, the protective Floor
+and the Trailing Floor all run regardless. This is not an accident:
+
+> An order approved at 15:59 can fill at 16:00:01. If the engine
+> stopped reconciling while the market was shut, it would never learn
+> the fill happened, so it would never compute that position's Floor —
+> leaving a REAL position unprotected overnight while the engine
+> believed nothing was held.
+
+Blocking an exit to "be safe" is never safe. Only entries wait.
+
+### Fail closed
+
+Any error means "unknown", and unknown is treated as closed. The
+asymmetry is deliberate: a wrong "open" creates a real order priced off
+a stale quote; a wrong "closed" costs one cycle, and the next trigger
+is an hour away. The Controller stated the preference directly — "I
+didn't mind if I lose any chance to buy any item, otherwise I didn't
+want to make mistakes".
+
+The broker already retries transient failures three times
+(`RetryPolicy(max_attempts=3)`, wired in `run_paper_session`), so an
+exception reaching the gate is not a single blip.
+
+### Implementation
+
+- `src/execution/broker_client.py` — abstract `is_market_open()`.
+- `src/execution/alpaca_broker_client.py` — reads `/v2/clock`, raises
+  `BrokerCommunicationError` on transport failure, bad status, bad JSON
+  or a non-boolean `is_open`. Never guesses.
+- `src/engine/engine.py` — `_market_open_for_new_proposals()`, the
+  single call site at the top of `_check_watchlist`. A closed market is
+  reported through the existing per-day `nothing_to_trade_today`
+  channel at IMPORTANT level, not as an error.
+
+### Tests
+
+`TestMarketOpenGate`, 8 tests: open allows a proposal; closed blocks
+every proposal and creates no trade; closed is reported as status not
+error; **a broker error fails CLOSED, not open**; a broker error does
+not crash the tick; **a closed market NEVER blocks the protective
+Floor** (a live 10-share position below its floor still fires its SELL
+to the broker); reconciliation still runs while closed; and the gate is
+checked before the watchlist is even read.
+
+Suite: 1450 → 1459 passed, 45 subtests. No regressions.
+
+---
+
+## D-0061 — Political source supplies SIGNALS only; reserved slot, distinct tag, daily report
+
+**Date:** 2026-10-05
+**Decided by:** Controller
+**Status:** APPROVED and IMPLEMENTED
+**Amends:** D-0058, whose implementation note said political symbols
+would be MERGED into the candidate pool before the pipeline. Reading
+the code showed that description was wrong, and the Controller approved
+the corrected approach before any code was written.
+
+### The correction
+
+D-0058 recorded "merge political symbols into the pool BEFORE the
+pipeline". That turned out to be unnecessary and unsafe.
+
+**Unnecessary:** production runs the pipeline over
+`/v2/assets?status=active&asset_class=us_equity` — every tradable US
+equity. A political pick that is a real equity is therefore ALREADY in
+the candidate pool. There was nothing to merge.
+
+**Unsafe:** D-0056's leveraged/inverse filter lives inside
+`AlpacaAssetsProvider` and only sees symbols that provider fetched.
+Symbols injected into the pool by a separate merge step would have
+walked straight past it — so a politician buying a 2× inverse fund
+would have bypassed the DXD protection built the same day.
+
+The real defect was the opposite shape: the engine was ADDING political
+symbols AFTER the pipeline had run. So the fix is a DELETION.
+
+### Decision
+
+1. **The political source supplies signals only.** The UNION in
+   `Engine._check_watchlist` that injected its Top-N tickers is
+   removed. `get_signals()` is still called, so the political component
+   still scores every candidate; `get_active_symbols()` is no longer
+   consulted for candidates at all.
+2. **Reserved slot.** One of the `_TOP_N_PER_CYCLE` (3) proposals is
+   reserved for the best politically-backed candidate that has already
+   passed the pipeline, the hard filter, `_MIN_SCORE` and the portfolio
+   filter. It reorders qualifiers only — it never admits a candidate
+   that failed a check. If none qualifies the slot reverts to normal
+   ranking, so nothing is wasted.
+3. **Distinct tag.** A politically-backed proposal is sent under the
+   event `political_proposal_awaiting_approval` and carries the
+   politician NAMES, the 30-day buy/sell counts and the committee-match
+   flag — not just a score. The Controller's stated reason for tracking
+   this source is judging the specific people; a number cannot be
+   judged, a name can.
+4. **Daily report.** One `political_daily_report` per ET trading date,
+   at OPTIONAL level, listing every symbol with congressional activity
+   sorted by signal strength — INCLUDING symbols that did not become
+   proposals. Without that, the Controller only ever sees the political
+   picks that survived every filter, which hides the signal's real
+   breadth and makes it impossible to judge whether the filters are
+   discarding good political ideas.
+
+### The consequence the Controller accepted explicitly
+
+A political pick that FAILS a safety stage now never reaches the
+Controller. A congressman's illiquid small-cap with a 2% spread is
+rejected by Stage C (`max_spread_fraction = 0.0015`) and no proposal is
+created. That is exactly the requested behavior — "anything from the
+political source should also go inside every step" — and it was
+confirmed before implementation rather than discovered later.
+
+Under the old bypass that same symbol reached a proposal with no spread
+check at all, and the ladder buys three times: roughly 6% lost to
+spread alone against a −10% floor, before the strategy starts.
+
+### Not changed
+
+`weight_political = 15.0` stays as it is, per D-0058. Doubling it would
+blend the signal into one number and make attribution impossible; the
+reserved slot gives the Controller the guaranteed exposure he asked for
+AND keeps the experiment clean — one labelled political proposal per
+cycle against two normal ones, directly comparable after a month.
+
+### Tests
+
+`TestPoliticalD0058`, 14 tests. The ones that matter most:
+- **a political symbol outside the pipeline is NEVER traded** (the core
+  guarantee);
+- `get_active_symbols()` is no longer consulted for candidates;
+- promotion displaces the LOWEST natural qualifier, never the best;
+- no promotion when a political pick already qualified on merit;
+- the slot is not wasted when no political candidate qualifies;
+- **promotion never rescues a candidate below `_MIN_SCORE`**;
+- the tag carries names, committee match and counts, and still has its
+  approval buttons;
+- a non-political proposal has no tag and keeps the plain event;
+- **a malformed signal object never costs a proposal**;
+- the report includes symbols that did not become proposals, is sorted
+  by signal strength, fires once per ET trading day, and is silent when
+  there is no activity.
+
+Two pre-existing tests were realigned rather than deleted: both used an
+empty watchlist and relied on the removed bypass, so
+`test_political_sell_wave_blocks_trade` would have started passing for
+the WRONG reason (no candidates at all) and silently stopped testing
+the hard filter it is named for.
+
+Suite: 1459 → **1473 passed, 45 subtests**.
+
+---
+
+## D-0062 — Two systemd units on the VM: engine supervision and the daily universe refresh
+
+**Date:** 2026-10-05
+**Decided by:** Controller
+**Status:** APPROVED and IMPLEMENTED (files committed; installation is
+a Controller action on the VM)
+
+### Context
+
+P-015 and P-017. The engine was started by hand with `nohup` and had no
+supervisor, so it died three ways with nothing bringing it back: the
+`--max-hours` cap expiring, a VM reboot, or a crash. And nothing at all
+wrote the daily universe snapshot — `SchedulerDaemon` (B29) existed and
+was tested, but its only entry point registered one job whose callable
+merely printed "live routine not yet wired".
+
+### Decision
+
+Two units in `deploy/`, plus two wrapper scripts and a README.
+
+| unit | role | schedule |
+|---|---|---|
+| `trading-engine.service` | keeps the engine alive | always |
+| `universe-refresh.timer` | writes today's snapshot | weekdays 08:45 ET |
+
+Both are required. The engine alone is not enough: it only READS
+snapshots, and `SnapshotUniverseSource` looks up TODAY's ET date only.
+Since D-0054 removed the fallback watchlist, a day without the refresh
+is a day with no new trades.
+
+### Three non-default settings, each derived from the code
+
+1. **`Restart=always`, not `on-failure`.** `run_paper_session.py` exits
+   with status **0** when its `--max-hours` cap expires — a clean
+   shutdown, and exactly what stopped the engine on 2026-10-04. To
+   `Restart=on-failure` that looks like success, so it would never
+   restart.
+2. **`RestartSec=310`.** `src/engine/lock.py` judges liveness only by
+   `heartbeat_at`, with `STALE_THRESHOLD_SECONDS = 300`. A clean stop
+   releases the lock, but after a hard kill the row looks live for up
+   to 5 minutes and a restart fails with `EngineLockHeldError`. 310s
+   clears it on the first attempt.
+3. **`StartLimitIntervalSec=0`.** systemd's default parks a unit in
+   FAILED after 5 starts in 10s. Unreachable with (2) today, but a
+   future `RestartSec` change must not be able to silently brick the
+   supervisor.
+
+### Timer time and timezone
+
+08:45 **America/New_York**, named explicitly rather than computed in
+UTC. The run must COMPLETE before the first D-0021 trigger at 09:30 ET,
+and it enriches hundreds of symbols against Alpaca, so it needs real
+headroom. A fixed UTC time would drift an hour at each DST switch and
+land after the open — the drift D-0041 warned about. Validated with
+`systemd-analyze calendar`: next elapse `Tue 2026-10-06 12:45 UTC`,
+which is 08:45 EDT. `Persistent=true` so a powered-off VM runs the job
+on return rather than skipping the day.
+
+### Why wrapper scripts instead of `EnvironmentFile=`
+
+systemd parses `EnvironmentFile` with its own rules, not shell rules —
+it runs no shell, so quoting, `export`, trailing comments and `$VAR`
+references are handled differently from `source .env`. A token that
+works by hand can arrive mangled under systemd. Sourcing the same file
+with the same shell removes that class of difference.
+
+`--max-hours 87600` (ten years) is used because the flag has no
+"unlimited" value. The cap is not the restart mechanism; systemd is.
+
+### Also in this change
+
+- `src/persistence/db.py` — `busy_timeout` raised from the 5000ms
+  default to `BUSY_TIMEOUT_MS = 30000`, because the refresh is now a
+  SECOND process writing `paper_session.sqlite` while the engine runs.
+  Measured with two real processes: at 5000ms an engine write fails
+  after 5.01s; at 30000ms it waits 10.05s and succeeds. **WAL does not
+  fix this** — WAL separates readers from writers and reads were never
+  blocked; the failing case is writer-versus-writer. Risk was LOW
+  regardless (the snapshot save holds its lock for a single one-row
+  INSERT, with all slow work outside the transaction), so this is
+  insurance, not a fix for an observed failure.
+- `scripts/run_scheduler.py` — docstring corrected to state plainly
+  that it is NOT the production mechanism. Its old header read as
+  though scheduling were handled there; during the audit that wording
+  cost real time, because the system appeared to have a scheduler while
+  nothing refreshed the universe.
+
+### Not verifiable from here
+
+The units cannot be installed or started from a Claude container — they
+belong to the Controller's VM. The README carries the install and
+verify commands, including the heartbeat check, since an empty log is
+NOT evidence of a dead engine (Python buffers stdout to a file).

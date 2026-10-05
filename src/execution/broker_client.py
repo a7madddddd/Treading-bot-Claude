@@ -136,3 +136,21 @@ class BrokerClient(ABC):
         5% of it is $5,000, not $4,000. Same source-of-truth and failure
         contract as get_cash_balance()."""
         raise NotImplementedError
+
+    @abstractmethod
+    def is_market_open(self) -> bool:
+        """True when the broker reports the market as currently open for
+        trading. Controller-approved 2026-10-05.
+
+        The broker is the source of truth deliberately, instead of a
+        hardcoded holiday calendar. A date list cannot know about a
+        HALF day -- the session after US Thanksgiving closes at 13:00
+        ET, so the approved 13:30, 14:30 and 15:30 ET triggers would
+        all fire into a closed market while every date-based check said
+        the day was a normal trading day. The broker's clock is right
+        in that case, and in unscheduled closures too, and it needs no
+        yearly maintenance.
+
+        Callers MUST fail closed on error: an exception here means
+        "unknown", and unknown must never be treated as open."""
+        raise NotImplementedError

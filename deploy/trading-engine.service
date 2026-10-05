@@ -1,0 +1,47 @@
+# Paper-trading engine. Install to /etc/systemd/system/trading-engine.service
+#
+# Three settings here are NOT defaults and NOT cosmetic. Each one was
+# derived from the code, and getting any of them wrong leaves the system
+# looking supervised while it is actually dead.
+
+[Unit]
+Description=Paper trading engine (D-0045 runner, snapshot universe mode)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=opc
+WorkingDirectory=/home/opc/Treading-bot-Claude
+ExecStart=/home/opc/Treading-bot-Claude/deploy/engine-run.sh
+
+# (1) Restart=always, NOT on-failure.
+#     scripts/run_paper_session.py exits with status 0 when its
+#     --max-hours cap expires -- that is a clean, deliberate shutdown,
+#     and it is exactly what stopped the engine on 2026-10-04. To
+#     Restart=on-failure a status-0 exit looks like success, so it would
+#     never restart. Restart=always covers the cap, a crash, and a
+#     SIGTERM alike.
+Restart=always
+
+# (2) RestartSec must exceed the engine lock's stale threshold.
+#     src/engine/lock.py judges liveness ONLY by heartbeat_at, with
+#     STALE_THRESHOLD_SECONDS = 300. A clean stop releases the lock
+#     (Engine.shutdown() runs in the runner's finally block), but after
+#     a hard kill -- SIGKILL, OOM, power loss -- the row looks live for
+#     up to 5 minutes and a restarting engine refuses to start with
+#     EngineLockHeldError. 310s waits that out on the first try.
+RestartSec=310
+
+# (3) Disable systemd's start-rate limiter.
+#     Default is 5 starts per 10s interval, after which the unit is
+#     parked in a FAILED state and never retried. Combined with (2) that
+#     default would be unreachable, but a future RestartSec change must
+#     not be able to silently brick the supervisor. 0 = never give up.
+StartLimitIntervalSec=0
+
+StandardOutput=append:/home/opc/Treading-bot-Claude/logs/engine.log
+StandardError=append:/home/opc/Treading-bot-Claude/logs/engine.log
+
+[Install]
+WantedBy=multi-user.target

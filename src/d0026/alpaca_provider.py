@@ -19,6 +19,7 @@ import urllib.request
 from datetime import date
 from typing import Callable, Iterable, Mapping, Optional, Tuple
 
+from d0026.instrument_eligibility import classify_instrument
 from d0026.models import RawCandidateRef
 from d0026.provider import UniverseSourceProvider
 
@@ -69,6 +70,7 @@ class AlpacaAssetsProvider(UniverseSourceProvider):
         transport: HttpTransport = _urllib_transport,
         timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
         retry_policy=None,  # Optional common.http_retry.RetryPolicy
+        exclude_leveraged_inverse: bool = True,
     ) -> None:
         if not key_id or not secret_key:
             raise AlpacaAssetsProviderConfigError(
@@ -87,6 +89,25 @@ class AlpacaAssetsProvider(UniverseSourceProvider):
             transport = with_retry(transport, policy=retry_policy)
         self._transport = transport
         self._timeout = timeout_seconds
+        # P-021 (Controller-approved 2026-10-05): leveraged and inverse
+        # products are incompatible with the approved ladder and are
+        # dropped before any pipeline stage sees them. Defaults to ON --
+        # a safety filter that must be opted OUT of, never opted into.
+        self._exclude_leveraged_inverse = exclude_leveraged_inverse
+        self._last_excluded: Tuple[str, ...] = ()
+
+    @property
+    def last_excluded(self) -> Tuple[str, ...]:
+        """Reasons for every instrument dropped by the eligibility
+        filter during the most recent `get_raw_candidates` call.
+
+        Exposed because the filter reads the broker's `name` field and
+        returns ELIGIBLE when that field is absent -- so a silent drop
+        to zero exclusions is the signature of the filter no longer
+        protecting, and the caller must be able to see that rather than
+        assume it worked."""
+
+        return self._last_excluded
 
     def get_raw_candidates(
         self, as_of_date: date
@@ -116,6 +137,7 @@ class AlpacaAssetsProvider(UniverseSourceProvider):
             )
 
         candidates = []
+        excluded: list = []
         for a in assets:
             if not a.get("tradable"):
                 continue
@@ -126,7 +148,15 @@ class AlpacaAssetsProvider(UniverseSourceProvider):
                 continue
             if self._whitelist is not None and symbol not in self._whitelist:
                 continue
+            if self._exclude_leveraged_inverse:
+                verdict = classify_instrument(
+                    symbol=symbol, name=a.get("name"),
+                )
+                if not verdict.eligible:
+                    excluded.append(verdict.reason or symbol)
+                    continue
             candidates.append(
                 RawCandidateRef(ticker=symbol, as_of_date=as_of_date)
             )
+        self._last_excluded = tuple(excluded)
         return tuple(candidates)

@@ -66,6 +66,15 @@ class FakeBrokerClient(BrokerClient):
         # existing assertions keep passing without a per-test rewrite.
         return 80000.0
 
+    # Market-open gate (2026-10-05). Defaults to OPEN so every existing
+    # test keeps its pre-gate behavior; the gate's own tests flip it.
+    market_open = True
+
+    def is_market_open(self) -> bool:
+        if isinstance(self.market_open, Exception):
+            raise self.market_open
+        return self.market_open
+
 
 class FakeMarketDataSource(MarketDataSource):
     def __init__(self, prices: Optional[Dict[str, float]] = None):
@@ -864,8 +873,10 @@ class TestPoliticalSignalEndToEnd(unittest.TestCase):
 
     def test_political_signal_actually_boosts_score(self):
         trade_repo, proposal_repo, execution_repo, conn = _repos()
-        watchlist = StaticWatchlistSource(("TSLA",))  # TSLA from watchlist
-        # NVDA gets a strong political signal from the universe source.
+        # D-0058: BOTH symbols now come through the pipeline. The
+        # political source no longer injects symbols -- it only supplies
+        # the signal that lifts NVDA's score.
+        watchlist = StaticWatchlistSource(("TSLA", "NVDA"))
         evaluator = self._ReevalCountingEvaluator({"TSLA": 50.0, "NVDA": 50.0})
         political = self._PoliticalSrcStub({
             "NVDA": {"buys": 3, "signal": 15.0, "cmte": True,
@@ -893,7 +904,11 @@ class TestPoliticalSignalEndToEnd(unittest.TestCase):
         """A ranked candidate with 3+ whitelist sellers → sell_wave →
         hard-filter rejects → no proposal is created."""
         trade_repo, proposal_repo, execution_repo, conn = _repos()
-        watchlist = StaticWatchlistSource(())  # universe comes from political source
+        # D-0058: BADSTOCK must enter through the pipeline. With an
+        # empty watchlist this test would pass for the WRONG reason --
+        # no candidates at all -- and would stop testing the sell-wave
+        # hard filter it is named for.
+        watchlist = StaticWatchlistSource(("BADSTOCK",))
         evaluator = self._ReevalCountingEvaluator({"BADSTOCK": 85.0})
         political = self._PoliticalSrcStub({
             "BADSTOCK": {"buys": 0, "sells": 3, "sell_wave": True,
@@ -1680,3 +1695,603 @@ class TestNothingToTradeNotification(unittest.TestCase):
         self.assertIn("not an error", event.message)
         self.assertIn("Ladder / Floor / Trailing are unaffected",
                       event.message)
+
+
+class TestProposalExpiry(unittest.TestCase):
+    """Controller-approved 2026-10-05: a PENDING proposal with no
+    decision for 60 minutes expires, and an expired INITIAL_ENTRY
+    releases its symbol.
+
+    Live motivation: KO and V sat PENDING from 2026-10-01 and locked
+    both symbols out indefinitely, because nothing in the system ever
+    expired a pending proposal.
+    """
+
+    TTL = Engine.PROPOSAL_TTL_SECONDS
+
+    @staticmethod
+    def _events(notifier, name):
+        return [e for e in notifier.events if e.event == name]
+
+    def _pending_initial_entry(self, now):
+        """Builds a trade in AWAITING_INITIAL_FILL with one PENDING
+        INITIAL_ENTRY proposal, exactly as _start_new_trade does."""
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        engine, _b, market_data, _d, notifier, _e = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            watchlist=StaticWatchlistSource(("TSLA",)),
+        )
+        market_data.set_price("TSLA", 100.0)
+        engine._lock.acquire(now=now)
+        engine.run_trigger_check(now=now)
+        proposals = proposal_repo.list_for_symbol("TSLA")
+        self.assertEqual(len(proposals), 1)
+        self.assertIs(proposals[0].approval_state, ApprovalState.PENDING)
+        return engine, trade_repo, proposal_repo, notifier, proposals[0]
+
+    def test_pending_proposal_survives_just_under_the_ttl(self):
+        now = _now()
+        engine, _tr, proposal_repo, _n, proposal = \
+            self._pending_initial_entry(now)
+        engine.run_reconciliation_tick(
+            now=now + timedelta(seconds=self.TTL - 1))
+        self.assertIs(proposal_repo.get(proposal.proposal_id).approval_state,
+                      ApprovalState.PENDING)
+
+    def test_pending_proposal_expires_at_the_ttl(self):
+        now = _now()
+        engine, _tr, proposal_repo, notifier, proposal = \
+            self._pending_initial_entry(now)
+        engine.run_reconciliation_tick(now=now + timedelta(seconds=self.TTL))
+        stored = proposal_repo.get(proposal.proposal_id)
+        self.assertIs(stored.approval_state, ApprovalState.EXPIRED)
+        self.assertIsNotNone(stored.expired_at)
+        events = self._events(notifier, "proposal_expired")
+        self.assertEqual(len(events), 1)
+        self.assertIn("60 minutes", events[0].message)
+        self.assertIn("Nothing was bought or sold", events[0].message)
+
+    def test_expired_initial_entry_releases_the_symbol(self):
+        """The KO/V failure. Without this the symbol is locked forever."""
+        now = _now()
+        engine, trade_repo, _pr, _n, _p = self._pending_initial_entry(now)
+        from trade.models import describe_status as _status
+        before = trade_repo.list_for_symbol("TSLA")
+        self.assertEqual(_status(before[0].trade), "AWAITING_INITIAL_FILL")
+
+        engine.run_reconciliation_tick(now=now + timedelta(seconds=self.TTL))
+
+        after = trade_repo.list_for_symbol("TSLA")
+        self.assertEqual(_status(after[0].trade), "ABANDONED")
+
+    def test_symbol_can_be_proposed_again_after_expiry(self):
+        """End to end: the release must actually let a NEW proposal be
+        created for the same symbol on a later cycle."""
+        now = _now()
+        engine, _tr, proposal_repo, _n, first = \
+            self._pending_initial_entry(now)
+        later = now + timedelta(seconds=self.TTL)
+        engine.run_reconciliation_tick(now=later)
+        engine.run_trigger_check(now=later)
+
+        proposals = proposal_repo.list_for_symbol("TSLA")
+        self.assertEqual(len(proposals), 2)
+        ids = {p.proposal_id for p in proposals}
+        self.assertIn(first.proposal_id, ids)
+        fresh = [p for p in proposals
+                 if p.proposal_id != first.proposal_id][0]
+        self.assertIs(fresh.approval_state, ApprovalState.PENDING)
+
+    def test_an_APPROVED_proposal_is_never_ttl_expired(self):
+        """A Controller decision must never be discarded by a timer.
+        Staleness of an APPROVED proposal is D-0007 revalidation's job."""
+        now = _now()
+        engine, _tr, proposal_repo, _n, proposal = \
+            self._pending_initial_entry(now)
+        proposal_repo.record_decision(
+            proposal.proposal_id, approved=True, decided_by="controller",
+            decided_at=now, action=TradeAction.INITIAL_ENTRY,
+        )
+        engine.run_reconciliation_tick(
+            now=now + timedelta(seconds=self.TTL * 5))
+        self.assertIs(proposal_repo.get(proposal.proposal_id).approval_state,
+                      ApprovalState.APPROVED)
+
+    def test_a_REJECTED_proposal_is_not_touched(self):
+        now = _now()
+        engine, _tr, proposal_repo, _n, proposal = \
+            self._pending_initial_entry(now)
+        proposal_repo.record_decision(
+            proposal.proposal_id, approved=False, decided_by="controller",
+            decided_at=now, action=TradeAction.INITIAL_ENTRY,
+        )
+        engine.run_reconciliation_tick(
+            now=now + timedelta(seconds=self.TTL * 5))
+        self.assertIs(proposal_repo.get(proposal.proposal_id).approval_state,
+                      ApprovalState.REJECTED)
+
+    def test_expiring_a_LADDER_proposal_never_abandons_a_live_trade(self):
+        """The dangerous case. A ladder's trade HOLDS SHARES -- marking
+        it abandoned would drop the Floor on a real position."""
+        now = _now()
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        record = _active_trade(trade_repo, trade_id="T-LIVE", symbol="TSLA",
+                               price=100.0, shares=10, now=now)
+        engine, _b, market_data, _d, notifier, _e = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+        )
+        market_data.set_price("TSLA", 100.0)
+        engine._lock.acquire(now=now)
+
+        from proposals.proposal import build_trade_proposal
+        from proposals.models import FloorContext
+        ladder = build_trade_proposal(
+            proposal_id="T-LIVE-ladder_1-aaaa", trade_id="T-LIVE",
+            action=TradeAction.LADDER_1, symbol="TSLA",
+            current_price=100.0, as_of=now, strategy=_strategy(),
+            floor_context=FloorContext.known(90.0),
+        )
+        proposal_repo.save(ladder)
+
+        engine.run_reconciliation_tick(now=now + timedelta(seconds=self.TTL))
+
+        self.assertIs(proposal_repo.get(ladder.proposal_id).approval_state,
+                      ApprovalState.EXPIRED)
+        # The trade itself must be untouched and still ACTIVE.
+        from trade.models import describe_status as _status
+        after = trade_repo.get("T-LIVE")
+        self.assertEqual(_status(after.trade), "ACTIVE")
+        self.assertEqual(after.trade.total_shares, 10)
+
+    def test_expiry_is_reported_once_not_every_tick(self):
+        now = _now()
+        engine, _tr, _pr, notifier, _p = self._pending_initial_entry(now)
+        for extra in (0, 30, 60, 90):
+            engine.run_reconciliation_tick(
+                now=now + timedelta(seconds=self.TTL + extra))
+        self.assertEqual(len(self._events(notifier, "proposal_expired")), 1)
+
+    def test_a_decision_in_the_same_tick_beats_the_timer(self):
+        """The sweep runs AFTER _apply_decisions, so a decision that
+        arrives in the same tick must win."""
+        now = _now()
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        decision_source = InMemoryDecisionSource()
+        engine, _b, market_data, _d, notifier, _e = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            watchlist=StaticWatchlistSource(("TSLA",)),
+            decision_source=decision_source,
+        )
+        market_data.set_price("TSLA", 100.0)
+        engine._lock.acquire(now=now)
+        engine.run_trigger_check(now=now)
+        proposal = proposal_repo.list_for_symbol("TSLA")[0]
+
+        decision_source.submit(ControllerDecision(
+            proposal_id=proposal.proposal_id, kind=DecisionKind.REJECT,
+            decided_by="controller",
+        ))
+        engine.run_reconciliation_tick(now=now + timedelta(seconds=self.TTL))
+
+        self.assertIs(proposal_repo.get(proposal.proposal_id).approval_state,
+                      ApprovalState.REJECTED)
+        self.assertEqual(self._events(notifier, "proposal_expired"), [])
+
+    def test_tapping_a_button_after_expiry_is_not_a_CRITICAL_alarm(self):
+        """With a 60-minute TTL this becomes routine. An alarm that
+        fires on ordinary behavior trains the Controller to ignore
+        alarms."""
+        now = _now()
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        decision_source = InMemoryDecisionSource()
+        engine, _b, market_data, _d, notifier, _e = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            watchlist=StaticWatchlistSource(("TSLA",)),
+            decision_source=decision_source,
+        )
+        market_data.set_price("TSLA", 100.0)
+        engine._lock.acquire(now=now)
+        engine.run_trigger_check(now=now)
+        proposal = proposal_repo.list_for_symbol("TSLA")[0]
+
+        # Tick 1 expires it. Tick 2 carries a late approval.
+        engine.run_reconciliation_tick(now=now + timedelta(seconds=self.TTL))
+        decision_source.submit(ControllerDecision(
+            proposal_id=proposal.proposal_id, kind=DecisionKind.APPROVE,
+            decided_by="controller",
+        ))
+        engine.run_reconciliation_tick(
+            now=now + timedelta(seconds=self.TTL + 60))
+
+        self.assertEqual(self._events(notifier, "decision_conflict"), [])
+        late = self._events(notifier, "decision_on_expired_proposal")
+        self.assertEqual(len(late), 1)
+        self.assertEqual(late[0].level, NotificationLevel.IMPORTANT)
+        self.assertIn("Nothing was bought or sold", late[0].message)
+
+
+class TestMarketOpenGate(unittest.TestCase):
+    """Controller-approved 2026-10-05: ask the BROKER whether the market
+    is open before creating any new proposal.
+
+    The broker is the source of truth instead of a date list because a
+    date list cannot know about a HALF day -- the session after US
+    Thanksgiving closes at 13:00 ET, so the approved 13:30 / 14:30 /
+    15:30 ET triggers would fire into a closed market while every
+    date-based check called it a normal trading day.
+    """
+
+    @staticmethod
+    def _events(notifier, name):
+        return [e for e in notifier.events if e.event == name]
+
+    def _engine(self, market_open):
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        broker = FakeBrokerClient()
+        broker.market_open = market_open
+        engine, _b, market_data, _d, notifier, _e = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            broker=broker, watchlist=StaticWatchlistSource(("TSLA",)),
+        )
+        market_data.set_price("TSLA", 100.0)
+        engine._lock.acquire(now=_now())
+        return engine, trade_repo, proposal_repo, notifier
+
+    def test_market_open_allows_a_new_proposal(self):
+        engine, _tr, proposal_repo, _n = self._engine(True)
+        engine.run_trigger_check(now=_now())
+        self.assertEqual(len(proposal_repo.list_for_symbol("TSLA")), 1)
+
+    def test_market_closed_blocks_every_new_proposal(self):
+        engine, trade_repo, proposal_repo, _n = self._engine(False)
+        engine.run_trigger_check(now=_now())
+        self.assertEqual(proposal_repo.list_for_symbol("TSLA"), [])
+        self.assertEqual(trade_repo.list_for_symbol("TSLA"), [])
+
+    def test_market_closed_is_reported_as_status_not_error(self):
+        engine, _tr, _pr, notifier = self._engine(False)
+        engine.run_trigger_check(now=_now())
+        events = self._events(notifier, "nothing_to_trade_today")
+        self.assertEqual(len(events), 1)
+        self.assertIn("CLOSED", events[0].message)
+        self.assertEqual(events[0].level, NotificationLevel.IMPORTANT)
+
+    def test_broker_error_fails_CLOSED_not_open(self):
+        """Unknown must never be treated as open. A wrong 'open'
+        creates a real order priced off a stale quote."""
+        engine, trade_repo, proposal_repo, notifier = self._engine(
+            RuntimeError("clock unreachable"))
+        engine.run_trigger_check(now=_now())
+        self.assertEqual(proposal_repo.list_for_symbol("TSLA"), [])
+        self.assertEqual(trade_repo.list_for_symbol("TSLA"), [])
+        events = self._events(notifier, "nothing_to_trade_today")
+        self.assertEqual(len(events), 1)
+        self.assertIn("Failing closed", events[0].message)
+        self.assertIn("clock unreachable", events[0].message)
+
+    def test_broker_error_does_not_crash_the_tick(self):
+        engine, _tr, _pr, _n = self._engine(RuntimeError("boom"))
+        engine.run_trigger_check(now=_now())  # must not raise
+
+    def test_closed_market_NEVER_blocks_the_protective_floor(self):
+        """The dangerous case, and the reason the gate sits inside
+        _check_watchlist rather than at the top of the tick.
+
+        An order approved at 15:59 can fill at 16:00:01. If the engine
+        stopped reconciling while the market was shut it would never
+        learn about the fill, never compute that position's Floor, and
+        leave a REAL position unprotected overnight.
+        """
+        now = _now()
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        broker = FakeBrokerClient()
+        broker.market_open = False          # market shut
+        _active_trade(trade_repo, trade_id="T-LIVE", symbol="TSLA",
+                      price=100.0, shares=10, now=now)
+        engine, _b, market_data, _d, notifier, _e = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn, broker=broker,
+            watchlist=StaticWatchlistSource(("TSLA",)),
+        )
+        # Price is below the -10% floor: the protective exit MUST fire
+        # even though the market-open gate says closed.
+        market_data.set_price("TSLA", 89.0)
+        engine._lock.acquire(now=now)
+
+        engine.run_reconciliation_tick(now=now)
+
+        self.assertTrue(
+            any(e.event == "floor_triggered" for e in notifier.events),
+            "the protective Floor must still fire when the market-open "
+            "gate reports closed -- the gate blocks ENTRIES only",
+        )
+        self.assertTrue(
+            broker.submit_calls,
+            "the Floor's SELL must actually reach the broker",
+        )
+
+    def test_closed_market_still_reconciles(self):
+        """Reconciliation must keep running so fills are still learned."""
+        now = _now()
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        broker = FakeBrokerClient()
+        broker.market_open = False
+        engine, _b, market_data, _d, _n, execution_service = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn, broker=broker,
+        )
+        engine._lock.acquire(now=now)
+        engine.run_reconciliation_tick(now=now)  # must not be skipped
+        # Heartbeat advanced => the tick genuinely ran.
+        row = conn.execute(
+            "SELECT heartbeat_at FROM engine_lock WHERE id = 1").fetchone()
+        self.assertIsNotNone(row)
+
+    def test_gate_is_checked_before_the_watchlist_is_even_read(self):
+        """Cheap-first ordering: a closed market must not cost a
+        watchlist read or any evaluator work."""
+        class CountingWatchlist(StaticWatchlistSource):
+            reads = 0
+
+            def get_active_symbols(self):
+                CountingWatchlist.reads += 1
+                return super().get_active_symbols()
+
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        broker = FakeBrokerClient()
+        broker.market_open = False
+        engine, _b, market_data, _d, _n, _e = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn, broker=broker,
+            watchlist=CountingWatchlist(("TSLA",)),
+        )
+        engine._lock.acquire(now=_now())
+        engine.run_trigger_check(now=_now())
+        self.assertEqual(CountingWatchlist.reads, 0)
+
+
+class TestPoliticalD0058(unittest.TestCase):
+    """D-0058, Controller-approved 2026-10-05: the political source
+    supplies SIGNALS only. It no longer injects symbols past the
+    pipeline. One of the 3 proposals per cycle is reserved for the best
+    politically-backed candidate, political proposals carry a distinct
+    tag with politician names, and a daily report lists everything the
+    tracked politicians bought.
+    """
+
+    class _Sig:
+        def __init__(self, *, buys=0, sells=0, names=(), cmte=False,
+                     signal=0.0, cluster=0.0, sell_wave=False):
+            self.politician_buys_30d = buys
+            self.politician_sells_30d = sells
+            self.recent_names = list(names)
+            self.committee_match = cmte
+            self.weighted_signal = signal
+            self.cluster_score = cluster
+            self.sell_wave = sell_wave
+
+    class _Src:
+        def __init__(self, signals, *, active=()):
+            self._signals = signals
+            self._active = tuple(active)
+            self.active_calls = 0
+
+        def get_active_symbols(self):
+            self.active_calls += 1
+            return self._active
+
+        def get_signals(self):
+            return self._signals
+
+    class _Eval:
+        def __init__(self, scores):
+            self._scores = scores
+
+        def rank(self, candidates):
+            results = [TestWatchlistWithTradeEvaluator._FakeEvalResult(
+                s, self._scores.get(s, 0.0), True) for s in candidates]
+            return sorted(results, key=lambda r: -r.soft_score)
+
+        def evaluate_research(self, research):
+            raise AssertionError("not used in these tests")
+
+    @staticmethod
+    def _events(notifier, name):
+        return [e for e in notifier.events if e.event == name]
+
+    def _run(self, *, watchlist, scores, signals, active=()):
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        src = self._Src(signals, active=active)
+        engine, _b, market_data, _d, notifier, _e = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            watchlist=StaticWatchlistSource(watchlist),
+            trade_evaluator=self._Eval(scores),
+            political_universe_source=src,
+        )
+        for sym in set(watchlist) | set(active):
+            market_data.set_price(sym, 100.0)
+        engine._lock.acquire(now=_now())
+        engine.run_trigger_check(now=_now())
+        return trade_repo, notifier, src
+
+    # --- the bypass is gone -------------------------------------------
+
+    def test_a_political_symbol_outside_the_pipeline_is_NEVER_traded(self):
+        """The core D-0058 guarantee. BYPASS is a symbol the political
+        source names that the Universe did NOT select."""
+        trade_repo, _n, _src = self._run(
+            watchlist=("AAPL",),
+            scores={"AAPL": 90.0, "BYPASS": 99.0},
+            signals={"BYPASS": self._Sig(buys=5, signal=25.0)},
+            active=("BYPASS",),
+        )
+        self.assertEqual(
+            trade_repo.list_for_symbol("BYPASS"), [],
+            "a political symbol that never passed the D-0026 pipeline "
+            "must never become a trade",
+        )
+        self.assertTrue(trade_repo.list_for_symbol("AAPL"))
+
+    def test_get_active_symbols_is_no_longer_consulted_for_candidates(self):
+        _tr, _n, src = self._run(
+            watchlist=("AAPL",), scores={"AAPL": 90.0},
+            signals={"AAPL": self._Sig(buys=1, signal=5.0)},
+            active=("BYPASS",),
+        )
+        self.assertEqual(src.active_calls, 0)
+
+    # --- reserved slot -------------------------------------------------
+
+    def test_political_candidate_is_promoted_into_the_reserved_slot(self):
+        """4 qualifiers, top 3 are non-political, the political one is
+        4th -- it must be promoted, displacing the LOWEST of the three."""
+        trade_repo, notifier, _src = self._run(
+            watchlist=("A", "B", "C", "POL"),
+            scores={"A": 95.0, "B": 90.0, "C": 85.0, "POL": 80.0},
+            signals={"POL": self._Sig(buys=3, signal=20.0)},
+        )
+        self.assertTrue(trade_repo.list_for_symbol("POL"))
+        self.assertTrue(trade_repo.list_for_symbol("A"))
+        self.assertTrue(trade_repo.list_for_symbol("B"))
+        self.assertEqual(trade_repo.list_for_symbol("C"), [],
+                         "the LOWEST natural qualifier is displaced")
+        events = self._events(notifier, "political_slot_reserved")
+        self.assertEqual(len(events), 1)
+        self.assertIn("POL", events[0].message)
+        self.assertIn("C", events[0].message)
+
+    def test_no_promotion_when_a_political_pick_already_qualified(self):
+        """Reserving a slot for someone already in would displace
+        another qualifier for no gain."""
+        trade_repo, notifier, _src = self._run(
+            watchlist=("A", "B", "POL"),
+            scores={"POL": 95.0, "A": 90.0, "B": 85.0},
+            signals={"POL": self._Sig(buys=3, signal=20.0)},
+        )
+        for sym in ("A", "B", "POL"):
+            self.assertTrue(trade_repo.list_for_symbol(sym))
+        self.assertEqual(self._events(notifier, "political_slot_reserved"), [])
+
+    def test_slot_is_not_wasted_when_no_political_candidate_qualifies(self):
+        trade_repo, notifier, _src = self._run(
+            watchlist=("A", "B", "C", "D"),
+            scores={"A": 95.0, "B": 90.0, "C": 85.0, "D": 80.0},
+            signals={"NOTHERE": self._Sig(buys=3, signal=20.0)},
+        )
+        for sym in ("A", "B", "C"):
+            self.assertTrue(trade_repo.list_for_symbol(sym))
+        self.assertEqual(trade_repo.list_for_symbol("D"), [])
+        self.assertEqual(self._events(notifier, "political_slot_reserved"), [])
+
+    def test_promotion_never_admits_a_candidate_that_failed_the_threshold(self):
+        """The slot reorders qualifiers. It must never rescue a
+        political pick that scored below MIN_SCORE."""
+        trade_repo, _n, _src = self._run(
+            watchlist=("A", "B", "C", "POL"),
+            scores={"A": 95.0, "B": 90.0, "C": 85.0, "POL": 20.0},
+            signals={"POL": self._Sig(buys=9, signal=25.0)},
+        )
+        self.assertEqual(trade_repo.list_for_symbol("POL"), [])
+        self.assertTrue(trade_repo.list_for_symbol("C"))
+
+    def test_everything_fits_means_no_reordering(self):
+        trade_repo, notifier, _src = self._run(
+            watchlist=("A", "POL"),
+            scores={"A": 95.0, "POL": 70.0},
+            signals={"POL": self._Sig(buys=2, signal=10.0)},
+        )
+        self.assertTrue(trade_repo.list_for_symbol("A"))
+        self.assertTrue(trade_repo.list_for_symbol("POL"))
+        self.assertEqual(self._events(notifier, "political_slot_reserved"), [])
+
+    # --- distinct tag --------------------------------------------------
+
+    def test_political_proposal_carries_the_names_and_a_distinct_event(self):
+        _tr, notifier, _src = self._run(
+            watchlist=("POL",),
+            scores={"POL": 90.0},
+            signals={"POL": self._Sig(buys=3, names=["Pelosi", "Khanna"],
+                                      cmte=True, signal=18.0)},
+        )
+        tagged = self._events(notifier, "political_proposal_awaiting_approval")
+        self.assertEqual(len(tagged), 1)
+        body = tagged[0].message
+        self.assertIn("POLITICAL SIGNAL", body)
+        self.assertIn("Pelosi", body)
+        self.assertIn("Khanna", body)
+        self.assertIn("committee match: YES", body)
+        self.assertIn("congress buys (30d): 3", body)
+        # And it still carries its approval buttons.
+        self.assertEqual(len(tagged[0].interactive_actions), 2)
+
+    def test_non_political_proposal_has_no_tag_and_the_plain_event(self):
+        _tr, notifier, _src = self._run(
+            watchlist=("A",), scores={"A": 90.0},
+            signals={"OTHER": self._Sig(buys=1, signal=5.0)},
+        )
+        plain = self._events(notifier, "proposal_awaiting_approval")
+        self.assertEqual(len(plain), 1)
+        self.assertNotIn("POLITICAL SIGNAL", plain[0].message)
+        self.assertEqual(
+            self._events(notifier, "political_proposal_awaiting_approval"), [])
+
+    def test_a_malformed_signal_never_blocks_the_proposal(self):
+        class _Broken:
+            @property
+            def politician_buys_30d(self):
+                raise RuntimeError("scraper returned garbage")
+
+        trade_repo, notifier, _src = self._run(
+            watchlist=("POL",), scores={"POL": 90.0},
+            signals={"POL": _Broken()},
+        )
+        self.assertTrue(trade_repo.list_for_symbol("POL"),
+                        "a bad tag must never cost a proposal")
+
+    # --- daily report --------------------------------------------------
+
+    def test_daily_report_lists_symbols_that_did_not_become_proposals(self):
+        _tr, notifier, _src = self._run(
+            watchlist=("A",),
+            scores={"A": 90.0},
+            signals={
+                "A": self._Sig(buys=1, signal=5.0),
+                "NOTPROPOSED": self._Sig(buys=4, names=["Khanna"],
+                                         signal=22.0),
+            },
+        )
+        reports = self._events(notifier, "political_daily_report")
+        self.assertEqual(len(reports), 1)
+        body = reports[0].message
+        self.assertIn("NOTPROPOSED", body)
+        self.assertIn("Khanna", body)
+        self.assertIn("did NOT become proposals", body)
+        self.assertEqual(reports[0].level, NotificationLevel.OPTIONAL)
+
+    def test_daily_report_is_sorted_by_signal_strength(self):
+        _tr, notifier, _src = self._run(
+            watchlist=("A",), scores={"A": 90.0},
+            signals={"WEAK": self._Sig(buys=1, signal=2.0),
+                     "STRONG": self._Sig(buys=9, signal=30.0)},
+        )
+        body = self._events(notifier, "political_daily_report")[0].message
+        self.assertLess(body.index("STRONG"), body.index("WEAK"))
+
+    def test_daily_report_fires_once_per_trading_day(self):
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        src = self._Src({"X": self._Sig(buys=2, signal=9.0)})
+        engine, _b, market_data, _d, notifier, _e = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            watchlist=StaticWatchlistSource(("A",)),
+            trade_evaluator=self._Eval({"A": 90.0}),
+            political_universe_source=src,
+        )
+        market_data.set_price("A", 100.0)
+        engine._lock.acquire(now=_now())
+        for hour in (13, 14, 15):
+            engine.run_trigger_check(
+                now=datetime(2026, 10, 6, hour, 30, tzinfo=timezone.utc))
+        self.assertEqual(
+            len(self._events(notifier, "political_daily_report")), 1)
+
+    def test_no_report_when_there_is_no_political_activity(self):
+        _tr, notifier, _src = self._run(
+            watchlist=("A",), scores={"A": 90.0}, signals={})
+        self.assertEqual(self._events(notifier, "political_daily_report"), [])

@@ -249,6 +249,47 @@ def _format_proposal_message(
     return f"{prefix}{symbol} — {action.value} awaiting Controller approval."
 
 
+def _format_political_tag(signal) -> str:
+    """D-0058: the distinct tag on a politically-backed proposal.
+
+    Carries the politician NAMES and the trade counts, not just a score,
+    because the Controller's stated reason for tracking this source is
+    judging the specific people -- "the political persons who manage the
+    market". A bare number cannot be judged; a name can.
+
+    Returns "" for a missing or unreadable signal, so a malformed
+    signal object can never block a proposal. Every field is read
+    defensively: this object comes from an external scraper.
+    """
+
+    if signal is None:
+        return ""
+    try:
+        buys = int(getattr(signal, "politician_buys_30d", 0) or 0)
+        sells = int(getattr(signal, "politician_sells_30d", 0) or 0)
+        names = list(getattr(signal, "recent_names", None) or [])
+        committee = bool(getattr(signal, "committee_match", False))
+        weighted = float(getattr(signal, "weighted_signal", 0.0) or 0.0)
+    except Exception:  # noqa: BLE001 - never block a proposal on a tag
+        return ""
+
+    if not buys and not sells and not names:
+        return ""
+
+    lines = ["", "--- POLITICAL SIGNAL (D-0058 reserved slot) ---"]
+    if buys:
+        lines.append(f"congress buys (30d): {buys}")
+    if sells:
+        lines.append(f"congress sells (30d): {sells}")
+    if names:
+        lines.append(f"who: {', '.join(str(n) for n in names[:5])}")
+    if committee:
+        lines.append("committee match: YES")
+    lines.append(f"weighted signal: {weighted:.1f}")
+    lines.append("Advisory only -- it never bypassed any safety stage.")
+    return "\n".join(lines)
+
+
 class Engine:
     def __init__(
         self,
@@ -570,6 +611,10 @@ class Engine:
         # Finding #4).
         self._recover_approved_without_execution(now=now)
         self._heartbeat(now=now)
+        # TTL sweep runs AFTER decisions are applied, so a decision that
+        # arrived in this same tick always wins over the timer.
+        self._expire_stale_proposals(now=now)
+        self._heartbeat(now=now)
         for trade_record in self._trade_repo.list_active():
             trade_id = trade_record.trade.trade_id
             self._check_floor_trigger(trade_id, now=now)
@@ -631,6 +676,83 @@ class Engine:
                     now=now,
                     initial_entry_trade_id=proposal.trade_id,
                 )
+
+    def _expire_stale_proposals(self, *, now: datetime) -> None:
+        """Expires PENDING proposals older than PROPOSAL_TTL_SECONDS.
+
+        Two deliberate restrictions, both of which would be real bugs if
+        relaxed:
+
+        1. ONLY PENDING is touched. An APPROVED proposal is a Controller
+           decision and is never discarded by a timer -- D-0007
+           revalidation already refuses a stale approved submission on
+           price drift. (Enforced again inside plan_expiry.)
+
+        2. ONLY an expired INITIAL_ENTRY abandons its trade. A LADDER
+           proposal belongs to a trade that already HOLDS SHARES, and
+           abandoning that trade would drop a live position's Ladder and
+           Floor tracking -- losing the protective floor on a real
+           position. An expired ladder simply lapses; the next D-0021
+           tick re-proposes it from the unchanged frozen reference.
+        """
+
+        for trade_record in self._trade_repo.list_active():
+            trade = trade_record.trade
+            for proposal in self._proposal_repo.list_for_trade(trade.trade_id):
+                if proposal.approval_state is not ApprovalState.PENDING:
+                    continue
+                age_seconds = (now - proposal.proposal_created_at).total_seconds()
+                if age_seconds < self.PROPOSAL_TTL_SECONDS:
+                    continue
+                self._expire_one_proposal(proposal, age_seconds=age_seconds, now=now)
+
+    def _expire_one_proposal(self, proposal, *, age_seconds: float, now: datetime) -> None:
+        try:
+            self._proposal_repo.expire_pending(
+                proposal.proposal_id, expired_at=now,
+            )
+        except ProposalDecisionConflictError:
+            # A decision landed between the list and the write -- the
+            # Controller won the race, which is the correct outcome.
+            # Nothing to report: the decision path notifies on its own.
+            return
+        except Exception as exc:  # noqa: BLE001 - main-loop shield
+            self._notify(
+                level=NotificationLevel.CRITICAL,
+                event="proposal_expiry_failed",
+                message=(
+                    f"Could not expire stale proposal "
+                    f"{proposal.proposal_id} ({proposal.symbol}): {exc}. "
+                    f"It stays PENDING and will be retried next tick."
+                ),
+                symbol=proposal.symbol,
+            )
+            return
+
+        minutes = age_seconds / 60.0
+        self._notify(
+            level=NotificationLevel.IMPORTANT,
+            event="proposal_expired",
+            message=(
+                f"Proposal {proposal.proposal_id} ({proposal.symbol}, "
+                f"{proposal.proposed_action.value}) EXPIRED after "
+                f"{minutes:.0f} minutes with no decision. Its Approve / "
+                f"Reject buttons no longer do anything. Nothing was "
+                f"bought or sold."
+            ),
+            symbol=proposal.symbol,
+        )
+
+        if proposal.proposed_action is TradeAction.INITIAL_ENTRY:
+            # Release the symbol. Without this the trade stays in
+            # AWAITING_INITIAL_FILL and _check_watchlist locks the
+            # symbol out forever -- exactly what happened to KO and V.
+            self._abandon_initial_entry_after_refusal(
+                proposal.trade_id, proposal.proposal_id,
+                reason=(f"no Controller decision within "
+                        f"{self.PROPOSAL_TTL_SECONDS / 60.0:.0f} minutes"),
+                now=now,
+            )
 
     def _check_floor_trigger(self, trade_id: str, *, now: datetime) -> None:
         """Floor detection -- Controller-approved to run on THIS
@@ -934,6 +1056,35 @@ class Engine:
                 action=proposal.proposed_action,
             )
         except ProposalDecisionConflictError as exc:
+            # A normal, expected consequence of the 60-minute TTL: the
+            # Controller comes back after an hour and taps a button on a
+            # proposal that has since expired. That is routine, not a
+            # fault, so it must NOT be reported as CRITICAL -- an alarm
+            # that fires on ordinary behavior trains the Controller to
+            # ignore alarms. Every OTHER conflict (already decided,
+            # unknown id) stays CRITICAL, because those are real.
+            # Re-read rather than trusting the copy fetched before the
+            # call: that copy is a snapshot from earlier in this method,
+            # and the whole point here is to classify a state that may
+            # have changed since. One extra lookup, on the error path
+            # only.
+            current = self._proposal_repo.get(decision.proposal_id)
+            if (current is not None
+                    and current.approval_state is ApprovalState.EXPIRED):
+                self._notify(
+                    level=NotificationLevel.IMPORTANT,
+                    event="decision_on_expired_proposal",
+                    message=(
+                        f"Your decision for {decision.proposal_id} "
+                        f"({proposal.symbol}) arrived after the proposal "
+                        f"had already expired, so it was not applied. "
+                        f"Nothing was bought or sold. The symbol is free "
+                        f"again and may be re-proposed on a later cycle "
+                        f"at a fresh price."
+                    ),
+                    symbol=proposal.symbol,
+                )
+                return
             self._notify(
                 level=NotificationLevel.CRITICAL,
                 event="decision_conflict",
@@ -1097,6 +1248,31 @@ class Engine:
     _TOP_N_PER_CYCLE = 3
     _MIN_SCORE = 60.0
 
+    PROPOSAL_TTL_SECONDS = 3600.0
+    """Controller-approved 2026-10-05: a PENDING proposal that gets no
+    decision within 60 minutes expires, and an expired INITIAL_ENTRY
+    releases its symbol.
+
+    Why exactly 60 minutes, rather than a round guess: it is one
+    D-0021 cycle. The trigger schedule fires hourly on the half hour
+    (engine/schedule.py), so a proposal dies precisely before the next
+    cycle could produce its replacement -- no overlap, no gap, and no
+    second timing concept introduced into the system.
+
+    Why a TTL is needed at all: before this, NOTHING expired a PENDING
+    proposal. It was superseded only when a newer proposal for the same
+    (trade_id, action) was saved -- and for an INITIAL_ENTRY that can
+    never happen, because the trade sits in AWAITING_INITIAL_FILL and
+    _check_watchlist excludes the symbol while it does. Live evidence:
+    KO and V sat PENDING from 2026-10-01 and locked both symbols out
+    indefinitely.
+
+    Why staleness matters beyond the lock: D-0007 revalidation refuses
+    a submission once price has drifted more than 0.5% from the
+    proposal's trigger. An hours-old proposal is therefore very likely
+    to be refused on approval anyway -- so keeping it alive offers the
+    Controller a choice that no longer really exists."""
+
     def _notify_nothing_to_trade(self, reason: str, *, now: datetime) -> None:
         """Controller-approved 2026-10-05: on a day where the Engine has
         nothing it can legitimately propose, say so ONCE, instead of
@@ -1132,6 +1308,61 @@ class Engine:
             symbol=None,
         )
 
+    def _market_open_for_new_proposals(self, *, now: datetime) -> bool:
+        """Controller-approved 2026-10-05: ask the broker whether the
+        market is open before creating ANY new proposal.
+
+        SCOPE -- this gates ONE thing and must never gate more.
+        It is called only from _check_watchlist, so it can stop new
+        proposals and nothing else. Reconciliation, the protective
+        Floor, and the Trailing Floor all run regardless of this
+        answer, and that is not an accident:
+
+            An order approved at 15:59 can fill at 16:00:01, after the
+            close. If the engine stopped reconciling while the market
+            was shut, it would never learn that the fill happened, so
+            it would never compute that position's Floor -- leaving a
+            REAL position unprotected overnight while the engine
+            believed nothing was held.
+
+        Blocking an exit to "be safe" is never safe. Only entries wait.
+
+        FAIL CLOSED. Any error means "unknown", and unknown is treated
+        as closed. The asymmetry is deliberate: a wrong 'open' creates
+        a real order priced off a stale quote, while a wrong 'closed'
+        costs one cycle, and the next D-0021 trigger is an hour later.
+        The Controller stated the preference directly -- "I didn't mind
+        if I lose any chance to buy any item, otherwise I didn't want
+        to make mistakes".
+
+        The broker already retries transient failures three times
+        (common/http_retry.RetryPolicy, wired in run_paper_session), so
+        an exception reaching here is not a single blip.
+        """
+
+        try:
+            is_open = self._execution_service._broker.is_market_open()
+        except Exception as exc:  # noqa: BLE001 - fail closed, never crash
+            self._notify_nothing_to_trade(
+                f"could not reach the broker to confirm the market is "
+                f"open ({type(exc).__name__}: {exc}). Failing closed: no "
+                f"new proposal this cycle. Existing positions are still "
+                f"monitored.",
+                now=now,
+            )
+            return False
+
+        if not is_open:
+            self._notify_nothing_to_trade(
+                "the broker reports the market is CLOSED right now "
+                "(holiday, half-day early close, or an unscheduled "
+                "closure). No new proposals; existing positions are "
+                "still monitored.",
+                now=now,
+            )
+            return False
+        return True
+
     def _check_watchlist(self, *, now: datetime) -> None:
         """Watchlist-driven Trade creation.
 
@@ -1146,6 +1377,9 @@ class Engine:
         same as before — the Engine never proposes a duplicate.
         """
 
+        if not self._market_open_for_new_proposals(now=now):
+            return
+
         candidates: list = []
         seen_syms: set = set()
         for symbol in self._watchlist.get_active_symbols():
@@ -1158,19 +1392,33 @@ class Engine:
                 continue
             candidates.append(symbol)
 
-        # D-0050 Phase B.27: UNION in Top-N political picks (de-duped).
+        # D-0058 (Controller-approved 2026-10-05): the political source
+        # supplies SIGNALS ONLY. It no longer adds symbols.
+        #
+        # It used to UNION its Top-N tickers into `candidates` here,
+        # AFTER the D-0026 pipeline had already run. That was a second
+        # door into the watchlist which skipped every safety stage:
+        # tradability, liquidity, the 0.15% spread cap, the ATR band and
+        # the sector cap. A congressman's illiquid small-cap with a 2%
+        # spread reached a proposal with no spread check at all, and the
+        # ladder buys three times -- roughly 6% lost to spread alone
+        # against a -10% floor, before the strategy even starts.
+        #
+        # It would also have bypassed D-0056's leveraged/inverse filter,
+        # which lives in the broker provider and only sees symbols that
+        # provider fetched. A politician buying a 2x inverse fund would
+        # have walked straight past the DXD protection.
+        #
+        # The symbols are not lost by removing this: production runs the
+        # pipeline over every tradable US equity, so a political pick
+        # that is a real equity is ALREADY in the candidate pool and is
+        # ranked like any other -- with its political score, and with
+        # the reserved slot below guaranteeing it a place when it
+        # qualifies. What it no longer gets is a way around the safety
+        # stages.
         political_signals: dict = {}
         if self._political_universe is not None:
             try:
-                for symbol in self._political_universe.get_active_symbols():
-                    if symbol in seen_syms:
-                        continue
-                    seen_syms.add(symbol)
-                    records = self._trade_repo.list_for_symbol(symbol)
-                    has_open = any(describe_status(r.trade) in ("AWAITING_INITIAL_FILL", "ACTIVE") for r in records)
-                    if has_open:
-                        continue
-                    candidates.append(symbol)
                 political_signals = self._political_universe.get_signals()
             except Exception as exc:  # noqa: BLE001
                 self._notify(
@@ -1179,6 +1427,8 @@ class Engine:
                     message=f"Political universe source failed: {exc}",
                     symbol=None,
                 )
+            else:
+                self._report_political_signals(political_signals, now=now)
 
         if not candidates:
             # Nothing proposable this tick. Distinguish the cases so the
@@ -1285,7 +1535,9 @@ class Engine:
                     symbol=None,
                 )
 
-        accepted = accepted_results[: self._TOP_N_PER_CYCLE]
+        accepted = self._apply_political_reserved_slot(
+            accepted_results, political_signals=political_signals,
+        )
 
         if not accepted:
             # Candidates existed but none survived research. Report it
@@ -1307,9 +1559,147 @@ class Engine:
             return
 
         for r in accepted:
-            self._start_new_trade(r.symbol, now=now)
+            self._start_new_trade(
+                r.symbol, now=now,
+                political_signal=political_signals.get(r.symbol),
+            )
 
-    def _start_new_trade(self, symbol: str, *, now: datetime) -> None:
+    def _report_political_signals(self, signals: dict, *, now: datetime) -> None:
+        """D-0058: one report per ET trading day listing what the
+        tracked politicians bought.
+
+        Deliberately includes symbols that did NOT become proposals.
+        Without that, the Controller only ever sees the political picks
+        that happened to survive every filter, which systematically
+        hides the signal's real breadth and makes it impossible to judge
+        whether the filters are discarding good political ideas.
+
+        Information only. It creates no proposal, changes no score, and
+        carries no buttons -- so it cannot affect trading in any way.
+        Sent at OPTIONAL level because it is a daily digest, not an
+        event that needs action.
+        """
+
+        if not signals:
+            return
+        trading_date = now.astimezone(D0021_TIMEZONE_ET).date().isoformat()
+
+        rows = []
+        for symbol, signal in signals.items():
+            try:
+                buys = int(getattr(signal, "politician_buys_30d", 0) or 0)
+                sells = int(getattr(signal, "politician_sells_30d", 0) or 0)
+                weighted = float(getattr(signal, "weighted_signal", 0.0) or 0.0)
+                names = list(getattr(signal, "recent_names", None) or [])
+                committee = bool(getattr(signal, "committee_match", False))
+            except Exception:  # noqa: BLE001 - external scraper data
+                continue
+            rows.append((weighted, symbol, buys, sells, names, committee))
+        if not rows:
+            return
+        rows.sort(key=lambda r: -r[0])
+
+        lines = [f"[POLITICAL REPORT] {trading_date} (ET)",
+                 f"{len(rows)} symbol(s) with congressional activity:"]
+        for weighted, symbol, buys, sells, names, committee in rows:
+            bits = [f"{symbol}: signal {weighted:.1f}"]
+            if buys:
+                bits.append(f"{buys} buy(s)")
+            if sells:
+                bits.append(f"{sells} sell(s)")
+            if committee:
+                bits.append("committee match")
+            if names:
+                bits.append(", ".join(str(n) for n in names[:3]))
+            lines.append("  " + " | ".join(bits))
+        lines.append("")
+        lines.append("Includes symbols that did NOT become proposals. "
+                     "Information only -- nothing here was traded.")
+
+        self._notify_once(
+            kind="political_report",
+            key=trading_date,
+            level=NotificationLevel.OPTIONAL,
+            event="political_daily_report",
+            message="\n".join(lines),
+            symbol=None,
+        )
+
+    def _apply_political_reserved_slot(
+        self, accepted_results: list, *, political_signals: dict,
+    ) -> list:
+        """D-0058 (Controller-approved 2026-10-05): reserve ONE of the
+        `_TOP_N_PER_CYCLE` proposals for the best politically-backed
+        candidate.
+
+        Why a reserved slot instead of doubling `weight_political`
+        (which was the Controller's first instinct, and was rejected
+        with reasons recorded in D-0058):
+
+        - It GUARANTEES the political idea reaches the Controller
+          whenever a valid one exists. Raising a weight only makes that
+          more likely.
+        - It leaves every other candidate's score untouched, so a score
+          keeps meaning exactly what it meant before.
+        - It stays measurable. The political component is computed for
+          EVERY candidate, so doubling its weight would blend the signal
+          into one number and no proposal could ever be attributed to
+          it -- whether politicians actually help could never be
+          established. With a labelled slot, one proposal per cycle is
+          political and two are not, and after a month the two groups
+          are directly comparable.
+
+        The candidate must already have passed EVERYTHING: the D-0026
+        pipeline, the hard filter, the `_MIN_SCORE` threshold and the
+        portfolio filter. This method only reorders what already
+        qualified -- it never admits a candidate that failed a check,
+        and it never grants a political pick an exemption.
+
+        If no political candidate qualifies, the slot reverts to normal
+        ranking and nothing is wasted.
+        """
+
+        top_n = self._TOP_N_PER_CYCLE
+        if not political_signals or len(accepted_results) <= top_n:
+            # Nothing to arbitrate: every qualifier already fits.
+            return accepted_results[:top_n]
+
+        natural = accepted_results[:top_n]
+        if any(r.symbol in political_signals for r in natural):
+            # A political pick already made it on merit. Reserving a
+            # slot now would only displace another qualifier for no
+            # gain.
+            return natural
+
+        promoted = next(
+            (r for r in accepted_results[top_n:]
+             if r.symbol in political_signals),
+            None,
+        )
+        if promoted is None:
+            return natural
+
+        # Drop the LOWEST-scoring natural qualifier, never the best.
+        kept = natural[: top_n - 1]
+        displaced = natural[top_n - 1]
+        self._notify(
+            level=NotificationLevel.OPTIONAL,
+            event="political_slot_reserved",
+            message=(
+                f"Reserved the political slot for {promoted.symbol} "
+                f"(score {promoted.soft_score:.1f}); {displaced.symbol} "
+                f"(score {displaced.soft_score:.1f}) was not proposed "
+                f"this cycle. Per D-0058 one of the {top_n} proposals "
+                f"per cycle is reserved for the best politically-backed "
+                f"candidate that passed every check."
+            ),
+            symbol=promoted.symbol,
+        )
+        return kept + [promoted]
+
+    def _start_new_trade(
+        self, symbol: str, *, now: datetime, political_signal=None,
+    ) -> None:
         try:
             price = self._market_data.get_last_trade(symbol)
         except MarketDataUnavailableError as exc:
@@ -1340,13 +1730,17 @@ class Engine:
             floor_context=FloorContext.no_existing_position(),
             now=now,
         )
+        message = self._enrich(symbol, _format_proposal_message(
+            proposal,
+            price_context=self._safe_price_context(symbol),
+        ))
+        message += _format_political_tag(political_signal)
         self._notify(
             level=NotificationLevel.IMPORTANT,
-            event="proposal_awaiting_approval",
-            message=self._enrich(symbol, _format_proposal_message(
-                proposal,
-                price_context=self._safe_price_context(symbol),
-            )),
+            event=("political_proposal_awaiting_approval"
+                   if political_signal is not None
+                   else "proposal_awaiting_approval"),
+            message=message,
             symbol=symbol,
             interactive_actions=(
                 ("✅ Approve", f"approve:{proposal.proposal_id}"),

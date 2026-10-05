@@ -333,6 +333,38 @@ class AlpacaBrokerClient(BrokerClient):
         TimeoutError,
     )
 
+
+    def is_market_open(self) -> bool:
+        """Reads Alpaca /v2/clock. Returns the `is_open` boolean exactly
+        as the broker reports it.
+
+        Raises BrokerCommunicationError on any transport failure, bad
+        status, malformed JSON, or a missing/ non-boolean `is_open`
+        field -- never guesses. The caller is required to treat that
+        exception as "closed" (fail closed), because the cost of a
+        wrong 'open' is a proposal priced off a stale quote, while the
+        cost of a wrong 'closed' is one missed cycle.
+        """
+
+        try:
+            status, payload = self._request("GET", "/v2/clock")
+        except _AmbiguousTransport as ex:
+            raise BrokerCommunicationError(str(ex)) from ex
+
+        if not (200 <= status < 300):
+            raise BrokerCommunicationError(
+                f"Alpaca returned HTTP {status} on /v2/clock: "
+                f"{_error_snippet(payload)}"
+            )
+
+        obj = _load_json(payload, on_bad_json="/v2/clock payload was not valid JSON")
+
+        raw = obj.get("is_open")
+        if not isinstance(raw, bool):
+            raise BrokerCommunicationError(
+                f"Alpaca /v2/clock 'is_open' was not a boolean: {raw!r}"
+            )
+        return raw
     def _request(self, method: str, path: str, *, body: Optional[dict] = None) -> HttpResponse:
         url = self._config.base_url + path
         headers = {

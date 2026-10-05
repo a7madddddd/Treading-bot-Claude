@@ -114,6 +114,9 @@ class FakeBrokerClient(BrokerClient):
         # cash + sum(position.market_value).
         return self._cash_balance
 
+    def is_market_open(self) -> bool:
+        return True
+
 
 def _repos():
     conn = connect(":memory:")

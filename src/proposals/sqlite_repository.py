@@ -34,6 +34,7 @@ from .repository import (
     ProposalDecisionConflictError,
     ProposalRepository,
     plan_decision,
+    plan_expiry,
     plan_save_supersession,
 )
 
@@ -230,6 +231,28 @@ class SqliteProposalRepository(ProposalRepository):
             )
 
         return decided
+
+    def expire_pending(
+        self, proposal_id: str, *, expired_at: datetime,
+    ) -> TradeProposal:
+        with transaction(self._conn) as conn:
+            existing_row = conn.execute(
+                "SELECT * FROM proposals WHERE proposal_id = ?", (proposal_id,)
+            ).fetchone()
+            existing = (_row_to_proposal(dict(existing_row))
+                        if existing_row is not None else None)
+            # Precondition lives entirely in the pure plan_expiry() --
+            # never re-derived here, same discipline as record_decision.
+            existing = plan_expiry(existing, proposal_id)
+
+            expired = existing.expire(expired_at=expired_at)
+            expired_row = _proposal_to_row(expired)
+            set_clause = ", ".join(f"{column} = ?" for column in expired_row)
+            conn.execute(
+                f"UPDATE proposals SET {set_clause} WHERE proposal_id = ?",
+                list(expired_row.values()) + [proposal_id],
+            )
+        return expired
 
     def get(self, proposal_id: str) -> Optional[TradeProposal]:
         row = self._conn.execute("SELECT * FROM proposals WHERE proposal_id = ?", (proposal_id,)).fetchone()

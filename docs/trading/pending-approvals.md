@@ -64,8 +64,12 @@ the transition period is over.
   new trade, per D-0026 §6. This changes trading behavior, so it needs
   Controller approval and a decision entry.
 
-### P-015 — The 24/7 gap: nothing refreshes the Universe snapshot
-- **Status:** OPEN. This, not the host, is the real 24/7 blocker.
+### P-015 — Nothing refreshed the Universe — RESOLVED (D-0062, 2026-10-05)
+- **Status:** IMPLEMENTED. `deploy/universe-refresh.timer` runs the
+  D-0026 selection every weekday at 08:45 America/New_York, validated
+  with `systemd-analyze calendar`. Installation on the VM is the
+  Controller's step; see `deploy/README.md`.
+- The original finding is kept below for history.
 - **FACT:** the Engine only ever READS snapshots. Nothing in `src/engine`
   writes one. The only writer is `scripts/run_universe_selection.py`,
   which is a one-shot script that must be invoked.
@@ -123,9 +127,11 @@ the transition period is over.
   false.
 - **Decision needed:** none. Pure bug fix, no trading-behavior change.
 
-### P-017 — The engine has no supervisor; it is restarted by hand
-- **Status:** OPEN. Facts now CONFIRMED by the Controller's own VM
-  session on 2026-10-05, so this is no longer UNKNOWN.
+### P-017 — Engine had no supervisor — RESOLVED (D-0062, 2026-10-05)
+- **Status:** IMPLEMENTED. `deploy/trading-engine.service` with
+  `Restart=always`, `RestartSec=310`, `StartLimitIntervalSec=0`.
+  Installation on the VM is the Controller's step.
+- The original finding is kept below for history.
 - **Host (confirmed):** Oracle Cloud VM, user `opc`, host
   `trading-bot-vnic`, project at `/home/opc/Treading-bot-Claude`,
   interpreter `python3.11`, credentials in a local `.env` file on the
@@ -172,9 +178,18 @@ the transition period is over.
   be inspected from here. This must be checked on the VM before the
   next session open.
 
-### P-002 — Ranker scorer choice
-- **Status:** TESTED, still awaiting Controller decision. Unchanged
-  since 2026-10-03.
+### P-002 — Ranker scorer choice — DEFERRED (D-0057, 2026-10-05)
+- **Status:** Controller decided to DEFER, not to pick. Production
+  keeps D-0048's Stage F unchanged. Re-opened for decision as P-026
+  once live measurement exists. Claude's ranked recommendation for
+  that revisit is recorded in D-0057 and must not be re-derived from
+  scratch.
+- Two audit findings drove the deferral: momentum is a GATE in Stage D
+  (`min_trend_percentile = 0.50`) before it is a weight in Stage F, so
+  swapping the scorer alone cannot change which symbols survive; and
+  every measured number came from 12–22 symbol universes that do not
+  represent the real snapshot.
+- The original finding is kept below for history.
 - **Findings (2026-10-03 backtests):**
   - Momentum: **-0.99% to -1.66%** → fails
   - Mean reversion: **-0.27% to +1.19%** → fragile
@@ -376,9 +391,12 @@ any change. A commit that leaves it stale is an incomplete commit.
 
 ## 🚨 ADDED 2026-10-05 (second VM audit) — highest priority
 
-### P-021 — The live Universe selects leveraged and inverse ETFs. One is a −2× inverse fund.
-- **Status:** OPEN. This is the most dangerous finding to date. It is a
-  real money-losing path, not a theoretical one.
+### P-021 — Leveraged and inverse products in the Universe — RESOLVED (D-0056, 2026-10-05)
+- **Status:** APPROVED by the Controller and IMPLEMENTED. Excluded at
+  the provider, before any pipeline stage. Filter defaults to ON.
+  29 new tests; suite 1412 -> 1440 PASS. See D-0056.
+- The ordinary-fund question stays open as P-024.
+- The original finding is kept below for history.
 - **FACT, from the Controller's own VM, snapshot `2026-10-03T16:18:56`,
   the newest snapshot that exists:**
   `WBD, MUFG, DXD, VOD, MAGS, QQQI, PFE, ILF, CGGR, BCI`
@@ -437,8 +455,16 @@ Two further structural problems, independent of direction:
   text from `/v2/assets` (`2X`, `3X`, `ULTRA`, `ULTRASHORT`,
   `INVERSE`, `BEAR`, `SHORT`), combined with an explicit decision on
   whether ordinary ETFs are eligible at all.
-- **CONTROLLER DECISION, genuinely new:** should the Universe trade
-  ETFs at all? The approved strategy's research layer scores
+- **CONTROLLER DECISION, 2026-10-05 — PARTIALLY DECIDED:** the
+  Controller approved excluding leveraged and inverse products NOW
+  ("we need to exclude the DXD from our universe search because this
+  will kill the strategy"), and deferred the broader
+  "should we trade ordinary ETFs at all" question to a separate study
+  ("we didn't want to kill the strategy before we study that thing").
+  So the interim rule is option 3 below — everything except leveraged
+  and inverse — and option 1 versus option 2 becomes P-024.
+- **Original framing of the deferred question:** should the Universe
+  trade ETFs at all? The approved strategy's research layer scores
   fundamentals (P/E, earnings) — fields that do not exist for a fund.
   An ETF therefore scores on a research model built for companies.
   Three options:
@@ -472,9 +498,12 @@ Two further structural problems, independent of direction:
 - **Action required (Controller):** pull and restart on the VM before
   Monday's open.
 
-### P-023 — SQLite write contention between the engine and a daily universe run
-- **Status:** OPEN, measured, LOW risk — recorded so the 24/7 wiring
-  does not introduce it by accident.
+### P-023 — SQLite write contention — RESOLVED (D-0062, 2026-10-05)
+- **Status:** ADDRESSED. `BUSY_TIMEOUT_MS = 30000` in
+  `src/persistence/db.py`, re-verified with the same two-process
+  measurement: the case that failed at 5.01s now waits 10.05s and
+  succeeds. Insurance, not a fix for an observed failure.
+- The original finding is kept below for history.
 - **FACT:** `src/persistence/db.py::connect` sets no journal mode and
   no busy timeout, so the effective settings are
   `journal_mode = delete` and `busy_timeout = 5000` ms (both read back
@@ -513,3 +542,126 @@ Two further structural problems, independent of direction:
   repo copy is no longer evidence about production.
 - **Lesson recorded:** the repo's `paper_session.sqlite` must not be
   treated as production state while the VM runs with `--no-db-push`.
+
+
+### P-024 — Should the Universe trade ordinary ETFs at all? (deferred study)
+- **Status:** OPEN, deliberately deferred by the Controller on
+  2026-10-05 pending study. P-021's leveraged/inverse exclusion is NOT
+  waiting on this — it proceeds now.
+- **The question:** `MAGS`, `QQQI`, `ILF`, `CGGR`, `BCI` are ordinary
+  (non-leveraged, non-inverse) funds that the live pipeline selected.
+  They are not dangerous the way `DXD` is. But the research layer
+  scores `fundamentals` out of 16 points from P/E and earnings, fields
+  that do not exist for a fund, so every fund is scored by a model
+  built for operating companies and silently loses those points.
+- **What must be studied before deciding:**
+  1. How many points does a fund structurally forfeit in the current
+     scoring, and does that already exclude them in practice?
+  2. Do funds mean-revert on the 5–10% scale the ladder needs, or do
+     they trend more smoothly than single stocks (which would mean the
+     ladder rarely adds and the strategy degrades to a plain buy)?
+  3. Is a fund's lower volatility an advantage (fewer floor hits) or a
+     disadvantage (ladder never triggers)?
+- **Decision needed later:** equities only, or equities plus plain
+  index funds with a fund-aware scoring path.
+
+### P-025 — Inside the APPROVED ATR band, the same ladder behaves 5× differently
+- **Status:** OPEN, newly surfaced 2026-10-05 under CLAUDE.md §0.d
+  (re-challenge an approved decision when evidence demands). Raised
+  by Claude, not asked for.
+- **FACT, approved parameters (D-0048):**
+  `min_atr_fraction = 0.01`, `max_atr_fraction = 0.05` — a symbol
+  qualifies if its average daily true range is between 1% and 5% of
+  price.
+- **FACT, approved ladder (D-0004):** add at −5%, add at −8%, exit at
+  −10%, measured from the frozen initial fill price.
+- **The problem:** those two approved decisions interact, and nothing
+  reconciles them. How fast the ladder walks depends entirely on where
+  in the band a symbol sits:
+
+| ATR | days of average adverse move to −5% | to −8% | to −10% |
+|---|---|---|---|
+| 1% | ≈ 5 | ≈ 8 | ≈ 10 |
+| 5% | ≈ 1 | ≈ 1.6 | ≈ 2 |
+
+- **What it means in practice.** At the bottom of the band the ladder
+  almost never fires and the Floor is effectively unreachable, so the
+  strategy degrades into a plain single buy with no laddering at all.
+  At the top of the band all three levels are routinely crossed inside
+  one week, so the full three-layer position is built and then stopped
+  out — the Floor becomes the normal outcome rather than the
+  last-resort exit `strategy.md` §1 calls it.
+- **Why this is the same class of error as D-0051.** D-0051 fixed a
+  60× spread in DOLLAR exposure caused by a fixed share count meeting
+  a wide price range. This is a 5× spread in TIME-to-trigger caused by
+  fixed percentage levels meeting a wide volatility range. Same shape:
+  one approved constant meeting another approved range, with no rule
+  connecting them.
+- **Options (none implemented; all change trading behavior):**
+  1. Narrow the ATR band, e.g. 2%–4%, so the ladder's pace is
+     comparable across symbols. Cheapest, fully reversible, shrinks
+     the candidate pool.
+  2. Scale the ladder levels by the symbol's own ATR, e.g. trigger at
+     −1.5 × ATR and −2.5 × ATR instead of fixed −5% / −8%. Most
+     correct in principle, but it changes the approved strategy's core
+     numbers and needs its own decision and backtest.
+  3. Leave it and MEASURE first — record each filled trade's ATR at
+     entry alongside its outcome, then decide with real data.
+- **Claude's RECOMMENDATION: option 3 now, then option 1.** Reason:
+  this is a hypothesis about pace, not an observed loss. The project
+  has no live measurement yet, and changing two approved numbers on
+  reasoning alone is exactly what D-0052 and §0.d were written to
+  prevent in the other direction. Recording ATR-at-entry costs one
+  column and no behavior change, and it makes options 1 and 2
+  decidable with evidence within a few weeks of real trading.
+- **What would change the recommendation:** if the first live
+  measurements show Floor exits clustering on high-ATR names, option 1
+  becomes urgent rather than optional.
+
+
+### P-026 — Re-decide the Stage F scorer, with real measurements
+- **Status:** OPEN, scheduled not blocked. Deferred by D-0057.
+- **Entry conditions — all three must hold before this is decidable:**
+  1. the daily Universe run is live, so a real snapshot exists each
+     trading day;
+  2. 2–4 weeks of live proposals and their outcomes are recorded;
+  3. each filled trade carries its selection context (its rank, its
+     score breakdown, and — per P-025 — its ATR at entry).
+- **Claude's recommendation, already argued in D-0057, ranked:**
+  1. Trend Filter + Dip Ranking, 2. Breakout, 3. Relax the Stage D
+  momentum gate, 4. Pullback-in-Uptrend, 5. Quality + Liquidity only,
+  6. Mean Reversion, 7. Momentum (current production, ranked last).
+- **The real lever, easy to miss:** Stage D's momentum gate, not Stage
+  F's weight. Stage D discards the bottom half by 30-day return before
+  any scorer runs, and a genuine Breakout candidate has a weak 30-day
+  return by construction — so it is rejected before it can ever be
+  scored. Any revisit that touches only Stage F will appear to change
+  nothing.
+- **What would overturn the recommendation:** live results showing the
+  current Momentum scorer positive on the real universe.
+
+### P-027 — Political picks — RESOLVED (D-0061, 2026-10-05)
+- **Status:** IMPLEMENTED, with one correction to the approved plan.
+  D-0058 said to MERGE political symbols into the pool before the
+  pipeline; reading the code showed that was both unnecessary (they are
+  already in the whole-market pool) and unsafe (injected symbols would
+  bypass D-0056's leveraged/inverse filter). The real fix was to DELETE
+  the post-pipeline UNION. Controller approved the correction before
+  any code was written. 14 tests. See D-0061.
+- Three measures: one of the 3 proposals per cycle reserved for the
+  best qualifying political pick (reverting to normal ranking if none
+  qualifies); a visually distinct Telegram tag carrying politician
+  names and trade dates; and a daily report of what the tracked
+  politicians bought, including symbols that did not become proposals.
+- `weight_political = 15.0` stays UNCHANGED. Raising it to 30 was
+  rejected because it would make attribution impossible — the
+  political component is computed for every candidate, so after
+  blending, no proposal could be traced to the political signal.
+- Political symbols also move INSIDE the pipeline rather than being
+  UNIONed in after it, so they face every safety stage. This closes
+  the bypass where a congressman's illiquid small-cap with a 2% spread
+  reached a proposal with no spread check at all — roughly 6% lost to
+  spread across the ladder's three buys, against a −10% floor.
+- **Deliberately sequential:** the weight question is revisited after a
+  month of comparing the reserved slot's outcomes against the other
+  two slots, with the Controller's own numbers.
