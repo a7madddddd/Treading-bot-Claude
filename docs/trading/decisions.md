@@ -5244,3 +5244,85 @@ Four older tests were rewritten to the new intent rather than deleted,
 each with a comment naming this decision.
 
 Full suite: **1614 passed, 54 subtests passed**.
+
+---
+
+## D-0075
+
+**Date:** 2026-10-05
+**Status:** APPROVED (Controller, 2026-10-05: split CLAUDE.md, under 200
+lines, "we need to make slash Claude slash rules … to ensure the new
+session will read everything")
+**Supersedes:** nothing. Reorganizes CLAUDE.md §§0–12 without changing
+any rule.
+
+### Decision
+
+`CLAUDE.md` goes from **511 lines to 109**. Every rule it contained now
+lives in `.claude/rules/`, one topic per file, all loaded automatically
+into every session.
+
+| file | lines |
+|---|---|
+| `CLAUDE.md` | 109 |
+| `.claude/rules/00-session-start.md` | 75 |
+| `.claude/rules/01-roles-and-authority.md` | 66 |
+| `.claude/rules/02-safety-guardrails.md` | 42 |
+| `.claude/rules/03-research-and-workflow.md` | 48 |
+| `.claude/rules/04-communication.md` | 93 |
+| `.claude/rules/05-change-tracking.md` | 99 |
+| `.claude/rules/06-knowledge-map.md` | 67 |
+| `docs/claude/failure-history.md` (reference, not a rule) | 127 |
+
+`docs/claude-md-ORIGINAL-2026-10-05.md` keeps the original verbatim.
+
+### Why `.claude/rules/` and not `@imports` or `docs/`
+
+Verified against the official documentation rather than assumed
+(`https://code.claude.com/docs/en/memory`):
+
+- **"target under 200 lines per CLAUDE.md file. Longer files consume
+  more context and reduce adherence."** The goal is adherence, not
+  bytes.
+- **"Imports help you organize a long file but don't reduce its context
+  cost, because imported files also load at launch."** So `@path`
+  imports would have been cosmetic.
+- **"Rules without a `paths` field are loaded unconditionally and apply
+  to all files."** This is what guarantees the Controller's
+  requirement — a new session reads everything. None of the seven rule
+  files has a `paths` field.
+
+**A mandatory rule must never move to `docs/`.** Files there are not
+loaded automatically; a rule placed there becomes optional in practice,
+which is worse than a long file. `docs/claude/failure-history.md` holds
+only the incident narratives — reference material that explains the
+rules without being one, and it says so in its own header.
+
+This is honest about the trade-off: total context cost is roughly
+unchanged, because everything still loads. What improves is adherence —
+seven short single-topic files instead of one 511-line wall in which
+"search before proposing" was buried in the longest section and was
+broken repeatedly on 2026-10-05.
+
+### What changed in the content
+
+Nothing was deleted, weakened or made conditional. Two editorial moves:
+
+1. The "failure history" narratives that justified each rule moved to
+   `docs/claude/failure-history.md`, with each rule file pointing at it.
+   The rule stays; its story moves.
+2. `CLAUDE.md` gained a new section, "The six things that override
+   everything else", so that a session reading only the top of the file
+   still has the Controller's authority, paper-trading-only, the
+   session-start read, search-before-proposing, same-session recording,
+   and the Arabic/bidi rule.
+
+### Verification
+
+A script normalized both the original and the new set and checked **82
+distinctive tokens** from the original — every env var name, every
+`docs/` path, every workflow phase, every label, the branch name, and
+the load-bearing phrases of each prohibition. **Result: none missing.**
+
+No code changed; the full suite was re-run regardless: **1614 passed, 54
+subtests passed**.
