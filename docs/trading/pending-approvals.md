@@ -1628,8 +1628,9 @@ notifications sent          : NONE
   divergence it guards against.
 
 
-### P-049 — A partial LADDER-2 fill still strands shares until confirmed
-- **Status:** OPEN, created by D-0072's deliberate scoping.
+### P-049 — A partial LADDER-2 fill still strands shares until confirmed — RESOLVED (D-0074, 2026-10-05)
+- **Status:** RESOLVED. D-0074 dissolved this rather than patching it: both ladders now record a partial fill and close, so there is no window between the fill and a confirmation.
+- **Status when raised:** OPEN, created by D-0072's deliberate scoping.
 - **FACT:** D-0072 records a partial Ladder 1 automatically. Ladder 2
   keeps its Controller-approved flow — notify, then require
   `confirm_ladder2_partial_fill` — so between the fill and the
@@ -1651,8 +1652,9 @@ notifications sent          : NONE
   consistent and keeps every decision the Controller already has.
   Needs approval.
 
-### P-050 — A ladder order that fills ZERO shares is stuck forever, silently
-- **Status:** OPEN, found 2026-10-05 while implementing the Controller's
+### P-050 — A ladder order that fills ZERO shares is stuck forever, silently — RESOLVED (D-0074, 2026-10-05)
+- **Status:** RESOLVED by D-0074 with option (b): the ladder becomes genuinely retryable and the Controller is told. Controller's reasoning: never stall on a ladder, because the falling price does not wait.
+- **Status when raised:** OPEN, found 2026-10-05 while implementing the Controller's
   ladder decision. Needs a decision of its own.
 - **REPRODUCED, not inferred.** Same harness as P-044, with the broker
   returning a terminal fill of 0:
