@@ -1976,3 +1976,97 @@ remote URL (HTTPS or SSH), whether any credential helper is configured,
 and whether a push is refused for authentication or for some other
 reason. Guessing which of those is true would repeat the mistake that
 paused the project last time.
+
+### P-053 — Confidence-scaled Top-N (the Controller's idea, 2026-10-05)
+- **Status:** DESIGN PROPOSED, **not implemented**. Changes how many
+  positions are opened, so it is trading behavior and waits for explicit
+  approval. Supersedes the "revisit later" recommendation in P-040.
+- **The Controller's idea, in his words:** *"we have 40 students and the
+  entire school has 1,000 students, so why don't we calculate that
+  percently … if we have 40 students, we should filter our ranking and
+  execute four only."* Round **down**, confirmed by the Controller.
+
+#### Why this is better than what Claude proposed in P-040
+
+Claude's P-040 recommendation was to raise the hard threshold later,
+from measurements. That only moves a cliff. The Controller's idea makes
+the **size of the position set a function of how much of the market was
+actually seen**, which is the thing P-040 could not fix.
+
+Run on the real numbers, with the live `top_n = 10` and a full market of
+~11,683:
+
+| symbols fetched | hard guard (D-0068) | **with scaling** | what it means |
+|---|---|---|---|
+| 40 | **refuses** | refuses | the 2026-10-05 incident |
+| 500 | passes | **0** | below the floor of usefulness |
+| 1,000 | passes, takes 10 | **0** | 8.5% of the market seen |
+| 5,000 | passes, takes 10 | **4** | half-blind, so half-sized |
+| 9,000 | passes, takes 10 | **7** | |
+| 11,683 | passes, takes 10 | **10** | unchanged |
+
+The **5,000 row is the whole point**: today that day opens ten positions
+with full confidence on half-blind data. Under this rule it opens four.
+
+Arithmetic note worth recording: applying the Controller's proportion to
+the 40-symbol incident gives `10 × 40/11683 = 0.034`, which floors to
+**zero**. His idea and the existing hard guard **agree** on the
+catastrophic case; they do not compete.
+
+#### The honest limit
+
+Reducing the COUNT does not improve the QUALITY of the picks. Every
+stage in D-0048 is percentile-based — "top 30% by volume" and so on —
+and a percentile of 5,000 symbols is a reasonable estimate of the
+market, while a percentile of 40 is noise. Taking 4 of 40 gives four
+less-bad picks, not four good ones.
+
+**That is exactly why both mechanisms are kept.** The hard guard refuses
+what no proportion can repair; the scaling handles the grey zone the
+guard was never able to judge.
+
+#### Design
+
+```
+effective_top_n = floor(top_n × fetched / baseline)
+```
+
+clamped to `[0, top_n]`, applied as a pure truncation of the already
+ranked survivors — it never changes WHICH symbols rank, only how many of
+the top are published.
+
+**`baseline` must be measured, not invented.** Using a hardcoded 11,683
+would repeat the mistake D-0065 corrected, and the tradable universe
+drifts as listings change. Since D-0068 every snapshot records
+`raw_candidates_fetched`, so:
+
+- `baseline` = the **median** of `raw_candidates_fetched` over the last
+  N completed snapshots (N ≈ 20, about a month of trading days);
+- median, not mean, so one truncated run cannot drag it down;
+- **bootstrap:** until N snapshots exist, use the **maximum**
+  `raw_candidates_fetched` seen so far, which after the first healthy
+  run is the real market size.
+
+#### The case that needs a decision
+
+When `fetched` is above the hard guard but the formula yields **0** — as
+at 1,000 symbols above — the snapshot would be empty. It must be marked
+empty **with a reason naming the scaling**, so the Controller's
+once-a-day `nothing_to_trade_today` message says *why* rather than
+leaving a silent blank day. Anything less reproduces the exact failure
+shape of 2026-10-05.
+
+#### Scope boundary
+
+This governs the universe snapshot's Top-N only. It does **not** touch
+the evaluator's Top-3-per-cycle, the D-0047 portfolio limits, or D-0051
+sizing. Each position is still sized identically; there are simply
+fewer of them, so less capital is deployed on a day we saw less of the
+market — the conservative direction.
+
+#### Still to decide (Controller)
+
+1. `N` for the trailing median — 20 proposed.
+2. Whether a computed 0 above the hard guard should be an explained
+   empty snapshot (proposed) or should instead raise the hard guard's
+   refusal.
