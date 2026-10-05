@@ -665,3 +665,49 @@ Two further structural problems, independent of direction:
 - **Deliberately sequential:** the weight question is revisited after a
   month of comparing the reserved slot's outcomes against the other
   two slots, with the Controller's own numbers.
+
+
+---
+
+## 2026-10-05, end of session — DEPLOYMENT VERIFIED LIVE
+
+First time the system is genuinely supervised. Verified on the
+Controller's VM, not inferred:
+
+| check | result |
+|---|---|
+| test suite ON THE VM | 1473 passed, 45 subtests |
+| `systemctl --user status trading-engine` | `active (running)`, PID 202308 |
+| heartbeat age | 28.1s (reconcile interval is 30s) |
+| `Linger` | `yes` — survives logout and reboot |
+| timer next elapse | `Tue 2026-10-06 12:45 GMT` = 08:45 EDT |
+
+### P-028 — The first autonomous trading day is tomorrow, with the ATR band undecided
+- **Status:** OPEN. A decision is needed BEFORE 08:45 ET tomorrow.
+- **FACT:** the timer fires at 08:45 America/New_York on 2026-10-06 and
+  writes the first automatic snapshot. The engine then has a universe
+  for the first time since 2026-10-03, so the 09:30 ET trigger can
+  produce real proposals.
+- **FACT:** P-025 (the ATR band) is still undecided. The approved band
+  is 1%–5%, so tomorrow's first real proposals can come from either
+  extreme of the tree — a symbol whose ladder never fires, or one that
+  walks Ladder 1, Ladder 2 and the Floor inside two days.
+- **FACT:** P-021 is fixed, so no leveraged or inverse product can be
+  selected. That danger is closed.
+- **Controller's stated intent:** study the ATR band, the scorer and
+  the DXD question before trading resumes.
+- **Options:**
+  1. Disable the timer until the ATR band is decided
+     (`systemctl --user disable --now universe-refresh.timer`). Nothing
+     trades; the engine keeps monitoring and keeps reporting.
+  2. Let it run tomorrow with the current 1%–5% band and treat the
+     first days as the measurement P-025 asks for, recording ATR at
+     entry.
+  3. Decide the band tonight from the measurement tool, then let the
+     timer run.
+- **Claude's recommendation: option 3, falling back to option 1.** The
+  measurement tool is read-only and quick; deciding on real numbers
+  before the first autonomous day is strictly better than deciding
+  after. If there is no time for it, option 1 costs one trading day and
+  keeps the decision clean — the engine is currently trading nothing
+  anyway, so nothing is lost that is not already lost.
