@@ -1650,3 +1650,48 @@ notifications sent          : NONE
   the flag without re-adding the quantity. That makes both ladders
   consistent and keeps every decision the Controller already has.
   Needs approval.
+
+### P-050 — A ladder order that fills ZERO shares is stuck forever, silently
+- **Status:** OPEN, found 2026-10-05 while implementing the Controller's
+  ladder decision. Needs a decision of its own.
+- **REPRODUCED, not inferred.** Same harness as P-044, with the broker
+  returning a terminal fill of 0:
+
+```
+broker actually filled      : 0 extra shares
+trade.total_shares          : 20 shares
+ladder1_filled flag         : False
+notifications sent          : NONE
+
+>>> ladder still open?  True
+>>> ladder-1 proposals: 1  states=['APPROVED']
+>>> after 5 more trigger checks at the trigger price:
+>>>   ladder-1 proposals: 1  states=['APPROVED']
+>>>   a NEW chance to buy? NO -- the ladder is stuck
+```
+
+- **What this means.** The ladder level was reached, the order went to
+  the broker, nothing filled, and the ladder is left flagged as NOT
+  filled — so it looks available. It is not: the proposal stays
+  APPROVED, so `has_live_attempt` blocks any new proposal, and the
+  resubmit branch is refused as already-submitted. Five further trigger
+  checks at the trigger price produced no new chance to buy.
+- **And the Controller is never told.** Zero notifications. The ladder
+  simply never happens, and nothing says so.
+- **The decision needed:** when a ladder order fills nothing at all,
+  should the ladder
+  (a) CLOSE, like a partial fill does under the Controller's 2026-10-05
+      decision — the level was reached and the market offered nothing;
+  (b) genuinely REOPEN, so a later trigger can try again — which means
+      retiring the stale APPROVED proposal so a new one can be created;
+      or
+  (c) stay as it is, but with a notification so at least it is visible.
+- **Claude's RECOMMENDATION: (b), with a notification.** A partial fill
+  and a zero fill are different events. In a partial fill the market
+  answered and the answer was "this much" — closing it is honest. In a
+  zero fill the market did not answer at all, and the Controller's own
+  reasoning ("buy what exists") implies nothing existed at that instant,
+  not that nothing exists today. Forfeiting a ladder because of one
+  empty moment is a strategy change nobody chose. (c) is the cheap
+  stopgap if (b) is too large for now; (a) is defensible but silently
+  loses a ladder the strategy counts on.
