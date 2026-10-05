@@ -11,7 +11,7 @@ Two units, approved 2026-10-05.
 | unit | what it does | when |
 |---|---|---|
 | `trading-engine.service` | keeps the engine alive | always |
-| `universe-refresh.timer` | writes today's snapshot | weekdays 08:45 ET |
+| `universe-refresh.timer` | writes today's snapshot | weekdays 06:00 ET |
 
 Both are needed. The engine alone is not enough: it only READS
 snapshots — nothing in `src/engine` writes one — and
@@ -80,9 +80,12 @@ systemctl --user status trading-engine.service --no-pager
 systemctl --user list-timers universe-refresh.timer --no-pager
 ```
 
-`list-timers` must show the next elapse at **08:45 America/New_York**.
-If it shows 08:45 UTC instead, this systemd is too old to parse a
-timezone in `OnCalendar` — see the fallback below.
+`list-timers` must show the next elapse at **06:00 America/New_York**
+(10:00 UTC while EDT is in force). If it shows **12:45 UTC** the
+installed copy is the superseded 08:45 schedule — the repo was edited
+but the unit was never re-copied and re-loaded. If it shows 06:00 UTC,
+this systemd is too old to parse a timezone in `OnCalendar` — see the
+fallback below.
 
 Liveness is the heartbeat, not the log. Python buffers stdout when it is
 redirected to a file, so an empty log does not mean a dead engine:
@@ -205,8 +208,8 @@ fine and the unit was not.
 then **correct it twice a year** at the US DST switches:
 
 ```
-OnCalendar=Mon-Fri 12:45    # EDT (summer) = 08:45 ET
-OnCalendar=Mon-Fri 13:45    # EST (winter) = 08:45 ET
+OnCalendar=Mon-Fri 10:00    # EDT (summer) = 06:00 ET
+OnCalendar=Mon-Fri 11:00    # EST (winter) = 06:00 ET
 ```
 
 This is the drift D-0041 warned about, so prefer the named timezone
