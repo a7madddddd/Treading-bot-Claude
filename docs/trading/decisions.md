@@ -4301,3 +4301,175 @@ about the universe. The real run must be whole-market, on the VM.
 
 Controller runs it whole-market, then decides the band. Nothing changes
 until then.
+
+---
+
+## D-0065 — Stage D ATR band narrowed from 1%–5% to 2%–4%
+
+**Date:** 2026-10-05
+**Decided by:** Controller
+**Status:** APPROVED and IMPLEMENTED
+**Supersedes:** D-0048's `min_atr_fraction` / `max_atr_fraction` ONLY.
+Every other D-0048 parameter is unchanged, and **D-0004's ladder levels
+(−5% / −8% / −10%) are untouched** — verified after the change.
+
+### What the numbers mean, in the Controller's own framing
+
+ATR is how far a symbol moves in an ordinary day. On a $100 stock:
+1% is $1 a day, 2% is $2, 4% is $4, 5% is $5. The distance from entry
+to the Floor is $10.
+
+| speed | moves/day | days to −5% | days to −10% |
+|---|---|---|---|
+| 1% | $1 | 5 | 10 |
+| 2% | $2 | 2.5 | 5 |
+| 4% | $4 | 1.3 | 2.5 |
+| 5% | $5 | 1 | 2 |
+
+### The problem this fixes (P-025)
+
+D-0048 approved a 1%–5% band; D-0004 approved fixed percentage ladder
+levels. Nothing reconciled them, so the SAME strategy behaved
+completely differently depending on where in the band a symbol sat:
+
+- **Below 2%** the −5% Ladder 1 trigger is ~5 average adverse days
+  away. Most dips recover in two or three, so the ladder rarely fires
+  at all and the strategy degrades into a single buy with three
+  quarters of the trade budget idle.
+- **Above 4%** the whole −5% / −8% / −10% ladder is covered in about
+  two days. The Floor becomes the normal ending rather than the
+  last-resort exit `strategy.md` §1 calls it, and the position is never
+  given time to recover.
+
+### Measured evidence, not reasoning
+
+`scripts/measure_atr_distribution.py` (D-0064), run on the Controller's
+VM on 2026-10-05 over a 150-symbol sample of the live universe:
+
+| band | count | share | branch |
+|---|---|---|---|
+| 0–1% | 18 | 12.1% | already rejected |
+| 1–2% | 33 | **22.1%** | slow |
+| 2–3% | 43 | 28.9% | middle |
+| 3–4% | 24 | 16.1% | middle |
+| 4–5% | 16 | **10.7%** | fast |
+| >5% | 15 | 10.1% | already rejected |
+
+So roughly **a third of candidates sat on a bad branch**. The fast
+branch is real and not theoretical: `PTHS` 4.85%, `DYN` 4.92% and
+`MSOS` 4.96% all reach the Floor in **2.0–2.1 average adverse days**.
+
+### Starvation — the reason the measurement was demanded first
+
+Claude refused to recommend narrowing before measuring, because the
+cost was unknown: narrowing improves quality and could starve the pool
+at the same time. It does not. Projected to the 11,683 symbols entering
+the pipeline (12,591 tradable minus 908 excluded by D-0056):
+
+| band | surviving |
+|---|---|
+| 1%–5% | ≈ 9,100 |
+| 2%–4% | ≈ 5,260 |
+
+Thousands either way, against a Top-10 output.
+
+### Caveat recorded rather than hidden
+
+The measurement is of the RAW pool. In the pipeline Stage D sees only
+Stage A–C survivors, which are the most liquid names, and liquid names
+skew slower. The true post-A/B/C distribution therefore probably has a
+smaller fast tail and a larger slow problem than the table shows. That
+strengthens the case for the lower bound and slightly weakens it for
+the upper; neither direction argues for keeping 1%–5%.
+
+### Implementation
+
+`src/d0026/config.py` — `min_atr_fraction` 0.01 → **0.02**,
+`max_atr_fraction` 0.05 → **0.04**, each with the reasoning and the
+measured symbols in its own docstring.
+
+### Tests
+
+- `tests/d0026/test_config.py` — the two values are pinned, so changing
+  them again requires a decision entry rather than a quiet edit.
+- `tests/d0026/stages/test_stages.py::TestD0065NarrowedAtrBand` — six
+  BEHAVIORAL tests driving the real stage with the real ATR figures
+  measured on the VM: the slow tail (`RNP`, `ETJ`, `SCHA`) is rejected,
+  the fast tail (`PTHS`, `DYN`, `MSOS`) is rejected, the middle
+  (`NVDA`, `MSFT`, `TSLA`) is kept, **the old band would have kept all
+  nine** (proving the change is real, not cosmetic), the exact
+  boundaries are pinned (2.00% in, 4.00% in, 4.01% out), and the
+  rejection message names the band.
+
+**A finding from writing those tests.** The first version set an
+identical momentum on every candidate and asserted that Stage D's trend
+percentile therefore could not interfere. That was wrong: with
+`min_trend_percentile = 0.50`, `top_percentile` keeps the top half BY
+RANK and still discards half even when every value is identical — so
+only 5 of 9 candidates survived and three tests failed. The tests now
+set `min_trend_percentile=1.0` to isolate the ATR band. This is a
+concrete demonstration of the Stage D gate described in D-0057: the
+momentum filter cuts half the pool before Stage F's scorer ever runs.
+
+Suite: 1473 → **1479 passed, 54 subtests**.
+
+---
+
+## D-0066 — Daily universe timer moved from 08:45 to 06:00 ET
+
+**Date:** 2026-10-05
+**Decided by:** Controller
+**Status:** APPROVED and IMPLEMENTED
+**Supersedes:** D-0062's timer time only. Everything else in D-0062
+stands.
+
+### Context (P-029)
+
+D-0062 set the timer at 08:45 ET on the assumption that 45 minutes
+before the 09:30 open was ample. Measurement on the VM showed it is
+not.
+
+The broker returns **12,591** tradable symbols. D-0056 excludes **908**
+as leveraged or inverse, leaving **11,683** to enrich — and enrichment
+is ONE bars request per symbol, with no batch path.
+
+| requests/min | full run |
+|---|---|
+| 200 | ~58 min |
+| 300 | ~39 min |
+| 500 | ~23 min |
+
+At Alpaca's common free-tier 200/min an 08:45 start finishes around
+**09:43 — after the open** — and the first D-0021 trigger would still
+find no snapshot, exactly the failure the timer exists to prevent.
+
+This was invisible until now because the 2026-10-03 snapshot processed
+only 77 candidates: that run was whitelisted or capped. The timer runs
+un-whitelisted deliberately, since every stage is percentile-based and
+needs the full pool, so it is the first run to meet the real count.
+
+**Architectural note, not a bug:** Stage A's volume percentile cannot
+pre-filter the cost away, because the volume it ranks on is itself a
+feature that enrichment produces.
+
+### Decision
+
+`OnCalendar=Mon-Fri 06:00 America/New_York`. Three and a half hours of
+headroom, which also absorbs a slower-than-expected rate without a
+redesign. Validated with `systemd-analyze calendar`: next elapse
+`Tue 2026-10-06 10:00 UTC`, which is 06:00 EDT.
+
+### Rejected
+
+Capping the run with `--max-symbols`. An alphabetical slice of the
+market is not a universe, and it silently reintroduces the small-pool
+problem P-001 warns about — percentile stages over a tiny pool produce
+near-zero survivors.
+
+### Still open
+
+The 200/min figure is Alpaca's documented common limit, not a measured
+throughput for this account. Timing one real run would replace the
+assumption with a number. 06:00 is chosen to be safe under the
+pessimistic assumption, so the measurement is an improvement rather
+than a prerequisite.

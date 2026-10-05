@@ -231,3 +231,106 @@ class TestFactoryWiresAllStages(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestD0065NarrowedAtrBand(unittest.TestCase):
+    """D-0065 (Controller-approved 2026-10-05) narrowed Stage D's ATR
+    band from D-0048's 1%-5% to 2%-4%, on measured evidence.
+
+    These are BEHAVIORAL tests, not value assertions: they drive the
+    real stage with the real ATR figures measured on the Controller's
+    VM on 2026-10-05, so they prove the band actually filters the
+    symbols it was narrowed to filter. tests/d0026/test_config.py pins
+    the two numbers separately.
+    """
+
+    # (ticker, measured ATR as a fraction of price, why it matters)
+    REAL_MEASUREMENTS = (
+        ("RNP",  0.0102, "slow  - ~10 average adverse days to the Floor"),
+        ("ETJ",  0.0111, "slow  - ~9 days"),
+        ("SCHA", 0.0124, "slow  - ~8 days"),
+        ("NVDA", 0.0211, "middle - keep"),
+        ("MSFT", 0.0226, "middle - keep"),
+        ("TSLA", 0.0306, "middle - keep"),
+        ("PTHS", 0.0485, "fast  - Floor in 2.1 days"),
+        ("DYN",  0.0492, "fast  - Floor in 2.0 days"),
+        ("MSOS", 0.0496, "fast  - Floor in 2.0 days"),
+    )
+
+    @staticmethod
+    def _atr_only(**overrides):
+        """Stage D applies TWO filters: the ATR band and a momentum
+        percentile (min_trend_percentile = 0.50, which keeps only the
+        top half BY RANK -- it still cuts half even when every momentum
+        value is identical, as the first version of this test
+        discovered). Setting it to 1.0 keeps everything, isolating the
+        ATR band so these tests measure what they claim to measure."""
+        return UniverseSelectionConfig(min_trend_percentile=1.0, **overrides)
+
+    def _survivors(self, config):
+        stage = StrategyMechanicsFitStage(config)
+        cs = tuple(candidate(t, close=100.0, atr=frac * 100.0, momentum=0.05)
+                   for t, frac, _why in self.REAL_MEASUREMENTS)
+        result = stage.evaluate(cs, DATE, regime())
+        return {c.raw.ticker for c in result.survivors}
+
+    def test_the_slow_tail_is_now_rejected(self):
+        survivors = self._survivors(self._atr_only())
+        for ticker in ("RNP", "ETJ", "SCHA"):
+            with self.subTest(ticker=ticker):
+                self.assertNotIn(
+                    ticker, survivors,
+                    f"{ticker} moves under 2%/day, so the -5% Ladder 1 "
+                    f"trigger is ~5 average adverse days away and the "
+                    f"ladder would rarely fire at all",
+                )
+
+    def test_the_fast_tail_is_now_rejected(self):
+        survivors = self._survivors(self._atr_only())
+        for ticker in ("PTHS", "DYN", "MSOS"):
+            with self.subTest(ticker=ticker):
+                self.assertNotIn(
+                    ticker, survivors,
+                    f"{ticker} moves ~5%/day, so it covers the whole "
+                    f"-5%/-8%/-10% ladder in about two days and the "
+                    f"Floor becomes the normal ending",
+                )
+
+    def test_the_middle_is_kept(self):
+        survivors = self._survivors(self._atr_only())
+        for ticker in ("NVDA", "MSFT", "TSLA"):
+            with self.subTest(ticker=ticker):
+                self.assertIn(ticker, survivors)
+
+    def test_the_old_band_would_have_kept_both_tails(self):
+        """Proves the change is real, not cosmetic: under D-0048's
+        1%-5% every one of these nine symbols survived."""
+        old = self._atr_only(min_atr_fraction=0.01,
+                             max_atr_fraction=0.05)
+        survivors = self._survivors(old)
+        self.assertEqual(len(survivors), len(self.REAL_MEASUREMENTS))
+
+    def test_exact_boundaries(self):
+        """2.00% is IN (inclusive lower bound), 4.00% is OUT (exclusive
+        upper bound) -- Stage D rejects atr_fraction > max, so exactly
+        4.00% is kept while anything above is not. Pinned because an
+        off-by-one here silently changes which symbols trade."""
+        stage = StrategyMechanicsFitStage(self._atr_only())
+        cs = (candidate("AT_MIN", close=100.0, atr=2.00, momentum=0.05),
+              candidate("JUST_UNDER", close=100.0, atr=1.99, momentum=0.05),
+              candidate("AT_MAX", close=100.0, atr=4.00, momentum=0.05),
+              candidate("JUST_OVER", close=100.0, atr=4.01, momentum=0.05))
+        survivors = {c.raw.ticker
+                     for c in stage.evaluate(cs, DATE, regime()).survivors}
+        self.assertIn("AT_MIN", survivors)
+        self.assertNotIn("JUST_UNDER", survivors)
+        self.assertIn("AT_MAX", survivors)
+        self.assertNotIn("JUST_OVER", survivors)
+
+    def test_rejection_reason_names_the_band(self):
+        stage = StrategyMechanicsFitStage(self._atr_only())
+        cs = (candidate("SLOW", close=100.0, atr=1.0, momentum=0.05),
+              candidate("OK", close=100.0, atr=3.0, momentum=0.05))
+        result = stage.evaluate(cs, DATE, regime())
+        details = " ".join(r.detail for r in result.rejections)
+        self.assertIn("2.00%", details)

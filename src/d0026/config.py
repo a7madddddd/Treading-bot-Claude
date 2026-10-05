@@ -22,7 +22,12 @@ from dataclasses import dataclass
 class UniverseSelectionConfig:
     """The Controller-approved D-0048 percentage parameters.
 
-    Defaults match D-0048 exactly:
+    Defaults match D-0048, EXCEPT the Stage D ATR band, which D-0065
+    (2026-10-05) narrowed from 1%-5% to 2%-4% on measured evidence. See
+    that decision for the measurement and the reasoning; every other
+    value below is D-0048's unchanged.
+
+    Defaults:
       Stage A (Tradability):
         min_volume_percentile         = 0.30
         drop_bottom_price_percentile  = 0.20
@@ -37,8 +42,8 @@ class UniverseSelectionConfig:
         min_spread_tightness_percentile = 0.40
 
       Stage D (Strategy Fit):
-        min_atr_fraction              = 0.01     # 1% of price
-        max_atr_fraction              = 0.05     # 5% of price
+        min_atr_fraction              = 0.02     # 2% of price (D-0065)
+        max_atr_fraction              = 0.04     # 4% of price (D-0065)
         min_trend_percentile          = 0.50
 
       Stage E (Regime):
@@ -72,8 +77,22 @@ class UniverseSelectionConfig:
     min_spread_tightness_percentile: float = 0.40
 
     # Stage D
-    min_atr_fraction: float = 0.01
-    max_atr_fraction: float = 0.05
+    min_atr_fraction: float = 0.02
+    """D-0065 (2026-10-05), narrowed from D-0048's 0.01 on measured
+    evidence. Below 2% a symbol moves less than $2 a day per $100 of
+    price, so the approved -5% Ladder 1 trigger is ~5 average adverse
+    days away. Most dips recover within two or three, so the ladder
+    would rarely fire at all: the strategy degrades into a single buy
+    with three quarters of the trade budget left idle. Measured on the
+    live universe, 22.1% of symbols sat in the 1-2% range."""
+    max_atr_fraction: float = 0.04
+    """D-0065 (2026-10-05), narrowed from D-0048's 0.05 on measured
+    evidence. Above 4% a symbol covers the whole -5%/-8%/-10% ladder in
+    about two days, so the Floor becomes the normal ending rather than
+    the last-resort exit strategy.md section 1 calls it -- the position
+    is never given time to recover. Measured on the live universe:
+    PTHS 4.85%, DYN 4.92% and MSOS 4.96% all reach the Floor in 2.0-2.1
+    average adverse days, and 10.7% of symbols sat in the 4-5% range."""
     min_trend_percentile: float = 0.50
 
     # Stage E

@@ -13,8 +13,11 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(c.max_gap_fraction, 0.05)
         self.assertEqual(c.max_spread_fraction, 0.0015)
         self.assertEqual(c.min_spread_tightness_percentile, 0.40)
-        self.assertEqual(c.min_atr_fraction, 0.01)
-        self.assertEqual(c.max_atr_fraction, 0.05)
+        # D-0065 (2026-10-05) narrowed the band from D-0048's 1%-5%.
+        # These assertions pin the APPROVED values, so changing them
+        # must require a decision entry, never a quiet edit.
+        self.assertEqual(c.min_atr_fraction, 0.02)
+        self.assertEqual(c.max_atr_fraction, 0.04)
         self.assertEqual(c.min_trend_percentile, 0.50)
         self.assertEqual(c.vix_topmost_percentile, 0.80)
         self.assertEqual(c.momentum_weight, 0.40)
