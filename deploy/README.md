@@ -26,7 +26,6 @@ a day without the refresh is a day with **no new trades at all**.
 ```bash
 cd ~/Treading-bot-Claude
 git pull --no-rebase --no-edit origin claude/youthful-goodall-4cr0ei
-mkdir -p logs
 chmod +x deploy/engine-run.sh deploy/universe-refresh.sh
 
 sudo cp deploy/trading-engine.service   /etc/systemd/system/
@@ -80,8 +79,26 @@ Run the refresh once by hand without waiting for the timer:
 
 ```bash
 sudo systemctl start universe-refresh.service
-tail -40 ~/Treading-bot-Claude/logs/universe.log
+journalctl -u universe-refresh --since "10 min ago" --no-pager
 ```
+
+## Logs
+
+Both units log to the **journal**, not to files:
+
+```bash
+journalctl -u trading-engine -f              # live
+journalctl -u trading-engine --since today
+journalctl -u universe-refresh --since today
+```
+
+File logging under `/home` was tried first and systemd refused the unit
+with `status=209/STDOUT`: on Oracle Linux 9 with SELinux enforcing, a
+system service may not write into a user home directory. The journal
+needs no policy change, and it also avoids a real trap — Python buffers
+stdout to a FILE, which is why a hand-started engine's log can sit at 22
+bytes for a minute while the engine is perfectly healthy. The journal is
+a pipe, so lines appear immediately.
 
 ---
 
