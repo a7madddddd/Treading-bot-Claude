@@ -64,8 +64,12 @@ the transition period is over.
   new trade, per D-0026 §6. This changes trading behavior, so it needs
   Controller approval and a decision entry.
 
-### P-015 — The 24/7 gap: nothing refreshes the Universe snapshot
-- **Status:** OPEN. This, not the host, is the real 24/7 blocker.
+### P-015 — Nothing refreshed the Universe — RESOLVED (D-0062, 2026-10-05)
+- **Status:** IMPLEMENTED. `deploy/universe-refresh.timer` runs the
+  D-0026 selection every weekday at 08:45 America/New_York, validated
+  with `systemd-analyze calendar`. Installation on the VM is the
+  Controller's step; see `deploy/README.md`.
+- The original finding is kept below for history.
 - **FACT:** the Engine only ever READS snapshots. Nothing in `src/engine`
   writes one. The only writer is `scripts/run_universe_selection.py`,
   which is a one-shot script that must be invoked.
@@ -123,9 +127,11 @@ the transition period is over.
   false.
 - **Decision needed:** none. Pure bug fix, no trading-behavior change.
 
-### P-017 — The engine has no supervisor; it is restarted by hand
-- **Status:** OPEN. Facts now CONFIRMED by the Controller's own VM
-  session on 2026-10-05, so this is no longer UNKNOWN.
+### P-017 — Engine had no supervisor — RESOLVED (D-0062, 2026-10-05)
+- **Status:** IMPLEMENTED. `deploy/trading-engine.service` with
+  `Restart=always`, `RestartSec=310`, `StartLimitIntervalSec=0`.
+  Installation on the VM is the Controller's step.
+- The original finding is kept below for history.
 - **Host (confirmed):** Oracle Cloud VM, user `opc`, host
   `trading-bot-vnic`, project at `/home/opc/Treading-bot-Claude`,
   interpreter `python3.11`, credentials in a local `.env` file on the
@@ -492,9 +498,12 @@ Two further structural problems, independent of direction:
 - **Action required (Controller):** pull and restart on the VM before
   Monday's open.
 
-### P-023 — SQLite write contention between the engine and a daily universe run
-- **Status:** OPEN, measured, LOW risk — recorded so the 24/7 wiring
-  does not introduce it by accident.
+### P-023 — SQLite write contention — RESOLVED (D-0062, 2026-10-05)
+- **Status:** ADDRESSED. `BUSY_TIMEOUT_MS = 30000` in
+  `src/persistence/db.py`, re-verified with the same two-process
+  measurement: the case that failed at 5.01s now waits 10.05s and
+  succeeds. Insurance, not a fix for an observed failure.
+- The original finding is kept below for history.
 - **FACT:** `src/persistence/db.py::connect` sets no journal mode and
   no busy timeout, so the effective settings are
   `journal_mode = delete` and `busy_timeout = 5000` ms (both read back
@@ -631,8 +640,14 @@ Two further structural problems, independent of direction:
 - **What would overturn the recommendation:** live results showing the
   current Momentum scorer positive on the real universe.
 
-### P-027 — Political picks: reserved slot, distinct tag, daily report
-- **Status:** APPROVED (D-0058, 2026-10-05), implementation pending.
+### P-027 — Political picks — RESOLVED (D-0061, 2026-10-05)
+- **Status:** IMPLEMENTED, with one correction to the approved plan.
+  D-0058 said to MERGE political symbols into the pool before the
+  pipeline; reading the code showed that was both unnecessary (they are
+  already in the whole-market pool) and unsafe (injected symbols would
+  bypass D-0056's leveraged/inverse filter). The real fix was to DELETE
+  the post-pipeline UNION. Controller approved the correction before
+  any code was written. 14 tests. See D-0061.
 - Three measures: one of the 3 proposals per cycle reserved for the
   best qualifying political pick (reverting to normal ranking if none
   qualifies); a visually distinct Telegram tag carrying politician

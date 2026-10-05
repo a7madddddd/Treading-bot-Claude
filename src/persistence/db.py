@@ -16,6 +16,12 @@ from pathlib import Path
 from typing import Dict, Iterator, Optional
 
 APPROVED_SCHEMA_VERSION = 7
+
+BUSY_TIMEOUT_MS = 30000
+"""SQLite busy timeout, in milliseconds (default would be 5000).
+Raised 2026-10-05 when the daily universe refresh became a second
+writer against the same database file. See connect() for the measured
+numbers behind this value."""
 """The explicit, Controller-approved live-authorization boundary --
 the ONLY thing that makes a migration eligible to run. A migration
 file numbered above this constant may exist in the migrations
@@ -88,6 +94,30 @@ def connect(db_path: str) -> sqlite3.Connection:
 
     try:
         conn.execute("PRAGMA foreign_keys = ON")
+        # busy_timeout: how long a writer waits for another process's
+        # write lock before giving up with "database is locked".
+        #
+        # This matters from 2026-10-05, when the daily D-0026 universe
+        # refresh became a SECOND process writing this same file while
+        # the engine is running.
+        #
+        # Measured with two real processes, not assumed:
+        #   journal=delete, 5000ms -> engine WRITE fails after 5.01s
+        #   journal=WAL,    5000ms -> engine WRITE fails after 5.01s
+        #   journal=WAL,   30000ms -> engine WRITE waits 10.05s, succeeds
+        #
+        # Note WAL does NOT fix this. WAL separates readers from
+        # writers, and reads were never blocked in the measurements --
+        # the failing case is writer-versus-writer, and only a larger
+        # timeout fixes it.
+        #
+        # The real risk stays LOW, because SqliteSnapshotRepository.save
+        # holds its write transaction for a single one-row INSERT (all
+        # the slow work -- Alpaca fetches, enrichment, the eight stages
+        # -- happens outside any transaction). So this is insurance
+        # against a slow-disk outlier, not a fix for an observed
+        # failure: no "database is locked" has ever been seen here.
+        conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
     except sqlite3.Error as exc:
         conn.close()
         raise PersistenceConnectionError(f"failed to configure connection to {db_path!r}: {exc}") from exc

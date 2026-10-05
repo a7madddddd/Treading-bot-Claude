@@ -873,8 +873,10 @@ class TestPoliticalSignalEndToEnd(unittest.TestCase):
 
     def test_political_signal_actually_boosts_score(self):
         trade_repo, proposal_repo, execution_repo, conn = _repos()
-        watchlist = StaticWatchlistSource(("TSLA",))  # TSLA from watchlist
-        # NVDA gets a strong political signal from the universe source.
+        # D-0058: BOTH symbols now come through the pipeline. The
+        # political source no longer injects symbols -- it only supplies
+        # the signal that lifts NVDA's score.
+        watchlist = StaticWatchlistSource(("TSLA", "NVDA"))
         evaluator = self._ReevalCountingEvaluator({"TSLA": 50.0, "NVDA": 50.0})
         political = self._PoliticalSrcStub({
             "NVDA": {"buys": 3, "signal": 15.0, "cmte": True,
@@ -902,7 +904,11 @@ class TestPoliticalSignalEndToEnd(unittest.TestCase):
         """A ranked candidate with 3+ whitelist sellers → sell_wave →
         hard-filter rejects → no proposal is created."""
         trade_repo, proposal_repo, execution_repo, conn = _repos()
-        watchlist = StaticWatchlistSource(())  # universe comes from political source
+        # D-0058: BADSTOCK must enter through the pipeline. With an
+        # empty watchlist this test would pass for the WRONG reason --
+        # no candidates at all -- and would stop testing the sell-wave
+        # hard filter it is named for.
+        watchlist = StaticWatchlistSource(("BADSTOCK",))
         evaluator = self._ReevalCountingEvaluator({"BADSTOCK": 85.0})
         political = self._PoliticalSrcStub({
             "BADSTOCK": {"buys": 0, "sells": 3, "sell_wave": True,
@@ -2039,3 +2045,253 @@ class TestMarketOpenGate(unittest.TestCase):
         engine._lock.acquire(now=_now())
         engine.run_trigger_check(now=_now())
         self.assertEqual(CountingWatchlist.reads, 0)
+
+
+class TestPoliticalD0058(unittest.TestCase):
+    """D-0058, Controller-approved 2026-10-05: the political source
+    supplies SIGNALS only. It no longer injects symbols past the
+    pipeline. One of the 3 proposals per cycle is reserved for the best
+    politically-backed candidate, political proposals carry a distinct
+    tag with politician names, and a daily report lists everything the
+    tracked politicians bought.
+    """
+
+    class _Sig:
+        def __init__(self, *, buys=0, sells=0, names=(), cmte=False,
+                     signal=0.0, cluster=0.0, sell_wave=False):
+            self.politician_buys_30d = buys
+            self.politician_sells_30d = sells
+            self.recent_names = list(names)
+            self.committee_match = cmte
+            self.weighted_signal = signal
+            self.cluster_score = cluster
+            self.sell_wave = sell_wave
+
+    class _Src:
+        def __init__(self, signals, *, active=()):
+            self._signals = signals
+            self._active = tuple(active)
+            self.active_calls = 0
+
+        def get_active_symbols(self):
+            self.active_calls += 1
+            return self._active
+
+        def get_signals(self):
+            return self._signals
+
+    class _Eval:
+        def __init__(self, scores):
+            self._scores = scores
+
+        def rank(self, candidates):
+            results = [TestWatchlistWithTradeEvaluator._FakeEvalResult(
+                s, self._scores.get(s, 0.0), True) for s in candidates]
+            return sorted(results, key=lambda r: -r.soft_score)
+
+        def evaluate_research(self, research):
+            raise AssertionError("not used in these tests")
+
+    @staticmethod
+    def _events(notifier, name):
+        return [e for e in notifier.events if e.event == name]
+
+    def _run(self, *, watchlist, scores, signals, active=()):
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        src = self._Src(signals, active=active)
+        engine, _b, market_data, _d, notifier, _e = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            watchlist=StaticWatchlistSource(watchlist),
+            trade_evaluator=self._Eval(scores),
+            political_universe_source=src,
+        )
+        for sym in set(watchlist) | set(active):
+            market_data.set_price(sym, 100.0)
+        engine._lock.acquire(now=_now())
+        engine.run_trigger_check(now=_now())
+        return trade_repo, notifier, src
+
+    # --- the bypass is gone -------------------------------------------
+
+    def test_a_political_symbol_outside_the_pipeline_is_NEVER_traded(self):
+        """The core D-0058 guarantee. BYPASS is a symbol the political
+        source names that the Universe did NOT select."""
+        trade_repo, _n, _src = self._run(
+            watchlist=("AAPL",),
+            scores={"AAPL": 90.0, "BYPASS": 99.0},
+            signals={"BYPASS": self._Sig(buys=5, signal=25.0)},
+            active=("BYPASS",),
+        )
+        self.assertEqual(
+            trade_repo.list_for_symbol("BYPASS"), [],
+            "a political symbol that never passed the D-0026 pipeline "
+            "must never become a trade",
+        )
+        self.assertTrue(trade_repo.list_for_symbol("AAPL"))
+
+    def test_get_active_symbols_is_no_longer_consulted_for_candidates(self):
+        _tr, _n, src = self._run(
+            watchlist=("AAPL",), scores={"AAPL": 90.0},
+            signals={"AAPL": self._Sig(buys=1, signal=5.0)},
+            active=("BYPASS",),
+        )
+        self.assertEqual(src.active_calls, 0)
+
+    # --- reserved slot -------------------------------------------------
+
+    def test_political_candidate_is_promoted_into_the_reserved_slot(self):
+        """4 qualifiers, top 3 are non-political, the political one is
+        4th -- it must be promoted, displacing the LOWEST of the three."""
+        trade_repo, notifier, _src = self._run(
+            watchlist=("A", "B", "C", "POL"),
+            scores={"A": 95.0, "B": 90.0, "C": 85.0, "POL": 80.0},
+            signals={"POL": self._Sig(buys=3, signal=20.0)},
+        )
+        self.assertTrue(trade_repo.list_for_symbol("POL"))
+        self.assertTrue(trade_repo.list_for_symbol("A"))
+        self.assertTrue(trade_repo.list_for_symbol("B"))
+        self.assertEqual(trade_repo.list_for_symbol("C"), [],
+                         "the LOWEST natural qualifier is displaced")
+        events = self._events(notifier, "political_slot_reserved")
+        self.assertEqual(len(events), 1)
+        self.assertIn("POL", events[0].message)
+        self.assertIn("C", events[0].message)
+
+    def test_no_promotion_when_a_political_pick_already_qualified(self):
+        """Reserving a slot for someone already in would displace
+        another qualifier for no gain."""
+        trade_repo, notifier, _src = self._run(
+            watchlist=("A", "B", "POL"),
+            scores={"POL": 95.0, "A": 90.0, "B": 85.0},
+            signals={"POL": self._Sig(buys=3, signal=20.0)},
+        )
+        for sym in ("A", "B", "POL"):
+            self.assertTrue(trade_repo.list_for_symbol(sym))
+        self.assertEqual(self._events(notifier, "political_slot_reserved"), [])
+
+    def test_slot_is_not_wasted_when_no_political_candidate_qualifies(self):
+        trade_repo, notifier, _src = self._run(
+            watchlist=("A", "B", "C", "D"),
+            scores={"A": 95.0, "B": 90.0, "C": 85.0, "D": 80.0},
+            signals={"NOTHERE": self._Sig(buys=3, signal=20.0)},
+        )
+        for sym in ("A", "B", "C"):
+            self.assertTrue(trade_repo.list_for_symbol(sym))
+        self.assertEqual(trade_repo.list_for_symbol("D"), [])
+        self.assertEqual(self._events(notifier, "political_slot_reserved"), [])
+
+    def test_promotion_never_admits_a_candidate_that_failed_the_threshold(self):
+        """The slot reorders qualifiers. It must never rescue a
+        political pick that scored below MIN_SCORE."""
+        trade_repo, _n, _src = self._run(
+            watchlist=("A", "B", "C", "POL"),
+            scores={"A": 95.0, "B": 90.0, "C": 85.0, "POL": 20.0},
+            signals={"POL": self._Sig(buys=9, signal=25.0)},
+        )
+        self.assertEqual(trade_repo.list_for_symbol("POL"), [])
+        self.assertTrue(trade_repo.list_for_symbol("C"))
+
+    def test_everything_fits_means_no_reordering(self):
+        trade_repo, notifier, _src = self._run(
+            watchlist=("A", "POL"),
+            scores={"A": 95.0, "POL": 70.0},
+            signals={"POL": self._Sig(buys=2, signal=10.0)},
+        )
+        self.assertTrue(trade_repo.list_for_symbol("A"))
+        self.assertTrue(trade_repo.list_for_symbol("POL"))
+        self.assertEqual(self._events(notifier, "political_slot_reserved"), [])
+
+    # --- distinct tag --------------------------------------------------
+
+    def test_political_proposal_carries_the_names_and_a_distinct_event(self):
+        _tr, notifier, _src = self._run(
+            watchlist=("POL",),
+            scores={"POL": 90.0},
+            signals={"POL": self._Sig(buys=3, names=["Pelosi", "Khanna"],
+                                      cmte=True, signal=18.0)},
+        )
+        tagged = self._events(notifier, "political_proposal_awaiting_approval")
+        self.assertEqual(len(tagged), 1)
+        body = tagged[0].message
+        self.assertIn("POLITICAL SIGNAL", body)
+        self.assertIn("Pelosi", body)
+        self.assertIn("Khanna", body)
+        self.assertIn("committee match: YES", body)
+        self.assertIn("congress buys (30d): 3", body)
+        # And it still carries its approval buttons.
+        self.assertEqual(len(tagged[0].interactive_actions), 2)
+
+    def test_non_political_proposal_has_no_tag_and_the_plain_event(self):
+        _tr, notifier, _src = self._run(
+            watchlist=("A",), scores={"A": 90.0},
+            signals={"OTHER": self._Sig(buys=1, signal=5.0)},
+        )
+        plain = self._events(notifier, "proposal_awaiting_approval")
+        self.assertEqual(len(plain), 1)
+        self.assertNotIn("POLITICAL SIGNAL", plain[0].message)
+        self.assertEqual(
+            self._events(notifier, "political_proposal_awaiting_approval"), [])
+
+    def test_a_malformed_signal_never_blocks_the_proposal(self):
+        class _Broken:
+            @property
+            def politician_buys_30d(self):
+                raise RuntimeError("scraper returned garbage")
+
+        trade_repo, notifier, _src = self._run(
+            watchlist=("POL",), scores={"POL": 90.0},
+            signals={"POL": _Broken()},
+        )
+        self.assertTrue(trade_repo.list_for_symbol("POL"),
+                        "a bad tag must never cost a proposal")
+
+    # --- daily report --------------------------------------------------
+
+    def test_daily_report_lists_symbols_that_did_not_become_proposals(self):
+        _tr, notifier, _src = self._run(
+            watchlist=("A",),
+            scores={"A": 90.0},
+            signals={
+                "A": self._Sig(buys=1, signal=5.0),
+                "NOTPROPOSED": self._Sig(buys=4, names=["Khanna"],
+                                         signal=22.0),
+            },
+        )
+        reports = self._events(notifier, "political_daily_report")
+        self.assertEqual(len(reports), 1)
+        body = reports[0].message
+        self.assertIn("NOTPROPOSED", body)
+        self.assertIn("Khanna", body)
+        self.assertIn("did NOT become proposals", body)
+        self.assertEqual(reports[0].level, NotificationLevel.OPTIONAL)
+
+    def test_daily_report_is_sorted_by_signal_strength(self):
+        _tr, notifier, _src = self._run(
+            watchlist=("A",), scores={"A": 90.0},
+            signals={"WEAK": self._Sig(buys=1, signal=2.0),
+                     "STRONG": self._Sig(buys=9, signal=30.0)},
+        )
+        body = self._events(notifier, "political_daily_report")[0].message
+        self.assertLess(body.index("STRONG"), body.index("WEAK"))
+
+    def test_daily_report_fires_once_per_trading_day(self):
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        src = self._Src({"X": self._Sig(buys=2, signal=9.0)})
+        engine, _b, market_data, _d, notifier, _e = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            watchlist=StaticWatchlistSource(("A",)),
+            trade_evaluator=self._Eval({"A": 90.0}),
+            political_universe_source=src,
+        )
+        market_data.set_price("A", 100.0)
+        engine._lock.acquire(now=_now())
+        for hour in (13, 14, 15):
+            engine.run_trigger_check(
+                now=datetime(2026, 10, 6, hour, 30, tzinfo=timezone.utc))
+        self.assertEqual(
+            len(self._events(notifier, "political_daily_report")), 1)
+
+    def test_no_report_when_there_is_no_political_activity(self):
+        _tr, notifier, _src = self._run(
+            watchlist=("A",), scores={"A": 90.0}, signals={})
+        self.assertEqual(self._events(notifier, "political_daily_report"), [])

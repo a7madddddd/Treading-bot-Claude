@@ -1,6 +1,26 @@
 #!/usr/bin/env python3
 """Persistent scheduler daemon entry point (B29 / D-0023).
 
+NOT THE PRODUCTION MECHANISM -- read this before relying on it.
+=================================================================
+This script is a DEMO of SchedulerDaemon. Its job callable
+(`_real_slot` below) only prints a line; it invokes no trading logic
+whatsoever, and it has never been wired to any.
+
+Production uses two different things, and neither is this file:
+
+  - the D-0021 hourly trigger: the engine runs it in its OWN loop,
+    inside scripts/run_paper_session.py, gated by
+    engine.schedule.is_d0021_check_time.
+  - the daily D-0026 universe refresh: a systemd timer on the VM,
+    deploy/universe-refresh.timer.
+
+This header exists because the old one ("wires the D-0021 approved
+schedule ... and runs the daemon") read as though scheduling were
+handled here. It was not, and during the 2026-10-05 audit that
+wording cost real time: the system appeared to have a scheduler while
+nothing was refreshing the universe at all. See P-015.
+
 Wires the D-0021 approved schedule (09:30-15:30 ET, weekdays, hourly
 on the half-hour) to a placeholder callable and runs the daemon
 until SIGINT/SIGTERM.

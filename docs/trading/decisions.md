@@ -3922,3 +3922,204 @@ to the broker); reconciliation still runs while closed; and the gate is
 checked before the watchlist is even read.
 
 Suite: 1450 → 1459 passed, 45 subtests. No regressions.
+
+---
+
+## D-0061 — Political source supplies SIGNALS only; reserved slot, distinct tag, daily report
+
+**Date:** 2026-10-05
+**Decided by:** Controller
+**Status:** APPROVED and IMPLEMENTED
+**Amends:** D-0058, whose implementation note said political symbols
+would be MERGED into the candidate pool before the pipeline. Reading
+the code showed that description was wrong, and the Controller approved
+the corrected approach before any code was written.
+
+### The correction
+
+D-0058 recorded "merge political symbols into the pool BEFORE the
+pipeline". That turned out to be unnecessary and unsafe.
+
+**Unnecessary:** production runs the pipeline over
+`/v2/assets?status=active&asset_class=us_equity` — every tradable US
+equity. A political pick that is a real equity is therefore ALREADY in
+the candidate pool. There was nothing to merge.
+
+**Unsafe:** D-0056's leveraged/inverse filter lives inside
+`AlpacaAssetsProvider` and only sees symbols that provider fetched.
+Symbols injected into the pool by a separate merge step would have
+walked straight past it — so a politician buying a 2× inverse fund
+would have bypassed the DXD protection built the same day.
+
+The real defect was the opposite shape: the engine was ADDING political
+symbols AFTER the pipeline had run. So the fix is a DELETION.
+
+### Decision
+
+1. **The political source supplies signals only.** The UNION in
+   `Engine._check_watchlist` that injected its Top-N tickers is
+   removed. `get_signals()` is still called, so the political component
+   still scores every candidate; `get_active_symbols()` is no longer
+   consulted for candidates at all.
+2. **Reserved slot.** One of the `_TOP_N_PER_CYCLE` (3) proposals is
+   reserved for the best politically-backed candidate that has already
+   passed the pipeline, the hard filter, `_MIN_SCORE` and the portfolio
+   filter. It reorders qualifiers only — it never admits a candidate
+   that failed a check. If none qualifies the slot reverts to normal
+   ranking, so nothing is wasted.
+3. **Distinct tag.** A politically-backed proposal is sent under the
+   event `political_proposal_awaiting_approval` and carries the
+   politician NAMES, the 30-day buy/sell counts and the committee-match
+   flag — not just a score. The Controller's stated reason for tracking
+   this source is judging the specific people; a number cannot be
+   judged, a name can.
+4. **Daily report.** One `political_daily_report` per ET trading date,
+   at OPTIONAL level, listing every symbol with congressional activity
+   sorted by signal strength — INCLUDING symbols that did not become
+   proposals. Without that, the Controller only ever sees the political
+   picks that survived every filter, which hides the signal's real
+   breadth and makes it impossible to judge whether the filters are
+   discarding good political ideas.
+
+### The consequence the Controller accepted explicitly
+
+A political pick that FAILS a safety stage now never reaches the
+Controller. A congressman's illiquid small-cap with a 2% spread is
+rejected by Stage C (`max_spread_fraction = 0.0015`) and no proposal is
+created. That is exactly the requested behavior — "anything from the
+political source should also go inside every step" — and it was
+confirmed before implementation rather than discovered later.
+
+Under the old bypass that same symbol reached a proposal with no spread
+check at all, and the ladder buys three times: roughly 6% lost to
+spread alone against a −10% floor, before the strategy starts.
+
+### Not changed
+
+`weight_political = 15.0` stays as it is, per D-0058. Doubling it would
+blend the signal into one number and make attribution impossible; the
+reserved slot gives the Controller the guaranteed exposure he asked for
+AND keeps the experiment clean — one labelled political proposal per
+cycle against two normal ones, directly comparable after a month.
+
+### Tests
+
+`TestPoliticalD0058`, 14 tests. The ones that matter most:
+- **a political symbol outside the pipeline is NEVER traded** (the core
+  guarantee);
+- `get_active_symbols()` is no longer consulted for candidates;
+- promotion displaces the LOWEST natural qualifier, never the best;
+- no promotion when a political pick already qualified on merit;
+- the slot is not wasted when no political candidate qualifies;
+- **promotion never rescues a candidate below `_MIN_SCORE`**;
+- the tag carries names, committee match and counts, and still has its
+  approval buttons;
+- a non-political proposal has no tag and keeps the plain event;
+- **a malformed signal object never costs a proposal**;
+- the report includes symbols that did not become proposals, is sorted
+  by signal strength, fires once per ET trading day, and is silent when
+  there is no activity.
+
+Two pre-existing tests were realigned rather than deleted: both used an
+empty watchlist and relied on the removed bypass, so
+`test_political_sell_wave_blocks_trade` would have started passing for
+the WRONG reason (no candidates at all) and silently stopped testing
+the hard filter it is named for.
+
+Suite: 1459 → **1473 passed, 45 subtests**.
+
+---
+
+## D-0062 — Two systemd units on the VM: engine supervision and the daily universe refresh
+
+**Date:** 2026-10-05
+**Decided by:** Controller
+**Status:** APPROVED and IMPLEMENTED (files committed; installation is
+a Controller action on the VM)
+
+### Context
+
+P-015 and P-017. The engine was started by hand with `nohup` and had no
+supervisor, so it died three ways with nothing bringing it back: the
+`--max-hours` cap expiring, a VM reboot, or a crash. And nothing at all
+wrote the daily universe snapshot — `SchedulerDaemon` (B29) existed and
+was tested, but its only entry point registered one job whose callable
+merely printed "live routine not yet wired".
+
+### Decision
+
+Two units in `deploy/`, plus two wrapper scripts and a README.
+
+| unit | role | schedule |
+|---|---|---|
+| `trading-engine.service` | keeps the engine alive | always |
+| `universe-refresh.timer` | writes today's snapshot | weekdays 08:45 ET |
+
+Both are required. The engine alone is not enough: it only READS
+snapshots, and `SnapshotUniverseSource` looks up TODAY's ET date only.
+Since D-0054 removed the fallback watchlist, a day without the refresh
+is a day with no new trades.
+
+### Three non-default settings, each derived from the code
+
+1. **`Restart=always`, not `on-failure`.** `run_paper_session.py` exits
+   with status **0** when its `--max-hours` cap expires — a clean
+   shutdown, and exactly what stopped the engine on 2026-10-04. To
+   `Restart=on-failure` that looks like success, so it would never
+   restart.
+2. **`RestartSec=310`.** `src/engine/lock.py` judges liveness only by
+   `heartbeat_at`, with `STALE_THRESHOLD_SECONDS = 300`. A clean stop
+   releases the lock, but after a hard kill the row looks live for up
+   to 5 minutes and a restart fails with `EngineLockHeldError`. 310s
+   clears it on the first attempt.
+3. **`StartLimitIntervalSec=0`.** systemd's default parks a unit in
+   FAILED after 5 starts in 10s. Unreachable with (2) today, but a
+   future `RestartSec` change must not be able to silently brick the
+   supervisor.
+
+### Timer time and timezone
+
+08:45 **America/New_York**, named explicitly rather than computed in
+UTC. The run must COMPLETE before the first D-0021 trigger at 09:30 ET,
+and it enriches hundreds of symbols against Alpaca, so it needs real
+headroom. A fixed UTC time would drift an hour at each DST switch and
+land after the open — the drift D-0041 warned about. Validated with
+`systemd-analyze calendar`: next elapse `Tue 2026-10-06 12:45 UTC`,
+which is 08:45 EDT. `Persistent=true` so a powered-off VM runs the job
+on return rather than skipping the day.
+
+### Why wrapper scripts instead of `EnvironmentFile=`
+
+systemd parses `EnvironmentFile` with its own rules, not shell rules —
+it runs no shell, so quoting, `export`, trailing comments and `$VAR`
+references are handled differently from `source .env`. A token that
+works by hand can arrive mangled under systemd. Sourcing the same file
+with the same shell removes that class of difference.
+
+`--max-hours 87600` (ten years) is used because the flag has no
+"unlimited" value. The cap is not the restart mechanism; systemd is.
+
+### Also in this change
+
+- `src/persistence/db.py` — `busy_timeout` raised from the 5000ms
+  default to `BUSY_TIMEOUT_MS = 30000`, because the refresh is now a
+  SECOND process writing `paper_session.sqlite` while the engine runs.
+  Measured with two real processes: at 5000ms an engine write fails
+  after 5.01s; at 30000ms it waits 10.05s and succeeds. **WAL does not
+  fix this** — WAL separates readers from writers and reads were never
+  blocked; the failing case is writer-versus-writer. Risk was LOW
+  regardless (the snapshot save holds its lock for a single one-row
+  INSERT, with all slow work outside the transaction), so this is
+  insurance, not a fix for an observed failure.
+- `scripts/run_scheduler.py` — docstring corrected to state plainly
+  that it is NOT the production mechanism. Its old header read as
+  though scheduling were handled there; during the audit that wording
+  cost real time, because the system appeared to have a scheduler while
+  nothing refreshed the universe.
+
+### Not verifiable from here
+
+The units cannot be installed or started from a Claude container — they
+belong to the Controller's VM. The README carries the install and
+verify commands, including the heartbeat check, since an empty log is
+NOT evidence of a dead engine (Python buffers stdout to a file).
