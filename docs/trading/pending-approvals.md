@@ -1893,3 +1893,86 @@ notifications sent          : NONE
   is not the datacentre losing a disk; it is a bad write or a mistaken
   command destroying `paper_session.sqlite` while the engine is running.
   A nightly local copy covers that for the cost of one timer.
+
+### P-052 — Daily DB backup to GitHub with a Telegram confirmation (Controller request, 2026-10-05)
+- **Status:** OPEN — research done, design proposed, **blocked on one
+  credential question**. No code written.
+- **Controller's request, verbatim:** retry the GitHub push, but once
+  after the market close, and send a short Telegram message — "database
+  updated for today" on success, a failure message on failure.
+
+#### CODE SEARCH FIRST (CLAUDE.md §0.b). Most of this already exists.
+
+`scripts/run_paper_session.py:76` — `_make_db_persister()` already does
+exactly the git work required, and was Controller-approved on
+2026-10-01:
+
+- commits **only** `paper_session.sqlite` — `git commit --only <file>`
+  — so nothing else that happens to be dirty is ever carried along;
+- **no-ops** when `git diff --quiet` says the DB is unchanged, so a
+  quiet day produces no commit at all;
+- **raises** on any git failure rather than swallowing it;
+- `src/engine/engine.py:956` — `_persist_db_best_effort()` catches that
+  and emits a **CRITICAL `db_persist_failed`** notification naming the
+  exception, then lets the loop continue.
+
+So the failure half of the Controller's request is **already built and
+already wired to Telegram**.
+
+#### What is genuinely missing
+
+1. **No success message.** `db_persist_failed` exists; there is no
+   counterpart for a successful push. Searched: `db_persist` appears in
+   exactly six places, all failure-side.
+2. **Cadence.** The persister is invoked at the end of every
+   reconciliation tick. That is what produced ~780 commits a trading day
+   and is why `--no-db-push` exists.
+3. **Credentials.** The VM has no GitHub identity. The Controller
+   reported that a previous attempt failed for exactly this reason and
+   *"that was pause the entire project"* — so this is the real blocker,
+   not the code.
+
+#### RECOMMENDED SHAPE: a separate daily job, not engine logic
+
+A `deploy/db-backup.sh` plus `db-backup.timer`, alongside the two units
+that already exist, running after the close. The engine **keeps**
+`--no-db-push`.
+
+Four reasons this is better than putting it back in the engine:
+
+- A backup is not trading logic. A failure in it must never be able to
+  touch a tick that is also evaluating protective exits.
+- It runs when the market is closed, so it can never compete with a
+  trading tick for the SQLite write lock.
+- Keeping `--no-db-push` on the engine makes a regression to 780
+  commits/day structurally impossible.
+- It mirrors `universe-refresh`, which the Controller already operates
+  and understands.
+
+Both Telegram messages come from the same script, which already has
+`TelegramNotificationService.from_env()` available:
+IMPORTANT on success, CRITICAL on failure naming the git error.
+
+#### THE OPEN QUESTION — how the VM authenticates
+
+Two credential-free-at-runtime options:
+
+1. **Deploy key (SSH), scoped to this one repository, write access.**
+   The VM holds a private key file outside the repo; GitHub holds the
+   public half. **No username, no token expiry, nothing to rotate on a
+   schedule**, and if the VM were compromised the blast radius is this
+   one repository.
+2. **Fine-grained personal access token** in a git credential store.
+   Works, but expires and must be re-issued, and a token is broader than
+   a deploy key unless carefully scoped.
+
+**RECOMMENDATION: the deploy key.** It is the only one that does not
+create a recurring expiry task, and it is the narrowest grant that does
+the job. Per the safety guardrails the key is never committed, never
+logged, and never pasted into a chat.
+
+**Before anything is built, the current state must be read** — the
+remote URL (HTTPS or SSH), whether any credential helper is configured,
+and whether a push is refused for authentication or for some other
+reason. Guessing which of those is true would repeat the mistake that
+paused the project last time.
