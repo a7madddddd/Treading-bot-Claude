@@ -404,10 +404,16 @@ class TestLadderFlows(unittest.TestCase):
         self.assertEqual(len(results), 1)
 
         trade = trade_repo.get("T-1").trade
+        # D-0072 (2026-10-05): the ladder FLAG still stays False -- "is
+        # this ladder finished" remains the Controller's decision. What
+        # changed is that the shares are no longer lost: they are real,
+        # bought and paid for, so the position is recorded and the
+        # protective exit therefore covers them. Before this, the floor
+        # sold 10 and stranded the 4 with no protection at all.
         self.assertFalse(trade.ladder1_filled)
-        self.assertEqual(trade.total_shares, 10)
+        self.assertEqual(trade.total_shares, 14)
         # The OrderExecution itself still correctly recorded the partial
-        # fill -- only Trade was refused an update.
+        # fill.
         fetched = execution_repo.get_by_proposal_id("P-L1")
         self.assertEqual(fetched.execution.filled_qty, 4)
         self.assertTrue(fetched.execution.is_broker_terminal)

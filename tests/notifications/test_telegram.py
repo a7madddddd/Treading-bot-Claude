@@ -113,7 +113,11 @@ class TestSuccessfulSend(unittest.TestCase):
         body = json.loads(transport.calls[0]["data"].decode("utf-8"))
         self.assertIn("qty: 10", body["text"])
         self.assertIn("price: 95.00", body["text"])
-        self.assertIn("2026-09-16T12:00:00+00:00", body["text"])
+        # D-0071: the machine-readable UTC timestamp was replaced by
+        # the Eastern wall clock the Controller actually trades
+        # against. 2026-09-16 12:00 UTC is 08:00 EDT.
+        self.assertIn("08:00 ET", body["text"])
+        self.assertNotIn("2026-09-16T12:00:00+00:00", body["text"])
 
 
 class TestTransientFailureRetry(unittest.TestCase):

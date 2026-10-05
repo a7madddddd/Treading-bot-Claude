@@ -117,6 +117,23 @@ class OrderExecutionRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def list_for_trade(self, trade_id: str) -> List[OrderExecutionRecord]:
+        """Every execution ever recorded for this trade, both sides,
+        resolved or not, in insertion order.
+
+        Added for P-044/P-047 (2026-10-05). The order_executions rows
+        are the trade's immutable ledger: each one records what the
+        broker actually did, and none is ever rewritten. Deriving a
+        position from the whole ledger is therefore idempotent by
+        construction -- re-running converges on the same number however
+        many times it runs -- which is exactly what the partial-ladder
+        path needs, because it records shares WITHOUT setting
+        ladder1_filled/ladder2_filled and so cannot use those flags as
+        its "already applied" signal the way every other buy path
+        does."""
+        raise NotImplementedError
+
+    @abstractmethod
     def list_unresolved(self) -> List[OrderExecutionRecord]:
         """Every execution whose is_broker_terminal is False -- i.e.
         not yet resolved. Used for restart recovery. Never interprets

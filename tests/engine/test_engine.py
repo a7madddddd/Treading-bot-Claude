@@ -128,6 +128,7 @@ def _make_engine(
     trade_repo, proposal_repo, execution_repo, conn, *,
     broker=None, market_data=None, decision_source=None, notifier=None,
     watchlist=None, trade_evaluator=None, political_universe_source=None,
+    position_snapshot_builder=None,
 ):
     broker = broker or FakeBrokerClient()
     market_data = market_data or FakeMarketDataSource()
@@ -143,6 +144,7 @@ def _make_engine(
         market_data=market_data, watchlist=watchlist, decision_source=decision_source,
         notifier=notifier, lock=lock, trade_evaluator=trade_evaluator,
         political_universe_source=political_universe_source,
+        position_snapshot_builder=position_snapshot_builder,
     )
     return engine, broker, market_data, decision_source, notifier, execution_service
 

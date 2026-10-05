@@ -1270,3 +1270,383 @@ for free.
   60% of the trailing median) from measured values rather than from a
   number chosen today. Deliberately deferred: inventing that constant
   now would repeat the mistake D-0065 corrected.
+
+---
+
+## Bug hunt, 2026-10-05 (Controller-requested: "find the list of bugs")
+
+A deliberate audit of the safety-critical paths, after the day's
+incident. Findings are reported with what was VERIFIED in code, not what
+was suspected. Where a suspicion did not survive reading the code, it is
+recorded as cleared rather than quietly dropped — a list padded with
+non-bugs is worse than a short one.
+
+### P-041 — A market-data outage floods the Controller with CRITICAL alerts — RESOLVED (D-0070, 2026-10-05)
+- **Status:** RESOLVED by D-0070, Controller-approved and pushed 2026-10-05.
+- **Status when raised:** OPEN. Confirmed by code reading AND by what the Controller
+  experienced on 2026-10-05 ("I have so many messages told me the data
+  not available for the item").
+- **FACT:** `Engine._notify` (`src/engine/engine.py:2113`) sends every
+  call straight to the notifier. There is **no deduplication and no rate
+  limit** — `_notify_once` and its `_notified` set exist, but the
+  market-data failures do not use them.
+- **FACT:** `_check_floor_trigger` runs for every ACTIVE trade on every
+  reconciliation tick (`run_reconciliation_tick`, line 639), and the
+  tick interval is 30 s.
+- **Arithmetic, not estimate:** 5 open positions ÷ 30 s = 10 CRITICAL
+  messages per minute, **600 per hour**, for as long as the outage
+  lasts. There are 7 separate `market_data_unavailable` notify sites.
+- **Why this is a safety bug, not noise:** a Controller buried under 600
+  identical alerts mutes the channel or stops reading it. The next
+  message after that is the one that matters — a Floor execution, a
+  partial fill, a submission failure. The alert channel is the only
+  channel, so degrading it degrades every protection that depends on it.
+- **RECOMMENDATION:** collapse repeated `market_data_unavailable` into
+  one alert per symbol per outage, with a single follow-up when it
+  clears. The existing `_notify_once` mechanism already has the right
+  shape; the outage key would be `(symbol, "market_data_outage")`,
+  cleared on the first successful price read.
+
+### P-042 — A long proposal message can be silently dropped by Telegram — RESOLVED (D-0070, 2026-10-05)
+- **Status:** RESOLVED by D-0070 (both halves: the 4096-char cap and the delivery report), Controller-approved and pushed 2026-10-05.
+- **Status when raised:** OPEN. Structural; whether it fires on a given day depends
+  on how much the research APIs return.
+- **FACT:** Telegram's `sendMessage` rejects any `text` longer than 4096
+  characters with HTTP 400. `TelegramNotificationService._format_text`
+  (`src/notifications/telegram.py:112`) applies **no cap**.
+- **FACT:** proposal messages are enriched by `CompositeEnricher`
+  (`src/engine/enrichers.py:291`), which joins the output of every
+  configured sub-enricher with **no overall cap**. The VM's startup log
+  shows five enabled:
+  `Perplexity, Finnhub, AlphaVantage, Tiingo, Polygon`.
+  Only `PerplexityEnricher` caps itself (300 chars) and `PolygonEnricher`
+  caps a headline; the rest are uncapped.
+- **FACT, why the failure is silent:** `Engine._notify` discards the
+  returned `NotificationResult` entirely. A 400 is retried by the
+  transport, fails identically every time, and the engine never learns.
+- **Consequence chain:** the dropped message is the one carrying the
+  inline ✅/❌ buttons. `_start_new_trade` then adds the proposal to
+  `_notified` regardless of outcome, so it is never re-advertised in
+  that session — and D-0068's 60-minute TTL expires it quietly. The
+  Controller sees nothing at any point.
+- **Partly mitigated, honestly:** `recover()` re-notifies PENDING
+  proposals on startup (line 487), so a restart would surface it. But
+  the TTL is 60 minutes and the engine is designed to run for months.
+- **RECOMMENDATION:** cap the text in the Telegram client, where the
+  limit actually lives — truncate at ~3900 characters with a visible
+  marker, so the approval buttons always arrive even when the research
+  blurb is long. Separately, have `_notify` log a non-delivered result.
+  The cap belongs in the client, not in each enricher, because the
+  limit is the transport's and new enrichers must not have to know it.
+
+### P-043 — "Floor not evaluated" has no escalation if it persists — RESOLVED (D-0071, 2026-10-05)
+- **Status:** RESOLVED by D-0071, Controller-approved and pushed 2026-10-05.
+- **Status when raised:** OPEN, lower priority than P-041/P-042 and recorded as
+  such.
+- **FACT:** on `MarketDataUnavailableError`, `_check_floor_trigger`
+  notifies and returns without evaluating the Floor
+  (`src/engine/engine.py:793-801`). That is the correct immediate
+  behavior — guessing a price to evaluate a protective exit would be
+  worse.
+- **The gap:** there is no state that says "this position's protective
+  exit has not been evaluated for N minutes". One failed read and a
+  two-hour outage produce the same message at the same level, and the
+  only difference is how many copies arrive — which P-041 is about.
+- **RECOMMENDATION:** track consecutive failures per symbol and escalate
+  once past a threshold (e.g. 10 consecutive misses ≈ 5 minutes) with a
+  distinct event name, so a sustained outage is a different alert from a
+  blip. Deliberately NOT proposing an automatic action: selling on
+  missing data is the one thing that must never happen.
+
+### Checked and NOT a bug (recorded so the audit is auditable)
+- **`_notified` grows forever.** True — it is never pruned, and the
+  engine is meant to run for years. But the growth is a few short tuples
+  per day: 10 proposals/day for 10 years is ~36,500 entries, roughly
+  5 MB. Not a leak worth code. Recorded rather than listed, because
+  padding a bug list is its own failure.
+- **Broad `except Exception: pass` in `d0026/regime_classifier.py` and
+  `engine/research_hub.py`.** Both are advisory layers that are
+  documented to fail open, and neither can influence a risk limit or a
+  protective exit. Correct as written.
+- **Telegram transport failures.** `send` retries and returns a result
+  rather than raising, so a failed notification never retries a trade —
+  which is exactly what CLAUDE.md §6 requires.
+- **Pending proposals after a restart.** `recover()` re-fires the
+  notification for every PENDING proposal, so a restart does not strand
+  an approval request.
+- **Today's three new guards are actually wired**, verified by call
+  site: `_expire_stale_proposals` (line 637),
+  `_market_open_for_new_proposals` (line 1401),
+  `_notify_nothing_to_trade` (lines 1367, 1377, 1469, 1575).
+
+---
+
+## Execution-path audit, 2026-10-05 (Controller-requested)
+
+Read end to end: `src/execution/service.py` (858 lines),
+`Engine._process_trade`'s ladder loop, `Trade.freeze_initial_reference`,
+and the protective-exit path. Two confirmed defects, one deferred idea,
+and the suspicions that did not survive the code.
+
+### P-044 — A partial LADDER-1 fill strands real shares with no floor — RESOLVED (D-0072, 2026-10-05)
+- **Status:** RESOLVED by D-0072 for Ladder 1. Ladder 2 stays as designed; the residual risk there is P-049.
+- **Status when raised:** OPEN. **The most serious finding of 2026-10-05.** Real
+  money, silent, and reachable from the live system today.
+- **FACT, three independent gaps that compound:**
+  1. `ExecutionService._apply_to_trade_if_terminal` returns without
+     recording a ladder fill when
+     `execution.filled_qty != execution.requested_qty`
+     (`src/execution/service.py:572`). The code says so in its own
+     comment: for LADDER_1 "no confirmation path exists (not approved)
+     -- the fill simply stays unrepresented in Trade".
+  2. `ExecutionService.submit_protective_exit` sells the caller's
+     `trade.total_shares` and explicitly refuses to sell more than the
+     Trade believes it holds (`service.py:700`).
+  3. There is **no notification at all** for a partial LADDER-1 fill.
+     `_maybe_notify_ladder2_pending_confirmation` exists for Ladder 2;
+     Ladder 1 has no equivalent anywhere in `engine.py`.
+- **Worked example, with numbers:**
+
+| step | real position at Alpaca | `trade.total_shares` |
+|---|---|---|
+| Initial entry fills 20 @ $250 | 20 | 20 |
+| Ladder 1 approved for 5 @ $237.50 | 20 | 20 |
+| **only 3 fill, order terminal** | **23** | **20** |
+| price reaches the floor, $225 | 23 | 20 |
+| floor sells `total_shares` | **3 left** | 0 |
+
+  Those 3 shares sit at the broker with **no trade, no floor, no
+  monitoring and no message**. At $225 that is $675 that can fall to
+  zero with nothing watching it. The weighted average entry is also
+  stale, so every later percentage is computed from a wrong base.
+- **Why it does not self-heal:** `ladder1_filled` stays False, so the
+  ladder loop keeps evaluating it; but the proposal stays APPROVED, so
+  `has_live_attempt` is True and no new proposal is created, and the
+  `elif` branch re-submits into `ExecutionAlreadySubmittedError`, which
+  the engine catches. The trade is stuck in that state indefinitely.
+- **REPRODUCED, not inferred (2026-10-05, Controller asked for
+  re-verification).** A script drove the REAL `ExecutionService`, the
+  REAL `Trade` model and the REAL SQLite repositories, stubbing only the
+  broker and the price feed: initial entry filled 20 @ $250, Ladder 1
+  proposed and approved for 4 shares, broker returned a TERMINAL fill of
+  2. Output:
+
+```
+after initial entry : total_shares=20  ladder1_price=237.5  floor=225.0
+ladder 1 proposal   : qty=4 trigger=$237.5
+submitted           : requested_qty=4
+
+broker actually filled      : 2 extra shares
+REAL position at the broker : 22 shares
+trade.total_shares          : 20 shares
+ladder1_filled flag         : False
+weighted_avg_entry_price    : 250.0
+notifications sent          : NONE
+
+>>> SHARES THE FLOOR WOULD LEAVE BEHIND : 2
+>>> value at the floor price $225.0: $450.00
+```
+
+  Both halves of the finding are confirmed by execution: the shares are
+  unrecorded, and **not one notification is sent**. The weighted average
+  also stays at the pre-ladder 250.0.
+
+- **CORRECTION to the line above, after checking what the weighted
+  average actually drives.** "Every later percentage is computed from a
+  stale base" was too broad and is withdrawn. Verified in code:
+  `Trade.record_ladder_fill` states and enforces that it "never touches
+  `original_floor_price`, `ladder1_price`, or `ladder2_price`" — those
+  come from the FROZEN original entry (D-0001/D-0009), so the ladder
+  triggers and the original −10% floor are **unaffected** by the stale
+  average.
+
+  Exactly one thing is affected, and it is on the protective side:
+  `Trade.activate_trailing` sets
+  `activation_threshold = weighted_avg_entry_price * 1.10`, and the
+  trailing floor is `activation_threshold * 0.95` (D-0008).
+
+| | true | stale (what the system holds) |
+|---|---|---|
+| weighted average | $248.8636 | $250.0000 |
+| trailing activates at | $273.75 | $275.00 |
+| trailing floor set at | $260.0625 | $261.2500 |
+
+  **The dangerous case is a rally that peaks between the two
+  thresholds.** A peak at $274.00 activates the trailing floor under the
+  true average and does **not** activate it under the stale one. The
+  position then falls back protected only by the original floor at
+  $225.00 instead of $260.06 — **$35.06 per share, $701.25 on the 20
+  shares the trade believes it holds**, on top of the 2 stranded shares.
+
+- **Why the trailing floor does not rescue the stranded shares either.**
+  Both the original and the trailing floor exit through the same call,
+  `submit_protective_exit(trade_id, quantity=trade.total_shares, ...)`
+  (`src/engine/engine.py:837`). The trailing floor sells the same
+  understated count, so it inherits the stranding rather than fixing
+  it — and its activation point is computed from the stale average as
+  shown above.
+
+- **The "no message" half, verified exhaustively.** Every notification
+  event name the engine can emit was listed (41 of them). The list
+  contains `ladder2_partial_fill_pending_confirmation` and **no
+  `ladder1_*` event of any kind**. The asymmetry is total.
+
+- **RECOMMENDATION (needs Controller approval — it changes execution
+  behavior):** mirror the Ladder-2 design, which the Controller already
+  approved for exactly this situation. A partial Ladder-1 fill should
+  (a) send an IMPORTANT notification naming the filled and requested
+  quantities, and (b) offer the same explicit confirmation that
+  `confirm_ladder2_partial_fill` provides, so the shares are recorded
+  on the Trade and therefore covered by the floor. Until then the risk
+  is live.
+- **Smaller, strictly-safe alternative if the full path is too big for
+  now:** send the notification only. That alone converts a silent
+  stranding into something the Controller can act on by hand, and
+  changes no execution logic.
+
+### P-045 — The engine never checks its share count against the broker — RESOLVED (D-0073, 2026-10-05)
+- **Status:** RESOLVED by D-0073 with option A (detect and report, never correct).
+- **Status when raised:** OPEN. This is the control that would have caught P-044
+  automatically.
+- **FACT:** `/v2/positions` is read in exactly one place,
+  `src/risk/portfolio_snapshot.py:125`, and only for dollar exposure.
+  Nothing anywhere compares Alpaca's actual `qty` for a symbol with
+  `trade.total_shares`.
+- **Consequence:** any divergence — a partial fill (P-044), a manual
+  trade placed by the Controller in the Alpaca UI, a corporate action,
+  a broker-side cancellation — is invisible forever. The engine
+  protects the position it *believes* it has.
+- **RECOMMENDATION:** a read-only drift check on each reconciliation
+  tick: for every ACTIVE trade, compare the broker's `qty` with
+  `trade.total_shares` and send ONE notification per divergence (using
+  the D-0070 dedup pattern, so it cannot flood). **No automatic
+  correction** — the engine must not silently rewrite its own state
+  from the broker; the Controller decides. Observability only, which
+  makes it the cheapest and least risky of the open items.
+
+### P-046 — Protective floor as a resting broker-side order (Controller's idea, deferred)
+- **Status:** DEFERRED by the Controller, 2026-10-05: "about the floor
+  point, note it down, we will return for it and discuss it."
+- **The Controller's observation, which is correct:** the floor level is
+  computed from the initial entry price, which is frozen (D-0009) and
+  persisted, and the position itself exists at Alpaca independently of
+  our process. So the floor LEVEL is known from the moment the entry
+  fills and never changes.
+- **The idea that follows:** place a resting stop/stop-limit SELL at the
+  broker at that level, once, at entry. Protection would then survive a
+  market-data outage, an engine crash, a VM reboot, and a container
+  reclaim — today it survives none of those, because the floor is only
+  evaluated by our own polling loop.
+- **Known trade-offs to work through before deciding:** a resting order
+  fires on an intraday spike our 30-second polling might never see
+  (safer or worse depending on the Controller's intent); the trailing
+  floor (D-0008) moves, so the resting order must be replaced on every
+  ratchet; a partial fill at the broker splits the position; and the
+  resting order must be cancelled on any ladder that changes the share
+  count. None are blockers, all need deciding.
+- **Not implemented, not designed in detail. Parked for discussion.**
+
+### Checked and NOT a bug
+- **A partial INITIAL ENTRY fill.** Suspected to strand shares the same
+  way, because `_apply_to_trade_if_terminal` labels a partial initial
+  fill `InitialOrderStatus.CANCELLED`. It does not:
+  `Trade.freeze_initial_reference` branches on `filled_shares == 0`, not
+  on the status label, so a partial initial fill still computes
+  `ladder1_price`, `ladder2_price` and `original_floor_price` and sets
+  `total_shares = filled_shares` (`src/trade/models.py:246-273`). The
+  position is protected. The suspicion was wrong and is recorded as
+  wrong.
+- **`reconcile_unresolved` aborting a sweep on one bad row.** It catches
+  per row, logs with `logger.exception`, and leaves the row unresolved
+  so it retries next pass. Correct.
+- **Re-submitting an already-submitted ladder every tick.** The `elif`
+  branch does call `_submit_approved` again, but
+  `ExecutionAlreadySubmittedError` is raised and caught. A no-op, not a
+  duplicate order.
+- **The protective exit double-applying.** `_apply_protective_exit`
+  derives the target `total_shares` from the execution's own immutable
+  fields rather than subtracting from current state, so re-applying is
+  idempotent by construction.
+
+### P-047 — Option 3 for P-044 has an idempotency trap (found BEFORE coding) — RESOLVED (D-0072, 2026-10-05)
+- **Status:** RESOLVED by D-0072's absolute `position_from_ledger`, with four idempotency tests.
+- **Status when raised:** OPEN — design constraint for the Controller-approved
+  option 3, recorded before any code was written.
+- **FACT:** `ExecutionService.recover_if_terminal` re-calls
+  `_apply_to_trade_if_terminal` on every engine startup recovery, and
+  its docstring states exactly why that is safe today:
+
+  > "Trade's own fields already are that flag … `ladder1_filled` /
+  > `ladder2_filled` checks, plus `Trade.record_ladder_fill()`'s own
+  > refusal to fill twice"
+
+- **Why option 3 breaks it:** option 3 deliberately records the shares
+  WITHOUT setting `ladder1_filled`, so that the trading decision stays
+  with the Controller. That removes the only thing preventing a second
+  application. A naive `total_shares + filled_qty` would **add the same
+  partial fill again on every restart** — 20 → 22 → 24 → 26. That is a
+  worse bug than the one being fixed, and it would be silent.
+- **The pattern the codebase already uses for this.**
+  `_apply_protective_exit` solves the identical problem without any new
+  flag, and says so: it computes the TARGET `total_shares` from the
+  execution's own immutable fields "never by subtracting
+  `execution.filled_qty` from whatever `total_shares` happens to be
+  right now".
+- **RECOMMENDATION:** option 3 must compute an ABSOLUTE target, never an
+  increment: derive `total_shares` and the weighted average from the
+  full set of TERMINAL BUY executions for the trade (the ledger, all
+  immutable) minus what the protective exit sold. Re-running then
+  converges on the same number however many times it runs, with no new
+  persistence — the same guarantee the sell side already has.
+- **Not implemented yet.** Writing the increment version would have been
+  quick and wrong; this is the one place where being fast is the bug.
+
+### P-048 — Option C of P-045 (freeze on divergence) has no decision channel
+- **Status:** OPEN — answers the Controller's question of 2026-10-05:
+  "if I choose option C … how I can decide and what's the channel I will
+  decide using it".
+- **FACT:** every Controller decision in this system is
+  `(kind, proposal_id)`. `DecisionKind` has exactly three members —
+  `APPROVE`, `REJECT`, `CONFIRM_LADDER2_PARTIAL_FILL`
+  (`src/engine/decision_source.py:35`) — and
+  `_parse_callback_data` (`src/notifications/telegram_decision.py:424`)
+  returns `Optional[Tuple[DecisionKind, str]]`, where the string is a
+  proposal id. A callback without a proposal id is dropped.
+- **Consequence:** a freeze is not about any proposal, so **today there
+  is no way to lift one**. Choosing option C as it stands would mean
+  trading stops and the only exits are restarting the engine or editing
+  the database by hand.
+- **What option C actually requires, therefore:** a new decision kind
+  that is trade- or account-scoped rather than proposal-scoped, a
+  callback payload that carries no proposal id, a persisted freeze flag
+  that survives a restart (an in-memory one would silently unfreeze on
+  the next restart — the worst possible behavior), and a notification
+  carrying the unfreeze button.
+- **RECOMMENDATION:** take option A (detect and report) now, and treat
+  option C as a separate, properly-scoped change afterwards. A freeze
+  whose release mechanism does not exist is more dangerous than the
+  divergence it guards against.
+
+
+### P-049 — A partial LADDER-2 fill still strands shares until confirmed
+- **Status:** OPEN, created by D-0072's deliberate scoping.
+- **FACT:** D-0072 records a partial Ladder 1 automatically. Ladder 2
+  keeps its Controller-approved flow — notify, then require
+  `confirm_ladder2_partial_fill` — so between the fill and the
+  Controller pressing confirm, the shares are real at the broker and
+  absent from `trade.total_shares`. The protective exit would leave them
+  behind, exactly as P-044 described.
+- **Why it was not changed anyway:** recording them first made the
+  confirmation add them a SECOND time (10 + 10 → 30, caught by the
+  existing tests), and the Ladder 2 confirmation flow is approved as it
+  stands. Changing it needs its own decision, not a side effect of
+  another one.
+- **The difference that makes this tolerable:** the Controller is TOLD.
+  Ladder 2 has always had its message; Ladder 1 had none. A loss he can
+  see and choose is not the same failure as one he cannot.
+- **RECOMMENDATION:** extend D-0072 to Ladder 2 — record the shares
+  automatically, and keep the confirmation button for the LADDER
+  COMPLETION decision only, with `confirm_ladder2_partial_fill` setting
+  the flag without re-adding the quantity. That makes both ladders
+  consistent and keeps every decision the Controller already has.
+  Needs approval.

@@ -60,7 +60,7 @@ from __future__ import annotations
 import time as _time_module
 import uuid
 from datetime import datetime, timezone
-from typing import Callable, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from execution.broker_client import (
     BrokerClientError,
@@ -127,10 +127,7 @@ def _format_price_context_block(
         change = buy_price - prev
         pct = (change / prev) * 100.0
         arrow = "▲" if change > 0 else ("▼" if change < 0 else "•")
-        lines.append(f"  Previous close: ${prev:,.2f}")
-        lines.append(
-            f"  Change now:     {arrow} ${change:+,.2f}  ({pct:+.2f}%)"
-        )
+        lines.append(f"Change   {arrow} {pct:+.2f}% vs yesterday")
 
     hi = price_context.get("today_high")
     lo = price_context.get("today_low")
@@ -138,20 +135,15 @@ def _format_price_context_block(
         isinstance(hi, (int, float)) and hi > 0
         and isinstance(lo, (int, float)) and lo > 0
     ):
-        lines.append(f"  Today range:    ${lo:,.2f} - ${hi:,.2f}")
+        lines.append(f"Today    ${lo:,.2f} - ${hi:,.2f}")
 
-    op = price_context.get("today_open")
-    if isinstance(op, (int, float)) and op > 0:
-        lines.append(f"  Today open:     ${op:,.2f}")
+    # D-0071: today's OPEN was dropped. The Controller kept the daily
+    # range, which already bounds the session, and the open added a
+    # fourth number without changing any decision.
 
     if not lines:
         return ""
-    return (
-        "\n"
-        "Price context (why this level now):\n"
-        + "\n".join(lines)
-        + "\n"
-    )
+    return "\n" + "\n".join(lines) + "\n"
 
 
 def _format_proposal_message(
@@ -193,17 +185,16 @@ def _format_proposal_message(
         fl = proposal.floor_trigger
         context_block = _format_price_context_block(buy_price, price_context)
         return (
-            f"{prefix}🎯 {symbol} — Initial Entry\n"
+            f"{prefix}🎯 {symbol} — Buy\n"
+            f"\n"
+            f"Buy      {qty} shares at ${buy_price:,.2f}\n"
+            f"Cost     ${cost:,.2f}"
             f"{context_block}"
             f"\n"
-            f"Buy price: ${buy_price:,.2f}\n"
-            f"Quantity:  {qty} shares\n"
-            f"Cost:      ${cost:,.2f}\n"
-            f"\n"
-            f"Downside safeguards (auto-computed from buy price):\n"
-            f"  Ladder 1 buy at: ${l1:,.2f}  (-5%)\n"
-            f"  Ladder 2 buy at: ${l2:,.2f}  (-8%)\n"
-            f"  Auto-sell floor: ${fl:,.2f}  (-10%, protective)"
+            f"Protection:\n"
+            f"  Buy more at   ${l1:,.2f}   (-5%)\n"
+            f"  Buy more at   ${l2:,.2f}   (-8%)\n"
+            f"  Auto-sell at  ${fl:,.2f}   (-10%)"
         )
 
     if action in (TradeAction.LADDER_1, TradeAction.LADDER_2):
@@ -225,22 +216,19 @@ def _format_proposal_message(
         if avg_at is not None:
             after = (
                 f"\n"
-                f"Current avg entry: ${avg_at:,.2f}"
+                f"Average ${avg_at:,.2f}"
             )
         if floor is not None:
             after += (
                 f"\n"
-                f"Active floor: ${floor:,.2f}  (unchanged by this ladder)"
+                f"Auto-sell stays at ${floor:,.2f}"
             )
         return (
-            f"{prefix}📉 {symbol} — {label} (buy more, price down {pct}%)\n"
+            f"{prefix}📉 {symbol} — Buy more (down {pct}% from entry)\n"
             f"\n"
-            f"Trigger price:  ${trigger:,.2f}\n"
-            f"Reference entry: ${entry_ref:,.2f}\n"
-            f"Change from entry: -{pct}%\n"
-            f"\n"
-            f"Additional buy: {qty} shares\n"
-            f"Cost:           ${cost:,.2f}"
+            f"Buy      {qty} shares at ${trigger:,.2f}\n"
+            f"Cost     ${cost:,.2f}\n"
+            f"Entry    ${entry_ref:,.2f}"
             f"{after}"
         )
 
@@ -308,6 +296,7 @@ class Engine:
         proposal_enricher=None,
         trade_evaluator=None,
         portfolio_filter=None,
+        position_snapshot_builder=None,
         macro_calendar=None,
         political_universe_source=None,
     ) -> None:
@@ -322,6 +311,14 @@ class Engine:
         self._notifier = notifier
         self._lock = lock
         self._notified: Set[Tuple[str, str]] = set()
+        # P-041: symbols currently in a market-data outage. Membership
+        # means "the Controller has already been told"; it is cleared by
+        # the first successful price read for that symbol.
+        self._outages: Set[str] = set()
+        # P-043: consecutive failed price reads per symbol, and the
+        # symbols already escalated, so the escalation is sent once.
+        self._outage_misses: Dict[str, int] = {}
+        self._outage_escalated: Set[str] = set()
         # Controller-approved 2026-10-01: optional callback invoked at
         # the END of each tick to persist the live DB (and ONLY the DB
         # file) to the remote git branch, so a cloud-container reclaim
@@ -345,6 +342,15 @@ class Engine:
         # D-0050 Phase 14: optional PortfolioFilter runs AFTER the
         # evaluator to enforce sector + correlation caps.
         self._portfolio_filter = portfolio_filter
+        # D-0073 (P-045): the SAME callable the D-0047 risk enforcer
+        # already uses -- LivePortfolioSnapshotBuilder, which returns a
+        # PortfolioSnapshot whose `positions` carry symbol and qty. No
+        # new broker client, no new endpoint, no new credentials. None
+        # disables the check entirely, so every existing caller and test
+        # behaves exactly as before.
+        self._position_snapshot_builder = position_snapshot_builder
+        self._last_drift_check_at: Optional[datetime] = None
+        self._drift_reported: Set[Tuple[str, int, int]] = set()
         # D-0050 Phase 16: optional MacroEventCalendar blocks new
         # proposals in the pre-event window.
         self._macro_calendar = macro_calendar
@@ -521,7 +527,7 @@ class Engine:
                     and self._execution_repo.get_by_proposal_id(proposal.proposal_id) is None
                 ):
                     try:
-                        price = self._market_data.get_last_trade(proposal.symbol)
+                        price = self._price(proposal.symbol)
                     except MarketDataUnavailableError:
                         # Leave APPROVED; next reconciliation tick with
                         # working market data will retry via the same
@@ -558,6 +564,7 @@ class Engine:
                     continue
                 self._execution_service.recover_if_terminal(proposal.proposal_id, now=now)
                 self._maybe_notify_ladder2_pending_confirmation(proposal.proposal_id, now=now)
+                self._maybe_notify_ladder1_partial_fill(proposal.proposal_id, now=now)
 
         # SELL-side (Floor) recovery -- has no proposal to anchor a
         # lookup to, so it needs its own call regardless of the
@@ -567,16 +574,15 @@ class Engine:
 
     def _recreate_missing_initial_entry(self, trade_id: str, symbol: str, *, now: datetime) -> None:
         try:
-            price = self._market_data.get_last_trade(symbol)
+            price = self._price(symbol)
         except MarketDataUnavailableError as exc:
-            self._notify(
-                level=NotificationLevel.CRITICAL,
+            self._notify_outage(
+                symbol=symbol,
                 event="market_data_unavailable",
                 message=(
                     f"[recovery] Could not re-create the missing Initial Entry proposal for "
                     f"trade {trade_id!r} ({symbol}): {exc}"
                 ),
-                symbol=symbol,
             )
             return
 
@@ -642,8 +648,91 @@ class Engine:
             for proposal in self._proposal_repo.list_for_trade(trade_id):
                 if proposal.proposed_action is TradeAction.LADDER_2 and proposal.approval_state is ApprovalState.APPROVED:
                     self._maybe_notify_ladder2_pending_confirmation(proposal.proposal_id, now=now)
+                self._maybe_notify_ladder1_partial_fill(proposal.proposal_id, now=now)
+        self._check_position_drift(now=now)
         self._heartbeat(now=now)
         self._persist_db_best_effort(now=now)
+
+    def _check_position_drift(self, *, now: datetime) -> None:
+        """D-0073 (P-045, Controller-approved 2026-10-05): compare what
+        the broker says we hold with what this engine believes, and
+        REPORT any difference. Detection only.
+
+        Why reporting and not correcting. Writing the broker's number
+        into our state would silently absorb exactly the failures this
+        is meant to expose: a bug of ours that loses shares would be
+        papered over, and a position the Controller bought by hand in
+        the Alpaca app would be adopted into a trade and given a
+        protective floor he never asked for. Detection teaches us;
+        silent correction blinds us.
+
+        Fails open in every direction. No snapshot builder wired -> no
+        check. Broker unreachable -> skipped quietly; this is a
+        reporting aid, and it must never be able to interfere with a
+        tick that is also evaluating protective exits.
+        """
+        if self._position_snapshot_builder is None:
+            return
+        if self._last_drift_check_at is not None:
+            elapsed = (now - self._last_drift_check_at).total_seconds()
+            if elapsed < self.POSITION_DRIFT_INTERVAL_SECONDS:
+                return
+        self._last_drift_check_at = now
+
+        try:
+            snapshot = self._position_snapshot_builder()
+            broker_qty = {
+                p.symbol.upper(): int(round(float(p.qty)))
+                for p in getattr(snapshot, "positions", ())
+            }
+        except Exception:  # noqa: BLE001 - reporting aid, never blocks a tick
+            return
+
+        seen = set()
+        for record in self._trade_repo.list_active():
+            trade = record.trade
+            symbol = trade.symbol.upper()
+            seen.add(symbol)
+            theirs = broker_qty.get(symbol, 0)
+            ours = int(trade.total_shares or 0)
+            if theirs == ours:
+                continue
+            self._notify_once(
+                kind="position_drift",
+                key=f"{symbol}:{theirs}:{ours}",
+                level=NotificationLevel.CRITICAL,
+                event="position_drift_detected",
+                message=(
+                    f"{symbol} — share count does not match the broker\n"
+                    f"\n"
+                    f"Broker says   {theirs} shares\n"
+                    f"We think      {ours} shares\n"
+                    f"\n"
+                    f"Nothing was changed automatically. The auto-sell "
+                    f"protection covers {ours} shares, so "
+                    f"{abs(theirs - ours)} "
+                    f"{'are unprotected' if theirs > ours else 'may already be gone'}."
+                ),
+                symbol=symbol,
+            )
+
+        for symbol, qty in broker_qty.items():
+            if qty == 0 or symbol in seen:
+                continue
+            self._notify_once(
+                kind="position_unknown",
+                key=f"{symbol}:{qty}",
+                level=NotificationLevel.IMPORTANT,
+                event="position_not_tracked",
+                message=(
+                    f"{symbol} — the broker holds {qty} shares that this "
+                    f"engine is not tracking.\n"
+                    f"\n"
+                    f"No trade here owns them, so no auto-sell protection "
+                    f"applies to them. Nothing was changed."
+                ),
+                symbol=symbol,
+            )
 
     def _recover_approved_without_execution(self, *, now: datetime) -> None:
         """Finds proposals in state APPROVED that have no execution
@@ -667,17 +756,16 @@ class Engine:
                     continue
                 # APPROVED, INITIAL_ENTRY, no execution row -- retry.
                 try:
-                    price = self._market_data.get_last_trade(proposal.symbol)
+                    price = self._price(proposal.symbol)
                 except MarketDataUnavailableError as exc:
-                    self._notify(
-                        level=NotificationLevel.CRITICAL,
+                    self._notify_outage(
+                        symbol=proposal.symbol,
                         event="market_data_unavailable",
                         message=(
                             f"Recovery: could not fetch current price for "
                             f"{proposal.symbol} to retry approved Initial Entry "
                             f"{proposal.proposal_id}: {exc}."
                         ),
-                        symbol=proposal.symbol,
                     )
                     continue
                 self._notify(
@@ -791,13 +879,12 @@ class Engine:
             return
 
         try:
-            price = self._market_data.get_last_trade(trade.symbol)
+            price = self._price(trade.symbol)
         except MarketDataUnavailableError as exc:
-            self._notify(
-                level=NotificationLevel.CRITICAL,
+            self._notify_outage(
+                symbol=trade.symbol,
                 event="market_data_unavailable",
                 message=f"Could not get current price for {trade.symbol} (trade {trade_id}) for Floor check: {exc}",
-                symbol=trade.symbol,
             )
             return
 
@@ -1167,10 +1254,10 @@ class Engine:
         # current price and D-0007's ±0.5% band.
         if approved and proposal.proposed_action is TradeAction.INITIAL_ENTRY:
             try:
-                price = self._market_data.get_last_trade(proposal.symbol)
+                price = self._price(proposal.symbol)
             except MarketDataUnavailableError as exc:
-                self._notify(
-                    level=NotificationLevel.CRITICAL,
+                self._notify_outage(
+                    symbol=proposal.symbol,
                     event="market_data_unavailable",
                     message=(
                         f"Could not fetch current price for {proposal.symbol} to submit "
@@ -1178,7 +1265,6 @@ class Engine:
                         f"Proposal remains APPROVED; submission will be retried on the next "
                         f"reconciliation tick that has market data."
                     ),
-                    symbol=proposal.symbol,
                 )
                 return
             # An INITIAL_ENTRY has no prior position and therefore no
@@ -1229,10 +1315,10 @@ class Engine:
                 return
             trade = trade_record.trade
             try:
-                price = self._market_data.get_last_trade(proposal.symbol)
+                price = self._price(proposal.symbol)
             except MarketDataUnavailableError as exc:
-                self._notify(
-                    level=NotificationLevel.CRITICAL,
+                self._notify_outage(
+                    symbol=proposal.symbol,
                     event="market_data_unavailable",
                     message=(
                         f"Could not fetch current price for {proposal.symbol} to submit "
@@ -1240,7 +1326,6 @@ class Engine:
                         f"Proposal remains APPROVED; the per-cycle _process_trade path "
                         f"will retry on the next :30 tick with a fresh price."
                     ),
-                    symbol=proposal.symbol,
                 )
                 return
             self._submit_approved(
@@ -1268,6 +1353,21 @@ class Engine:
     #   MIN_SCORE        — a candidate must score >= this to become a proposal
     _TOP_N_PER_CYCLE = 3
     _MIN_SCORE = 60.0
+
+    POSITION_DRIFT_INTERVAL_SECONDS = 600.0
+    """D-0073: how often the broker's share counts are compared with
+    ours. NOT every tick: the snapshot costs two broker calls, and at
+    the 30s reconciliation interval that would be 240 extra calls an
+    hour. On 2026-10-05 a burst of broker calls exhausted the rate limit
+    and left the protective Floor unevaluated on five open positions
+    (P-032), so adding a per-tick call to catch a rare divergence would
+    trade a large, certain risk for a small one. Ten minutes catches any
+    drift long before it matters and costs 12 calls an hour."""
+
+    OUTAGE_ESCALATION_MISSES = 10
+    """P-043: consecutive failed price reads before the engine reports
+    that a position's protective floor is going unevaluated. 10 misses
+    at the 30-second reconciliation interval is five minutes."""
 
     PROPOSAL_TTL_SECONDS = 3600.0
     """Controller-approved 2026-10-05: a PENDING proposal that gets no
@@ -1722,13 +1822,12 @@ class Engine:
         self, symbol: str, *, now: datetime, political_signal=None,
     ) -> None:
         try:
-            price = self._market_data.get_last_trade(symbol)
+            price = self._price(symbol)
         except MarketDataUnavailableError as exc:
-            self._notify(
-                level=NotificationLevel.CRITICAL,
+            self._notify_outage(
+                symbol=symbol,
                 event="market_data_unavailable",
                 message=f"Could not get current price for {symbol} to start a new watchlist-driven trade: {exc}",
-                symbol=symbol,
             )
             return
 
@@ -1791,13 +1890,12 @@ class Engine:
             # by this per-cycle Ladder/Floor loop.
 
         try:
-            price = self._market_data.get_last_trade(trade.symbol)
+            price = self._price(trade.symbol)
         except MarketDataUnavailableError as exc:
-            self._notify(
-                level=NotificationLevel.CRITICAL,
+            self._notify_outage(
+                symbol=trade.symbol,
                 event="market_data_unavailable",
                 message=f"Could not get current price for {trade.symbol} (trade {trade_id}): {exc}",
-                symbol=trade.symbol,
             )
             return
 
@@ -2055,6 +2153,61 @@ class Engine:
     # recovery and the reconciliation tick -- same derivable condition)
     # ------------------------------------------------------------------
 
+    def _maybe_notify_ladder1_partial_fill(self, proposal_id: str, *, now: datetime) -> None:
+        """D-0072: tell the Controller when Ladder 1 fills only partly.
+
+        Ladder 2 has had this message since it was built; Ladder 1 had
+        none. Verified on 2026-10-05 by listing every notification event
+        the Engine can emit -- 41 of them, one for a Ladder 2 partial
+        fill and not a single `ladder1_*` event. A reproduction confirmed
+        the silence: a 4-share Ladder 1 filling 2 produced zero
+        notifications.
+
+        The shares are now recorded automatically (D-0072), so this
+        message reports a fact rather than asking for a decision. It
+        says so explicitly, because the Ladder 2 message asks for one
+        and two near-identical messages meaning different things would
+        be worse than no message at all.
+        """
+        proposal = self._proposal_repo.get(proposal_id)
+        if proposal is None or proposal.proposed_action is not TradeAction.LADDER_1:
+            return
+        execution_record = self._execution_repo.get_by_proposal_id(proposal_id)
+        if execution_record is None:
+            return
+        execution = execution_record.execution
+        if not execution.is_broker_terminal:
+            return
+        if execution.filled_qty == 0 or execution.filled_qty == execution.requested_qty:
+            return
+        trade_record = self._trade_repo.get(proposal.trade_id)
+        if trade_record is None or trade_record.trade.ladder1_filled:
+            return
+
+        trade = trade_record.trade
+        self._notify_once(
+            kind="ladder1_partial_fill",
+            key=proposal_id,
+            level=NotificationLevel.IMPORTANT,
+            event="ladder1_partial_fill_recorded",
+            message=(
+                f"{proposal.symbol} — Ladder 1 partially filled\n"
+                f"\n"
+                f"Wanted   {execution.requested_qty} shares\n"
+                f"Got      {execution.filled_qty} shares\n"
+                f"You now hold {trade.total_shares} shares"
+                + (f" at ${trade.weighted_avg_entry_price:,.2f} average"
+                   if trade.weighted_avg_entry_price else "")
+                + "\n"
+                f"\n"
+                f"The shares are recorded, so the auto-sell protection "
+                f"covers them.\n"
+                f"The rest was not bought and will not be chased. "
+                f"Nothing to approve."
+            ),
+            symbol=proposal.symbol,
+        )
+
     def _maybe_notify_ladder2_pending_confirmation(self, proposal_id: str, *, now: datetime) -> None:
         proposal = self._proposal_repo.get(proposal_id)
         if proposal is None or proposal.proposed_action is not TradeAction.LADDER_2:
@@ -2113,11 +2266,141 @@ class Engine:
     def _notify(
         self, *, level: NotificationLevel, event: str, message: str,
         symbol: Optional[str] = None, interactive_actions: tuple = (),
-    ) -> None:
-        self._notifier.send(NotificationEvent(
+    ) -> bool:
+        """Sends, and REPORTS whether it arrived (P-042).
+
+        This used to discard the NotificationResult entirely, so a
+        message Telegram refused -- an over-length proposal, a revoked
+        token, a chat the bot was removed from -- vanished with no trace
+        anywhere. The message that vanishes is the one carrying the
+        approve/reject buttons.
+
+        A failure is written to stdout, which systemd appends to
+        logs/engine.log. That is the ONLY channel left when the
+        notification channel itself is the thing that is broken, so it
+        must not be silent.
+
+        It deliberately does NOT retry the trade, block execution, or
+        raise -- CLAUDE.md §6 and docs/trading/execution.md. It only
+        reports.
+        """
+        result = self._notifier.send(NotificationEvent(
             level=level, event=event, message=message, symbol=symbol,
             interactive_actions=interactive_actions,
         ))
+        success = bool(getattr(result, "success", True))
+        if not success:
+            print(
+                f"[notify-failed] event={event} symbol={symbol} "
+                f"level={level.value} "
+                f"attempts={getattr(result, 'attempts', '?')} "
+                f"status={getattr(result, 'status_code', '?')} "
+                f"error={getattr(result, 'error', '?')}",
+                flush=True,
+            )
+        return success
+
+    def _price(self, symbol: str) -> float:
+        """Single entry point for a live price (P-041).
+
+        Wrapping the read is what makes the outage dedup correct: the
+        all-clear fires from the SAME place the price succeeds, so it
+        can never drift out of step with the alert. Raising
+        MarketDataUnavailableError is unchanged -- every existing caller
+        still catches it exactly as before.
+        """
+        price = self._market_data.get_last_trade(symbol)
+        self._clear_outage(symbol)
+        return price
+
+    def _notify_outage(
+        self, *, symbol: str, event: str, message: str,
+    ) -> None:
+        """P-041: one alert per symbol per outage, not one per tick.
+
+        `_check_floor_trigger` runs for every ACTIVE trade on every
+        reconciliation tick (30 s). With five open positions, an
+        hour-long market-data outage sent 600 identical CRITICAL
+        messages on 2026-10-05. A Controller buried under 600 copies
+        stops reading the channel -- and the next message after that is
+        a Floor execution or a submission failure. Degrading the alert
+        channel degrades every protection that depends on it.
+
+        The alert still fires, immediately, the FIRST time. Only the
+        repeats are suppressed, and `_clear_outage` sends one
+        all-clear when prices come back, so the Controller always knows
+        the current state.
+        """
+        misses = self._outage_misses.get(symbol, 0) + 1
+        self._outage_misses[symbol] = misses
+
+        # P-043 (Controller-approved 2026-10-05). The first alert says
+        # an outage HAPPENED. This one says the position is currently
+        # UNPROTECTED, which is a different fact and the one the
+        # Controller acts on -- close by hand, or wait.
+        #
+        # ESCALATION_MISSES ticks at the 30s reconciliation interval is
+        # five minutes. A blip never reaches it; a real outage always
+        # does. It fires ONCE, so it cannot re-create the flood P-041
+        # just removed.
+        #
+        # It deliberately triggers NO automatic action. Selling on
+        # missing data is the one thing that must never happen: the
+        # floor LEVEL is known (it is frozen from the initial entry,
+        # D-0009, and persisted), but whether the market has crossed it
+        # is exactly what cannot be known without a price.
+        if (misses >= self.OUTAGE_ESCALATION_MISSES
+                and symbol not in self._outage_escalated):
+            self._outage_escalated.add(symbol)
+            minutes = int(misses * 30 / 60)
+            self._notify(
+                level=NotificationLevel.CRITICAL,
+                event="protection_unevaluated",
+                message=(
+                    f"{symbol}: no price data for about {minutes} "
+                    f"minute(s).\n"
+                    f"The protective floor has NOT been evaluated in "
+                    f"that time.\n"
+                    f"The position is OPEN and UNCHECKED. Nothing will "
+                    f"be sold automatically without a price."
+                ),
+                symbol=symbol,
+            )
+
+        if symbol in self._outages:
+            return
+        self._outages.add(symbol)
+        self._notify(
+            level=NotificationLevel.CRITICAL,
+            event=event,
+            message=(
+                message
+                + "\n\nFurther identical alerts for this symbol are "
+                  "suppressed until prices return; one all-clear will "
+                  "follow."
+            ),
+            symbol=symbol,
+        )
+
+    def _clear_outage(self, symbol: str) -> None:
+        """Called on every successful price read. Sends the all-clear
+        exactly once, and only if an outage was actually open."""
+        self._outage_misses.pop(symbol, None)
+        was_escalated = symbol in self._outage_escalated
+        self._outage_escalated.discard(symbol)
+        if symbol not in self._outages:
+            return
+        self._outages.discard(symbol)
+        del was_escalated
+        self._notify(
+            level=NotificationLevel.IMPORTANT,
+            event="market_data_recovered",
+            message=(
+                f"Market data for {symbol} is available again. "
+                f"Protective checks are being evaluated normally."
+            ),
+            symbol=symbol,
+        )
 
     # ------------------------------------------------------------------
     # Real-clock composition. Every method above is a plain function of

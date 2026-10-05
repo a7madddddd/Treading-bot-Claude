@@ -154,6 +154,14 @@ class SqliteOrderExecutionRepository(OrderExecutionRepository):
             return None
         return self._row_to_record(row)
 
+    def list_for_trade(self, trade_id: str) -> List[OrderExecutionRecord]:
+        rows = self._conn.execute(
+            "SELECT * FROM order_executions WHERE trade_id = ? "
+            "ORDER BY rowid",
+            (trade_id,),
+        ).fetchall()
+        return [self._row_to_record(row) for row in rows]
+
     def list_unresolved(self) -> List[OrderExecutionRecord]:
         rows = self._conn.execute(
             "SELECT * FROM order_executions WHERE is_broker_terminal = 0"

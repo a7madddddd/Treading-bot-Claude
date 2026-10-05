@@ -4777,3 +4777,336 @@ never landing in the future in either season; and the 23-hour
 under-count reproduced explicitly. Naive datetimes are read as UTC.
 
 Full suite: **1538 passed, 54 subtests passed**, no regressions.
+
+---
+
+## D-0070
+
+**Date:** 2026-10-05
+**Status:** APPROVED (Controller, 2026-10-05: "about the bug number one …
+I approve your fix"; "it should wait until the result return if it sent
+a failure message … you have to [be] sure I receive it")
+**Closes:** P-041, and the delivery half of P-042.
+
+### Decision
+
+**1. One alert per symbol per market-data outage (P-041).**
+`Engine` gains `_outages: Set[str]`, `_notify_outage()` and
+`_clear_outage()`. All seven `market_data_unavailable` sites now go
+through `_notify_outage`, which alerts CRITICAL the first time and
+suppresses identical repeats until prices return. Every successful price
+read now goes through one wrapper, `Engine._price()`, which clears the
+outage and sends a single IMPORTANT all-clear.
+
+Routing the READ through one wrapper is what makes this correct: the
+all-clear fires from the same place the price succeeds, so the alert
+state cannot drift out of step with reality.
+
+**Suppressing the alert does not suppress the check.** The engine keeps
+polling every tick, so it notices the moment data returns — there is a
+test for exactly that, because the opposite would be a far worse bug
+than the one being fixed.
+
+**2. Delivery is reported, not discarded (P-042, second half).**
+`Engine._notify` now returns a bool and prints a `[notify-failed]` line
+to stdout — which systemd appends to `logs/engine.log` — naming the
+event, symbol, attempt count, HTTP status and error. It still never
+raises, never retries a trade and never blocks execution
+(CLAUDE.md §6).
+
+**3. Telegram text is capped at the transport (P-042, first half).**
+`TelegramNotificationService._fit()` truncates to 4096 characters, the
+documented `sendMessage` limit, keeping the HEAD and marking the cut.
+
+### Why
+
+**P-041, arithmetic from the incident.** `_check_floor_trigger` runs for
+every ACTIVE trade on every reconciliation tick (30 s). Five open
+positions during the 2026-10-05 rate-limit outage = 10 CRITICAL messages
+a minute, 600 an hour, all identical. The Controller reported exactly
+this. A Controller buried under 600 copies mutes the channel, and the
+next message after that is a Floor execution or a submission failure.
+The alert channel is the only channel, so degrading it degrades every
+protection that depends on it.
+
+**P-042.** Telegram rejects text over 4096 characters with HTTP 400.
+Nothing capped it: `CompositeEnricher` joins five enabled sub-enrichers
+(Perplexity, Finnhub, AlphaVantage, Tiingo, Polygon) with no overall
+limit, and only one of them caps itself. The rejected message is the one
+carrying the inline approve/reject buttons, and `_notify` discarded the
+result, so the trade would simply never reach the Controller — then
+expire quietly under D-0068's 60-minute TTL.
+
+The cap belongs in the transport because the limit is the transport's:
+an enricher added next year must not have to know about it to be safe.
+The HEAD is kept because the decision-critical part (symbol, prices,
+quantity, safeguards) is at the top and the advisory research block is
+at the bottom.
+
+### Tests
+
+- `tests/engine/test_p041_outage_alert_dedup.py` — 13 tests: the first
+  outage alerts immediately at CRITICAL; twenty consecutive ticks still
+  produce one alert; the price source is still polled every tick;
+  recovery sends exactly one IMPORTANT all-clear; no all-clear without a
+  preceding outage; a second outage after recovery alerts again; and the
+  delivery-reporting cases, including that a refused send is written to
+  stdout and never raises.
+- `tests/notifications/test_p042_telegram_length_cap.py` — 9 tests:
+  boundary at exactly 4096 and at 4097, a 100,000-character body, the
+  truncation being visible, the head kept and the tail dropped, and a
+  normal message left byte-identical.
+- Full suite: **1560 passed, 54 subtests passed**, no regressions.
+
+### Still open
+
+P-043 (no escalation when an outage persists) and the Controller's
+request to rewrite the Telegram message for a non-technical reader are
+NOT in this decision. Both are presented separately for approval.
+
+---
+
+## D-0071
+
+**Date:** 2026-10-05
+**Status:** APPROVED (Controller, 2026-10-05: "I need to make the
+telegram message as for the non-technical person"; "keep the English";
+"short it [research] as you can, but without touch the important
+points"; "keep the daily limit"; "about the bug number three. Yes, fix
+it.")
+**Closes:** P-043, and the Controller's message-readability request.
+
+### Decision
+
+**1. The Telegram message is written for a non-technical reader.**
+Removed: the `[LEVEL] internal_event_name` header and the duplicated
+`Symbol:` line on self-describing events (proposal notifications only —
+operational events keep their header, because there the event name IS
+the information); the microsecond UTC timestamp, replaced by `HH:MM ET`;
+today's OPEN price; and the phrase "auto-computed from buy price".
+
+Kept exactly as they were: every price, the quantity, the cost, the
+daily range (Controller: "keep the daily limit"), and all three
+protection levels. Language stays English (Controller's choice).
+
+Before / after, rendered from the code, same proposal:
+
+```
+[IMPORTANT] proposal_awaiting_approval        🎯 LOW — Buy
+Symbol: LOW
+🎯 LOW — Initial Entry                        Buy      20 shares at $250.00
+                                              Cost     $5,000.00
+Price context (why this level now):           Change   ▲ +0.77% vs yesterday
+  Previous close: $248.10                     Today    $247.80 - $252.30
+  Change now:     ▲ $+1.90  (+0.77%)
+  Today range:    $247.80 - $252.30           Protection:
+  Today open:     $249.50                       Buy more at   $237.50   (-5%)
+                                                Buy more at   $230.00   (-8%)
+Buy price: $250.00                              Auto-sell at  $225.00   (-10%)
+Quantity:  20 shares
+Cost:      $5,000.00                          — Research:
+                                              • ...
+Downside safeguards (auto-computed ...):      14:26 ET
+  Ladder 1 buy at: $237.50  (-5%)
+  ...
+2026-10-05T18:17:07.953730+00:00
+```
+
+735 characters → **336**, with no decision input removed.
+
+**2. The research block is capped as a whole (600 characters).**
+`CompositeEnricher` joined five sub-enrichers with no combined limit.
+Sources are kept in constructor order and **whole** — a source is
+included only if it fits entirely, so the Controller never reads half a
+sentence — and the block says `(N more source(s) not shown)` rather than
+ending as if complete. The cap applies only to the advisory block, which
+sits BELOW the prices and the protection levels.
+
+**3. P-043: a persistent outage is escalated once, as a STATE.**
+`Engine.OUTAGE_ESCALATION_MISSES = 10` consecutive failed price reads —
+five minutes at the 30-second reconciliation interval — sends one
+CRITICAL `protection_unevaluated` message per symbol per outage:
+
+```
+TSLA: no price data for about 5 minute(s).
+The protective floor has NOT been evaluated in that time.
+The position is OPEN and UNCHECKED. Nothing will be sold
+automatically without a price.
+```
+
+D-0070's alert says an outage *started*; this says the position is
+*currently unprotected*. The second is the one the Controller acts on.
+A recovery resets the counter, so a healed gap never carries misses
+forward into the next outage.
+
+**It triggers no automatic action, deliberately.** The floor LEVEL is
+known throughout — it is frozen from the initial entry (D-0009) and
+persisted, so it survives a restart and an outage alike. What cannot be
+known without a price is whether the market has crossed it. Selling on
+missing data is the one thing that must never happen.
+
+### Tests
+
+- `tests/engine/test_p041_outage_alert_dedup.py` — 9 added (22 total):
+  no escalation below the threshold, exactly one at it, still one after
+  five times the threshold, the wording states the position is open and
+  unchecked and that nothing is sold automatically, recovery resets the
+  counter, and a second long outage escalates again.
+- `tests/notifications/test_p042_telegram_length_cap.py` — the head of
+  the body survives truncation; an operational event keeps its header.
+- Updated rather than deleted: `tests/engine/test_enrichers.py` and
+  `tests/notifications/test_telegram.py` now assert the new intent
+  (shortened research header; `08:00 ET` instead of the UTC ISO stamp).
+- Full suite: **1570 passed, 54 subtests passed**, no regressions.
+
+---
+
+## D-0072
+
+**Date:** 2026-10-05
+**Status:** APPROVED (Controller, 2026-10-05: "let's use the option
+number three, record the same [shares] automatically")
+**Closes:** P-044 (Ladder 1), P-047. Raises P-049.
+
+### Decision
+
+A terminal PARTIAL **Ladder 1** fill now records the shares it actually
+bought onto the Trade, and notifies, **without** setting
+`ladder1_filled`.
+
+The split the Controller approved: *"how many shares do I own"* is a
+FACT and is recorded automatically; *"is this ladder finished"* is a
+trading DECISION and is untouched.
+
+### Why
+
+Reproduced before and after, through the real `ExecutionService`, the
+real `Trade` model and real SQLite:
+
+```
+BEFORE                              AFTER
+REAL position at broker : 22        REAL position at broker : 22
+trade.total_shares      : 20        trade.total_shares      : 22
+ladder1_filled          : False     ladder1_filled          : False
+weighted_avg            : 250.0     weighted_avg            : 248.8636
+notifications           : NONE      notifications           : ['ladder1_partial_fill_recorded']
+SHARES THE FLOOR LEAVES : 2         SHARES THE FLOOR LEAVES : 0
+value at the floor      : $450      value at the floor      : $0
+```
+
+The weighted average now matches the arithmetic truth
+`(20×250 + 2×237.50)/22`, which also puts the trailing-floor activation
+back at $273.75 instead of $275.00.
+
+### How idempotency is guaranteed (P-047)
+
+`recover_if_terminal` re-applies terminal executions on every engine
+startup, and its safety rested entirely on `ladder1_filled` as the
+"already applied" flag — which this path deliberately does not set. An
+incremental `total_shares + filled_qty` would have added the same fill
+again on every restart: 20, 22, 24, 26, silently.
+
+So `ExecutionService.position_from_ledger()` computes an **absolute**
+number from immutable inputs: the frozen `initial_filled_shares` and
+`original_initial_entry_fill_price` (D-0009), plus terminal ladder buy
+fills, minus terminal sell fills. Re-running converges — the same
+guarantee `_apply_protective_exit` already gives the sell side.
+
+**A first draft of that method was wrong and the reproduction caught
+it.** It summed buy execution rows alone and computed 2 shares instead
+of 22, because an initial-entry execution row is not guaranteed to exist
+for every trade. The frozen Trade fields are the authoritative base;
+execution rows add to them.
+
+### Scoped to Ladder 1, deliberately
+
+Ladder 2 keeps its Controller-approved flow — notify, then require
+`confirm_ladder2_partial_fill`. Two reasons, both found by running the
+tests rather than by reasoning:
+
+1. `confirm_ladder2_partial_fill` adds `filled_qty` to the CURRENT
+   `total_shares`. Recording the shares first made the confirmation add
+   them a second time: 10 + 10 became **30** instead of 20.
+2. An unconfirmed Ladder 2 partial is, by that approved design,
+   deliberately not yet part of the position.
+
+`position_from_ledger` therefore skips a Ladder 2 fill until
+`ladder2_filled` is set. **The consequence is P-049: a Ladder 2 partial
+still strands shares until the Controller presses confirm.**
+
+### Tests
+
+`tests/execution/test_d0072_partial_ladder1_position.py` — 18 tests
+driving the real Engine end to end: the shares land in the position, the
+ladder flag stays False, the weighted average is recomputed and actually
+moves, the frozen ladder/floor levels are untouched, one notification is
+sent and only one however many ticks pass, and four idempotency tests
+(20 reconciliation ticks, 5 `recover_if_terminal` calls, 3 full
+`engine.recover()` passes, and the weighted average staying put). Four
+more pin that Ladder 2 is unchanged.
+
+Full suite: **1604 passed, 54 subtests passed**.
+
+---
+
+## D-0073
+
+**Date:** 2026-10-05
+**Status:** APPROVED (Controller, 2026-10-05: "yes you can just notify
+and we will take action because we didn't have any channel to take the
+action")
+**Closes:** P-045 with option A. P-048 records why option C was not
+taken.
+
+### Decision
+
+Every 10 minutes the Engine compares the broker's share count with its
+own and **reports** any difference. Two events, both deduped:
+`position_drift_detected` (CRITICAL) for a tracked symbol whose counts
+disagree, `position_not_tracked` (IMPORTANT) for a symbol the broker
+holds that no trade here owns.
+
+It **never corrects**.
+
+### Why detection and not correction
+
+Writing the broker's number into our state would silently absorb exactly
+the failures this exists to expose. A bug of ours that loses shares
+would be papered over. A position the Controller bought by hand in the
+Alpaca app would be adopted into a trade and given a protective floor he
+never asked for. Detection teaches; silent correction blinds.
+
+### Why not option C (freeze on divergence)
+
+P-048: every Controller decision in this system is
+`(kind, proposal_id)`. A freeze belongs to no proposal, so **there is no
+channel to lift one**. Trading would stop with no way back short of a
+restart or a hand edit of the database. The Controller chose notify-only
+on exactly that reasoning.
+
+### Reusing what exists, and the cost
+
+No new broker client, endpoint or credential: the Engine takes the SAME
+`LivePortfolioSnapshotBuilder` the D-0047 risk enforcer already uses,
+whose `PositionView` already carries `symbol` and `qty`. When no builder
+is wired the check does not exist, so every existing caller and test is
+unchanged.
+
+`POSITION_DRIFT_INTERVAL_SECONDS = 600`, not per tick. The snapshot
+costs two broker calls; at the 30-second reconciliation interval that
+would be 240 extra calls an hour. On 2026-10-05 a burst of broker calls
+exhausted the rate limit and left the protective Floor unevaluated on
+five open positions (P-032). Ten minutes costs 12 calls an hour and
+still catches drift long before it matters.
+
+### Tests
+
+`tests/engine/test_d0073_position_drift.py` — 16 tests: matching counts
+stay silent; the broker holding more, fewer, or nothing at all is
+reported with both numbers; our share count is never modified; an
+untracked symbol never creates a trade; a zero quantity is ignored; the
+same divergence is reported once across 30 ticks; the broker is polled
+at most twice across 20 ticks; and it fails open both when no builder is
+wired and when the broker is unreachable.
+
+Full suite: **1604 passed, 54 subtests passed**.

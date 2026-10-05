@@ -52,7 +52,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -574,21 +574,143 @@ class ExecutionService:
             return
 
         if execution.filled_qty != execution.requested_qty:
-            # Genuine partial ladder fill. Never auto-applied to Trade,
-            # for EITHER ladder -- for LADDER_2 this is the
-            # Controller-approved "awaiting explicit confirmation"
-            # state (see confirm_ladder2_partial_fill()), fully
-            # derivable right here (terminal + partial + not yet
-            # ladderN_filled) with no new persistence. For LADDER_1, no
-            # confirmation path exists (not approved) -- the fill
-            # simply stays unrepresented in Trade pending a separate,
-            # future Controller decision. Either way: never raise here
-            # -- this runs inside a reconciliation sweep over
-            # potentially many rows and must never abort processing of
-            # any other one.
+            # Genuine partial ladder fill.
+            #
+            # D-0072 (Controller-approved 2026-10-05). Until then this
+            # was a bare `return`, and the shares -- real, bought, paid
+            # for -- stayed unrepresented in Trade. Reproduced on
+            # 2026-10-05: a 4-share Ladder 1 filling 2 left the broker
+            # holding 22 while Trade said 20, so the protective exit
+            # sold 20 and stranded 2 with no floor, no trade and no
+            # message.
+            #
+            # The split the Controller approved: "how many shares do I
+            # own" is a FACT and is recorded automatically; "is this
+            # ladder finished" is a trading DECISION and is not touched
+            # here -- ladder1_filled/ladder2_filled stay as they are,
+            # and confirm_ladder2_partial_fill() remains the only path
+            # that sets them from a partial fill.
+            #
+            # SCOPED TO LADDER 1. Ladder 2 keeps its Controller-approved
+            # flow untouched -- notification plus
+            # confirm_ladder2_partial_fill() -- because that flow was
+            # approved as it stands and changing it needs its own
+            # decision. Two concrete reasons, both found by running the
+            # tests rather than by reasoning:
+            #   * confirm_ladder2_partial_fill() adds filled_qty to the
+            #     CURRENT total_shares. Recording the shares here first
+            #     made the confirmation add them a second time: 10 + 10
+            #     became 30 instead of 20.
+            #   * a Ladder 2 partial that the Controller has not yet
+            #     confirmed is, by that approved design, deliberately
+            #     not part of the position.
+            # The consequence is recorded as P-049: a Ladder 2 partial
+            # still strands shares until the Controller presses confirm.
+            #
+            # Still never raises: this runs inside a sweep over many
+            # rows and must never abort the others.
+            if action is TradeAction.LADDER_1:
+                self._record_partial_buy_position(proposal.trade_id, now=now)
             return
 
         self._apply_ladder_fill(trade_record, action, execution, now=now, transition=f"{action.value}_reconciled")
+
+    def position_from_ledger(
+        self, trade_id: str
+    ) -> Tuple[int, Optional[float]]:
+        """ABSOLUTE position: the frozen initial entry, plus every
+        terminal LADDER buy fill, minus every terminal sell fill.
+
+        P-047. This is deliberately not an increment.
+        `recover_if_terminal` re-applies terminal executions on every
+        engine startup, and its safety rests entirely on
+        `ladder1_filled`/`ladder2_filled` acting as "already applied"
+        flags. The partial-ladder path does not set those flags -- by
+        design, since that is the Controller's decision -- so an
+        incremental `total_shares + filled_qty` would add the same fill
+        again on every restart: 20, 22, 24, 26, silently.
+
+        The base is `Trade.initial_filled_shares` and
+        `original_initial_entry_fill_price`, NOT an execution row. Both
+        are frozen write-once at reconciliation (D-0009) and are the
+        authoritative record of the opening position; an initial-entry
+        execution row is not guaranteed to exist for every trade (a
+        recovered or re-created trade may have none), and a first draft
+        of this method that summed buy rows alone computed 2 shares
+        instead of 22 for exactly that reason. The reproduction script
+        caught it before it was committed.
+
+        Every input is immutable, so this converges on the same answer
+        however many times it runs -- the same guarantee
+        `_apply_protective_exit` already gives the sell side.
+        """
+        trade_record = self._trade_repo.get(trade_id)
+        if trade_record is None:
+            return 0, None
+        trade = trade_record.trade
+
+        bought = int(trade.initial_filled_shares or 0)
+        cost = bought * float(trade.original_initial_entry_fill_price or 0.0)
+        sold = 0
+
+        for record in self._execution_repo.list_for_trade(trade_id):
+            ex = record.execution
+            if not ex.is_broker_terminal or ex.filled_qty <= 0:
+                continue
+            if ex.side == "sell":
+                sold += ex.filled_qty
+                continue
+            if ex.side != "buy":
+                continue
+            # Only LADDER buys are added on top of the frozen base; the
+            # initial entry is already counted above, and counting its
+            # execution row too would double it.
+            proposal = (self._proposal_repo.get(ex.proposal_id)
+                        if ex.proposal_id else None)
+            if proposal is None:
+                continue
+            if proposal.proposed_action is TradeAction.INITIAL_ENTRY:
+                continue
+            # A Ladder 2 fill counts only once the trade actually
+            # carries it: a full fill sets ladder2_filled through
+            # _apply_ladder_fill, and an unconfirmed PARTIAL Ladder 2 is
+            # deliberately not part of the position until the Controller
+            # confirms it (the approved design). Counting it here would
+            # silently do what only confirm_ladder2_partial_fill() may.
+            if (proposal.proposed_action is TradeAction.LADDER_2
+                    and not trade.ladder2_filled):
+                continue
+            bought += ex.filled_qty
+            if ex.filled_avg_price is not None:
+                cost += ex.filled_qty * ex.filled_avg_price
+
+        total = bought - sold
+        if total <= 0:
+            return max(total, 0), None
+        weighted_avg = round(cost / bought, 4) if bought > 0 and cost > 0 else None
+        return total, weighted_avg
+
+    def _record_partial_buy_position(self, trade_id: str, *, now: datetime) -> None:
+        """Writes the ledger-derived position onto the Trade without
+        touching any ladder flag (D-0072)."""
+        trade_record = self._trade_repo.get(trade_id)
+        if trade_record is None:
+            return
+        trade = trade_record.trade
+        total, weighted_avg = self.position_from_ledger(trade_id)
+        if total == trade.total_shares and weighted_avg == trade.weighted_avg_entry_price:
+            return  # already applied -- the idempotent no-op
+        self._trade_repo.update(
+            trade.reconcile_position(
+                total_shares=total,
+                weighted_avg_entry_price=weighted_avg,
+                strategy=approved_strategy_rule_set(),
+                now=now,
+            ),
+            expected_revision=trade_record.revision,
+            transition="partial_buy_fill_position_reconciled",
+            now=now,
+        )
 
     def _apply_ladder_fill(
         self,

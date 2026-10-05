@@ -27,7 +27,9 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import timezone
 from typing import Callable, Mapping, Optional
+from zoneinfo import ZoneInfo
 
 from .service import INotificationService, NotificationEvent, NotificationResult
 
@@ -109,15 +111,71 @@ class TelegramNotificationService(INotificationService):
         chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
         return cls(bot_token=bot_token, chat_id=chat_id, **kwargs)  # type: ignore[arg-type]
 
+    TELEGRAM_MAX_TEXT_CHARS = 4096
+    """Telegram's hard limit on sendMessage `text`. Longer bodies are
+    rejected with HTTP 400 -- and a rejected proposal message is the one
+    carrying the inline approve/reject buttons, so the Controller would
+    never see the trade at all (P-042)."""
+
+    _TRUNCATION_MARKER = "\n\n[…message shortened to fit Telegram…]"
+
+    @classmethod
+    def _fit(cls, text: str) -> str:
+        """Truncates to Telegram's limit, keeping the HEAD of the body.
+
+        The head is what matters: the symbol, the prices, the quantity
+        and the safeguards all appear before the advisory research
+        block. Cutting the tail therefore loses the optional part and
+        never the decision-critical part.
+
+        The cap lives HERE, in the transport, and not in each enricher,
+        because the limit is Telegram's. An enricher added later must
+        not have to know about it to be safe.
+        """
+        if len(text) <= cls.TELEGRAM_MAX_TEXT_CHARS:
+            return text
+        keep = cls.TELEGRAM_MAX_TEXT_CHARS - len(cls._TRUNCATION_MARKER)
+        return text[:keep].rstrip() + cls._TRUNCATION_MARKER
+
+    _ET = ZoneInfo("America/New_York")
+
+    # D-0071: events whose body already says, in plain words, what the
+    # message is. For these the internal event name and the duplicated
+    # symbol line are noise -- the Controller asked for a message a
+    # non-technical reader can act on.
+    _SELF_DESCRIBING_EVENTS = frozenset({
+        "proposal_awaiting_approval",
+        "political_proposal_awaiting_approval",
+    })
+
     def _format_text(self, event: NotificationEvent) -> str:
-        lines = [f"[{event.level.value}] {event.event}"]
-        if event.symbol:
-            lines.append(f"Symbol: {event.symbol}")
+        """D-0071 (Controller, 2026-10-05): drop the machine-facing
+        parts, keep every number the decision rests on.
+
+        Removed: the `[LEVEL] internal_event_name` header and the
+        duplicated `Symbol:` line on self-describing events, and the
+        microsecond ISO timestamp everywhere.
+
+        Kept, unchanged: prices, quantities, cost, and all three
+        safeguard levels. Those are the decision, not decoration.
+
+        The timestamp becomes `HH:MM ET` because that is the clock the
+        Controller trades against; the UTC microsecond form told him
+        nothing he could use.
+        """
+        lines = []
+        if event.event not in self._SELF_DESCRIBING_EVENTS:
+            lines.append(f"[{event.level.value}] {event.event}")
+            if event.symbol:
+                lines.append(f"Symbol: {event.symbol}")
         lines.append(event.message)
         for key, value in event.extra:
             lines.append(f"{key}: {value}")
-        lines.append(event.effective_timestamp().isoformat())
-        return "\n".join(lines)
+        stamp = event.effective_timestamp()
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        lines.append(stamp.astimezone(self._ET).strftime("%H:%M ET"))
+        return self._fit("\n".join(lines))
 
     def send(self, event: NotificationEvent) -> NotificationResult:
         url = f"{_TELEGRAM_API_BASE}/bot{self._bot_token}/sendMessage"

@@ -294,7 +294,21 @@ class CompositeEnricher:
     order). Each sub-enricher's failure is caught here as a second
     safety net — a buggy sub-enricher never affects the others."""
 
-    _HEADER = "— Research (advisory):"
+    _HEADER = "— Research:"
+
+    _MAX_TOTAL_CHARS = 600
+    """D-0071 (Controller, 2026-10-05: "short it as you can, but without
+    touch the important points").
+
+    Each sub-enricher already keeps itself brief, but five of them joined
+    had no combined limit, and the research block is the part of a
+    proposal that is advisory -- it informs the decision, it is not the
+    decision. The prices, the quantity and the three protection levels
+    sit ABOVE it and are never touched by this cap.
+
+    Sources are kept in constructor order, whole: a source is included
+    only if it fits entirely, so the Controller never reads half a
+    sentence and has to guess the rest."""
 
     def __init__(self, sub_enrichers: List[Enricher]) -> None:
         self._subs = [e for e in sub_enrichers if e is not None]
@@ -314,4 +328,19 @@ class CompositeEnricher:
                 lines.append(out.strip("\n").rstrip())
         if not lines:
             return None
-        return self._HEADER + "\n" + "\n".join(lines)
+        kept: List[str] = []
+        used = 0
+        dropped = 0
+        for line in lines:
+            # +1 for the newline that will join it.
+            if used + len(line) + 1 > self._MAX_TOTAL_CHARS and kept:
+                dropped += 1
+                continue
+            kept.append(line)
+            used += len(line) + 1
+        body = self._HEADER + "\n" + "\n".join(kept)
+        if dropped:
+            # Say that something was left out rather than letting the
+            # block end as if it were complete.
+            body += f"\n({dropped} more source(s) not shown)"
+        return body
