@@ -914,10 +914,40 @@ session starts from substance instead of re-deriving it.
 - **Status:** BACKLOG. Requested by the Controller 2026-10-05, to be
   designed later.
 - **What it is:** extend the system beyond US equities to futures.
-- **UNKNOWN, must be verified first:** whether the current broker
-  exposes futures on the API this project uses at all. Everything below
-  is moot until that is answered, and it should be the first thing
-  checked — not assumed from memory.
+- **VERIFIED 2026-10-05: Alpaca does NOT support futures.** This is now
+  a FACT, not an unknown, and it blocks the whole item on the broker.
+  - Alpaca's own documentation: "Alpaca currently supports stocks, ETFs
+    listed in the US public exchanges (NMS stocks), Options trading,
+    and cryptocurrencies. Support for other asset classes, such as
+    futures, FX, private equities, and international equities are on
+    our roadmap."
+  - Corroborated against the Controller's LIVE account. `/v2/account`
+    reports capabilities explicitly per asset class —
+    `crypto_status = ACTIVE`, `crypto_tier = 1`,
+    `options_approved_level = 3`, `options_trading_level = 3`,
+    `options_buying_power = 90601.85`, `shorting_enabled = True` — and
+    carries **no futures field of any kind**.
+  - **A probe that proved nothing, recorded so it is not repeated.**
+    Querying `/v2/assets?asset_class=futures` returns HTTP 200 with
+    `[]`, which looks like evidence until you run the control: a
+    deliberately nonsense `asset_class=banana_futures` ALSO returns
+    HTTP 200 `[]`. The endpoint silently ignores unknown values, so an
+    empty result there says nothing either way. The account object and
+    the documentation are the real evidence.
+- **Consequence:** P-033 cannot proceed until Alpaca ships futures, or
+  the Controller adds a second broker. It stays in the backlog, and the
+  architectural objections below remain valid for whenever that
+  changes.
+- **Worth knowing meanwhile — the account ALREADY has two capabilities
+  this project does not use:** options at level 3 with $90,601 of
+  options buying power, and crypto at tier 1. Neither is a free lunch:
+  **options carry the same three objections as futures** (expiry
+  breaking the frozen reference, intrinsic leverage breaking D-0051
+  sizing, and a contract multiplier), so adopting them would need the
+  same parallel-instrument-class design rather than a flag. Crypto has
+  no expiry and no multiplier, but trades 24/7, which breaks D-0021's
+  seven fixed ET times and D-0060's open/closed gate. Recorded as
+  context for a future decision, NOT as a recommendation.
 - **Why this is architecture, not a feature flag.** Four approved
   contracts assume an instrument that behaves like a share, and a
   futures contract breaks each one:
