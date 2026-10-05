@@ -15,18 +15,36 @@ the strict D-0026 §6 rule.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 from typing import Callable, Optional, Tuple
 
 from d0026.repository import SnapshotRepository
 from engine.watchlist import WatchlistSource
 
 
-_US_MARKET_TZ_OFFSET_HOURS = -4.0
-"""Approximate US Eastern offset used only to pick "today" in ET
-for snapshot lookup. Precision matches the risk-subsystem convention
-(risk/portfolio_snapshot.py). Wall-clock strategy timing lives in
-`engine/schedule.py`, not here."""
+_ET = ZoneInfo("America/New_York")
+"""P-039 (2026-10-05). This was a hardcoded -4.0 hour offset, which is
+US Eastern only during EDT; from 1 November 2026 Eastern is UTC-5.
+
+Measured before the change, replaying a full winter day hour by hour:
+exactly one UTC hour disagreed -- 04:00 UTC, which is 23:00 ET the
+previous evening -- and every hour that matters (the 06:00 ET universe
+run, the 09:30 open, the 16:00 close) was already correct. So this is a
+correctness fix with no effect inside trading hours, not a bug fix for
+an active failure.
+
+It is fixed anyway because the failure SHAPE is the one that cost a
+whole trading day on 2026-10-05: the engine asks for a date whose
+snapshot does not exist, gets an empty watchlist, and says nothing.
+
+ZoneInfo reads the system IANA database (/usr/share/zoneinfo), which
+already carries the 2026 and 2027 transitions. No network call -- a
+network dependency on this path would be the same class of fault as
+P-032, where a rate-limited broker left the Floor check unevaluated.
+`engine/schedule.py` and `scheduler/next_fire.py` already use ZoneInfo;
+this makes the subsystem consistent rather than introducing a third
+convention."""
 
 
 class SnapshotUniverseSource(WatchlistSource):
@@ -56,9 +74,9 @@ class SnapshotUniverseSource(WatchlistSource):
 
 
 def _current_effective_date_et(now_utc: datetime) -> date:
-    """Returns today's US Eastern trading date. Loose ET conversion
-    (fixed 4-hour offset) is intentional -- the trading date is a
-    coarse anchor, not a strategy trigger. The strategy engine uses
-    `engine/schedule.py` for precise timing decisions."""
-    et_now = now_utc + timedelta(hours=_US_MARKET_TZ_OFFSET_HOURS)
-    return et_now.date()
+    """Returns today's US Eastern trading date, DST-correct in both
+    halves of the year (P-039). A naive datetime is read as UTC, which
+    is what every caller in this repo passes."""
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=timezone.utc)
+    return now_utc.astimezone(_ET).date()
