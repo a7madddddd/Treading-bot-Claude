@@ -46,6 +46,83 @@ def _require_env(name: str) -> str:
     return v
 
 
+def _market_closed_or_forced(*, key: str, secret: str, base_url: str,
+                             forced: bool) -> bool:
+    """P-032 guard (Controller-approved 2026-10-05): refuse to run while
+    the market is open.
+
+    WHY. This job issues one bars request per symbol -- about 11,683 of
+    them -- and exhausts the broker's rate limit. On 2026-10-05 a manual
+    run at 10:54 ET did exactly that, and the live engine started
+    getting HTTP 429 while polling prices for its open positions:
+
+        Could not get current price for GOOGL for Floor check:
+        HTTP 429 ... too many requests.
+
+    `Engine._check_floor_trigger` returns WITHOUT evaluating the floor
+    when market data is unavailable, so for the duration of that run the
+    protective Floor and Trailing Floor were not being evaluated on five
+    real positions. The engine never crashed; the protection was simply
+    degraded, silently, while everything looked healthy.
+
+    The production path never collides -- the timer runs at 06:00 ET
+    with the market closed and finishes around 07:00. This guard exists
+    purely to stop a HUMAN (Claude included, who caused the incident)
+    doing by hand what the timer would never do.
+
+    FAIL CLOSED. If the market state cannot be determined, refuse. The
+    asymmetry matches D-0060's gate and the Controller's stated
+    preference: losing one day's universe costs a day of new entries,
+    while running blind degrades the protective exit on live money.
+    `--force` remains available when the refusal is genuinely wrong.
+    """
+
+    if forced:
+        print("[guard] --force given: running regardless of market state. "
+              "This competes with the engine for the broker's rate limit "
+              "and can starve its Floor checks (P-032).")
+        return True
+
+    from common.http_retry import RetryPolicy
+    from execution.alpaca_broker_client import AlpacaBrokerClient
+
+    # Construction is INSIDE the try on purpose. AlpacaBrokerClient's
+    # __init__ can itself raise -- for example its D-0002 paper-only
+    # host check -- and a test with a deliberately bad base_url showed
+    # that leaving it outside produced a raw traceback and exit 1
+    # instead of this function's clear refusal. Exit 1 is still
+    # "did not run", so the safety held, but the operator saw a crash
+    # rather than a reason.
+    try:
+        broker = AlpacaBrokerClient(
+            key_id=key, secret_key=secret, base_url=base_url,
+            retry_policy=RetryPolicy(max_attempts=3,
+                                     base_backoff_seconds=1.0),
+        )
+        is_open = broker.is_market_open()
+    except Exception as exc:  # noqa: BLE001 - fail closed, never guess
+        print(f"[guard] REFUSING: could not determine market state "
+              f"({type(exc).__name__}: {exc}). Failing closed -- running "
+              f"blind could starve the engine's Floor checks. Re-run when "
+              f"the broker is reachable, or pass --force.",
+              file=sys.stderr)
+        return False
+
+    if is_open:
+        print("[guard] REFUSING: the market is OPEN.\n"
+              "        This job issues ~11,683 bars requests and will\n"
+              "        exhaust the broker's rate limit, starving the live\n"
+              "        engine's Floor checks of market data (P-032).\n"
+              "        The scheduled timer runs at 06:00 ET with the\n"
+              "        market closed, which is why it never collides.\n"
+              "        Pass --force only if you accept that cost.",
+              file=sys.stderr)
+        return False
+
+    print("[guard] market is closed -- safe to run.")
+    return True
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description="B24 universe selection runner")
     p.add_argument("--whitelist", default="",
@@ -83,6 +160,11 @@ def main() -> int:
                         "trades are NOT excluded -- Controller-approved "
                         "2026-10-01: a symbol rejected on an earlier day may "
                         "be re-proposed if it ranks today.")
+    p.add_argument("--force", action="store_true",
+                   help="Run even while the market is open. Default is to "
+                        "REFUSE, because this job issues ~11,683 bars "
+                        "requests and starves the live engine's Floor "
+                        "checks of market data (P-032).")
     args = p.parse_args()
 
     key = _require_env("ALPACA_API_KEY_ID")
@@ -91,6 +173,10 @@ def main() -> int:
     if args.send_telegram:
         _require_env("TELEGRAM_BOT_TOKEN")
         _require_env("TELEGRAM_CHAT_ID")
+
+    if not _market_closed_or_forced(key=key, secret=sec, base_url=base,
+                                    forced=args.force):
+        return 75  # EX_TEMPFAIL -- "try again later", which is literally true
 
     whitelist = tuple(s.strip().upper() for s in args.whitelist.split(",")
                       if s.strip())

@@ -4473,3 +4473,93 @@ throughput for this account. Timing one real run would replace the
 assumption with a number. 06:00 is chosen to be safe under the
 pessimistic assumption, so the measurement is an improvement rather
 than a prerequisite.
+
+---
+
+## D-0067 — The universe run refuses to start while the market is open
+
+**Date:** 2026-10-05
+**Decided by:** Controller
+**Status:** APPROVED and IMPLEMENTED
+
+### Context (P-032)
+
+A manual universe run started at 10:54 ET on 2026-10-05 — mid-session.
+It issues one bars request per symbol, about 11,683 of them, and
+exhausted Alpaca's rate limit. The live engine, polling every 30
+seconds for its open positions, began receiving HTTP 429:
+
+```
+[CRITICAL] market_data_unavailable
+Symbol: GOOGL
+Could not get current price for GOOGL (trade GOOGL-07c7589f) for Floor
+check: data provider returned HTTP 429 for 'GOOGL': too many requests.
+```
+
+`Engine._check_floor_trigger` notifies and **returns without evaluating
+the floor** when market data is unavailable. So for the duration of the
+run, the protective Floor and the Trailing Floor were not being
+evaluated on five real open positions — `TSLA`, `GOOGL`, `QQQ`, `NVDA`,
+`AMZN`. The engine never crashed and retried each tick, and the
+failures were intermittent rather than total, but the protection was
+degraded while every other indicator looked healthy.
+
+**This was Claude's error.** The approved 06:00 ET schedule avoids the
+collision entirely — the market is closed, the run finishes around
+07:00, and there are no positions to poll. Claude asked the Controller
+to start a full run by hand during the session without accounting for
+the live engine.
+
+### Decision
+
+`scripts/run_universe_selection.py` asks the broker whether the market
+is open before doing any work, and REFUSES unless `--force` is passed.
+
+The guard exists to stop a HUMAN — Claude included — from doing by hand
+what the timer would never do. The production path never collides.
+
+### Fail closed
+
+If the market state cannot be determined, the run is refused. The
+asymmetry matches D-0060's gate and the Controller's stated preference:
+losing one day's universe costs a day of new entries, while running
+blind degrades a protective exit on live money.
+
+Exit code **75** (`EX_TEMPFAIL`, "try again later") rather than 0. A
+clean exit would make a refusal look like a successful run that simply
+produced nothing — the exact silent-success pattern that hid the
+90-second timeout in D-0062.
+
+### Tested — all three paths, against the real broker
+
+| test | result |
+|---|---|
+| market open, no `--force` | REFUSED, exit 75, reason printed |
+| `--force` | ran, with a loud warning about the cost |
+| broker unreachable | REFUSED, exit 75, fail-closed |
+
+**The third test found a real bug.** The `AlpacaBrokerClient`
+construction was outside the `try`, and its own D-0002 paper-only host
+check raised — producing a raw traceback and exit 1 instead of the
+guard's clear refusal. Exit 1 is still "did not run", so the safety
+held, but the operator would have seen a crash rather than a reason.
+Construction is now inside the `try`, and the retest returns the proper
+refusal with exit 75.
+
+The `--force` test wrote a snapshot under a past effective date
+(2026-01-02) to avoid touching the live universe; that row was deleted
+afterwards and the repo database restored to its committed state.
+
+Full suite unchanged: 1479 passed, 54 subtests.
+
+### Rejected alternatives
+
+| option | why not |
+|---|---|
+| throttle the universe run to leave headroom | more correct in principle, but it lengthens a ~58-minute run and the right headroom figure is unknown |
+| a separate prioritised data path for the engine | most robust, most work, and unnecessary once the schedule and this guard both hold |
+
+### What would change this
+
+If an intraday refresh ever becomes normal practice, throttling becomes
+necessary rather than optional.

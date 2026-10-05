@@ -841,9 +841,16 @@ Controller's VM, not inferred:
 - **Action:** run the real job once today, which both replaces the
   one-symbol snapshot and measures the true runtime for P-029.
 
-### P-032 — The universe run and the engine compete for one rate-limit budget
-- **Status:** OPEN. A real safety gap, observed live on 2026-10-05, not
-  theoretical.
+### P-032 — Universe run starved the engine's Floor checks — RESOLVED (D-0067, 2026-10-05)
+- **Status:** FIXED. `run_universe_selection.py` now refuses to start
+  while the market is open unless `--force` is passed, failing closed
+  when market state cannot be determined. All three paths tested
+  against the real broker; the fail-closed test found and fixed a bug
+  where the guard produced a traceback instead of its refusal message.
+  See D-0067.
+- Verified recovered: all five open positions returned live prices
+  immediately after the run was stopped.
+- The original finding is kept below for history.
 - **What happened:** a MANUAL universe run was started at 14:54 UTC
   (10:54 ET) — mid-session, with the market open. It issues ~11,683
   bars requests and exhausts Alpaca's rate limit. The engine, polling
