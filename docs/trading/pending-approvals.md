@@ -1524,8 +1524,29 @@ notifications sent          : NONE
   from the broker; the Controller decides. Observability only, which
   makes it the cheapest and least risky of the open items.
 
-### P-046 — Protective floor as a resting broker-side order (Controller's idea, deferred)
-- **Status:** DEFERRED by the Controller, 2026-10-05: "about the floor
+### P-046 — Protective floor as a resting broker-side order — CLOSED, NOT PROCEEDING (Controller, 2026-10-05)
+- **Status:** **CLOSED by Controller decision, 2026-10-05**, after the
+  broker facts were verified: *"let's forget to make alpaca who will
+  decide … that will close."*
+- **What closed it.** The live account check returned
+  `shorting_enabled: True` with a 4× multiplier, and Alpaca has no
+  reduce-only flag. So a stray or duplicate sell is **accepted and opens
+  a short** rather than being rejected — an unbounded-loss shape that
+  does not exist anywhere in the approved strategy. Buying that
+  protection would have meant taking on a worse failure mode than the
+  one it fixes, and the Controller declined to hand the exit decision to
+  the broker.
+- **What the gap still is, stated honestly:** if the engine is dead, the
+  VM is off, or market data is unavailable, **there is no protective
+  exit at all**. That remains true and is not solved by this closure.
+  The mitigations that DO exist are the ones built on 2026-10-05:
+  `Restart=always` with lingering, the D-0070 outage alert, and the
+  D-0071 five-minute "position is OPEN and UNCHECKED" escalation — the
+  Controller is told, and can act by hand.
+- **The research below is kept** because it is the verified record of
+  why this was not done, and because any future revisit starts from it
+  rather than repeating the broker checks.
+- **Original entry, status DEFERRED by the Controller, 2026-10-05:** "about the floor
   point, note it down, we will return for it and discuss it."
 - **The Controller's observation, which is correct:** the floor level is
   computed from the initial entry price, which is frozen (D-0009) and
@@ -1544,6 +1565,125 @@ notifications sent          : NONE
   ratchet; a partial fill at the broker splits the position; and the
   resting order must be cancelled on any ladder that changes the share
   count. None are blockers, all need deciding.
+- **CODE SEARCH, 2026-10-05 (before any design work, per CLAUDE.md
+  §0.b). The architecture already specifies this and the state layer is
+  already built — it was never connected.**
+
+  Already present:
+  * `Trade` carries `protective_order_id`,
+    `protective_order_stop_price`, `protective_order_status` and
+    `protective_order_lineage` (`src/trade/models.py:110-113`).
+  * `Trade.update_protective_order()` exists, validates the stop price,
+    and appends the replaced id to the lineage so a
+    cancel-and-replace chain is auditable (`models.py:443`).
+  * `SqliteTradeRepository` persists all four fields and enforces
+    uniqueness of the active protective order id, reading the previous
+    id inside the same transaction (`sqlite_repository.py:69-138`).
+  * `docs/architecture/state-management.md` §"Protective order state"
+    describes it as "the current authoritative sell **stop**" — a
+    broker-side stop was the intent from the start (D-0018).
+
+  Never used: `update_protective_order` is called by **no production
+  code path**. The floor is evaluated only by the engine's own polling
+  loop.
+
+  The one genuine gap: `BrokerClient.submit_order()` takes only
+  `limit_price` (`src/execution/broker_client.py:71-78`) — there is no
+  stop price, no order type and no time-in-force, so no stop order can
+  be placed today.
+
+- **The decision that matters most, and it is a safety one.** With a
+  resting stop at the broker AND the engine's own floor check, BOTH can
+  fire on the same position. Selling 20 shares twice does not sell 40 —
+  it sells 20 and **opens a 20-share SHORT**, which is outside the
+  approved strategy entirely. Any design here must make one of the two
+  authoritative and the other stand down, and that rule has to be
+  decided before a line is written.
+
+- **Second decision: a plain stop is forbidden by the approved
+  strategy.** A stop order becomes a MARKET order when triggered, and
+  the project's standing constraint is "no Market Orders". So it must be
+  a stop-LIMIT — which can fail to fill in a gap-down, meaning the
+  protection that was supposed to be more reliable can simply not
+  execute. That trade-off is the heart of the choice, not a detail.
+
+- **Third: the trailing floor moves (D-0008).** Every ratchet requires
+  cancelling and replacing the resting order, and every ladder fill
+  changes the share count and requires the same. The lineage field
+  already exists for exactly this.
+
+- **BROKER FACTS, verified against Alpaca's own documentation
+  (2026-10-05), not assumed:**
+  * Equities support `market`, `limit`, `stop`, `stop_limit`, trailing
+    stop, plus bracket/OCO/OTO. So a resting protective order is
+    possible.
+  * `stop_limit` takes `stop_price` (the trigger) and `limit_price` (the
+    worst acceptable fill). This is the only form compatible with the
+    project's standing "no Market Orders" constraint, because a plain
+    `stop` converts to a MARKET order when triggered.
+  * Only `gtc` persists past the current session, and **Alpaca
+    auto-cancels a GTC order at 90 days**. A resting protective order
+    therefore silently disappears after 90 days unless it is refreshed —
+    an operational requirement, not an optional nicety.
+  * **There is no "reduce only" or position-closing flag.** Nothing in
+    the broker prevents a sell order from opening a short, and the
+    documentation does not state what happens when a sell quantity
+    exceeds the held position. So the double-fire risk cannot be
+    delegated to Alpaca; the design must prevent it.
+
+- **PROPOSED SHAPE (not approved, not implemented): a disaster backstop,
+  not a replacement.**
+
+  The resting order sits at the **ORIGINAL floor** — the one frozen from
+  the initial fill at D-0009 — and the engine keeps full authority over
+  the floor and the trailing floor exactly as today.
+
+  Why this resolves the three obstacles:
+
+  1. **Double fire.** The two never compete in normal operation,
+     because the trailing floor is always at or ABOVE the original
+     floor. The engine fires first, every time, by construction. The
+     backstop can only ever fire on a day the engine did not act at all
+     — which is precisely the gap this is meant to close.
+  2. **No market orders.** `stop_limit` with the limit a defined
+     distance below the stop, mirroring the execution range already
+     approved for the engine's own floor order.
+  3. **The trailing floor moves — the backstop does not.** The original
+     floor is frozen and never changes, so no cancel-and-replace is
+     needed on a ratchet. Only a change in SHARE COUNT requires a
+     replacement, and `Trade.update_protective_order` already keeps the
+     cancel-and-replace lineage for exactly that.
+
+  Residual risk to design against, stated plainly: after the engine's
+  own exit the backstop must be cancelled, and if that cancellation
+  fails there is a live stop against a position of zero. D-0073's
+  10-minute drift check already reports a share-count mismatch, which
+  would surface it, but the design needs an explicit
+  cancel-and-verify on exit and a sweep at startup.
+
+- **VERIFICATION RESULT (2026-10-05, run on the live paper account):**
+
+```
+shorting_enabled       True
+multiplier             4
+account_blocked        False
+trading_blocked        False
+```
+
+  **The worst case does NOT drop — it is confirmed live.** Shorting is
+  enabled and the account carries a 4× margin multiplier, so a stray
+  sell against a zero position is **accepted and opens a short**, not
+  rejected. Combined with the absence of any reduce-only flag, this
+  makes cancellation reliability a first-class safety requirement of the
+  design rather than a detail, and it rules out any variant that relies
+  on the broker refusing an over-sell.
+
+- **ORIGINAL VERIFICATION NOTE:** read `shorting_enabled` on
+  `/v2/account`. If shorting is disabled on the paper account, a stray
+  sell is rejected rather than opening a short, and the worst case of
+  the whole design drops by an order of magnitude. If it is enabled,
+  cancellation reliability becomes a first-class safety requirement.
+
 - **Not implemented, not designed in detail. Parked for discussion.**
 
 ### Checked and NOT a bug
@@ -1697,3 +1837,236 @@ notifications sent          : NONE
   empty moment is a strategy change nobody chose. (c) is the cheap
   stopgap if (b) is too large for now; (a) is defensible but silently
   loses a ladder the strategy counts on.
+
+
+### P-051 — With `--no-db-push`, the VM's trading state has no backup
+- **Status:** OPEN, raised by Claude 2026-10-05 while explaining the
+  `[db] git push DISABLED` startup line to the Controller.
+- **FACT, verified in `scripts/run_paper_session.py:384-392, 522-527`:**
+  `--no-db-push` disables ONLY the per-tick git commit+push of
+  `paper_session.sqlite`. Local SQLite persistence is untouched — the
+  database is still written to disk continuously — and no
+  `db_persist_failed` notification can be emitted because the callback
+  that would raise it is not installed. The startup line is INFO, not a
+  failure.
+- **Why the flag is right for the VM:** the push existed because the
+  engine used to run in a cloud container that gets reclaimed on
+  inactivity, where GitHub was the only durable store. On a VM with a
+  persistent disk that is unnecessary, and it was also what produced
+  roughly 780 commits per trading day.
+- **The gap it leaves:** `paper_session.sqlite` on the VM now has **no
+  external copy at all**. Alpaca still holds the positions, but it does
+  not hold what this system actually reasons with: the frozen initial
+  entry price (D-0009), the ladder flags, the trailing-floor state, the
+  proposal history. Losing the VM's disk means the engine cannot
+  reconstruct any of that, and every open position loses its ladder and
+  floor references even though the shares still exist at the broker.
+- **CONTROLLER HISTORY (2026-10-05), which rules out the obvious
+  answer:** he previously tried to have the VM push the database to
+  GitHub and it failed — the VM had no GitHub username or push
+  permission — and *"that was pause the entire project."* So **any
+  recommendation that depends on the VM authenticating to GitHub is not
+  acceptable**, and a git-based daily commit is off the table unless he
+  separately decides to set up a deploy key or token.
+
+- **RECOMMENDATION, in two steps, the first needing no credentials at
+  all:**
+
+  **Step 1 — a local rotated copy after the close.** A nightly
+  `sqlite3 ... ".backup"` of `paper_session.sqlite` into a `backups/`
+  directory, keeping the last N days. Zero credentials, zero network,
+  runs as a user timer beside the two that already exist.
+  **Be honest about what this does and does not do:** it protects
+  against a corrupt write, a bad migration, or an accidental deletion —
+  the likely failures. It does **not** protect against losing the VM's
+  disk, because the copy is on that same disk.
+
+  **Step 2 — off-machine, only if the Controller wants it.** That
+  requires some credential. GitHub needs a deploy key or token, which is
+  what failed before. The alternative worth looking at first is Oracle
+  Object Storage, because the VM is already an OCI instance and can
+  authenticate with an instance principal — **no password, no key to
+  leak, nothing to rotate**. That is a separate decision with its own
+  setup, not a prerequisite for step 1.
+
+- **Why step 1 is worth doing on its own:** the realistic failure here
+  is not the datacentre losing a disk; it is a bad write or a mistaken
+  command destroying `paper_session.sqlite` while the engine is running.
+  A nightly local copy covers that for the cost of one timer.
+
+### P-052 — Daily DB backup to GitHub with a Telegram confirmation (Controller request, 2026-10-05)
+- **Status:** OPEN — research done, design proposed, **blocked on one
+  credential question**. No code written.
+- **Controller's request, verbatim:** retry the GitHub push, but once
+  after the market close, and send a short Telegram message — "database
+  updated for today" on success, a failure message on failure.
+
+#### CODE SEARCH FIRST (CLAUDE.md §0.b). Most of this already exists.
+
+`scripts/run_paper_session.py:76` — `_make_db_persister()` already does
+exactly the git work required, and was Controller-approved on
+2026-10-01:
+
+- commits **only** `paper_session.sqlite` — `git commit --only <file>`
+  — so nothing else that happens to be dirty is ever carried along;
+- **no-ops** when `git diff --quiet` says the DB is unchanged, so a
+  quiet day produces no commit at all;
+- **raises** on any git failure rather than swallowing it;
+- `src/engine/engine.py:956` — `_persist_db_best_effort()` catches that
+  and emits a **CRITICAL `db_persist_failed`** notification naming the
+  exception, then lets the loop continue.
+
+So the failure half of the Controller's request is **already built and
+already wired to Telegram**.
+
+#### What is genuinely missing
+
+1. **No success message.** `db_persist_failed` exists; there is no
+   counterpart for a successful push. Searched: `db_persist` appears in
+   exactly six places, all failure-side.
+2. **Cadence.** The persister is invoked at the end of every
+   reconciliation tick. That is what produced ~780 commits a trading day
+   and is why `--no-db-push` exists.
+3. **Credentials.** The VM has no GitHub identity. The Controller
+   reported that a previous attempt failed for exactly this reason and
+   *"that was pause the entire project"* — so this is the real blocker,
+   not the code.
+
+#### RECOMMENDED SHAPE: a separate daily job, not engine logic
+
+A `deploy/db-backup.sh` plus `db-backup.timer`, alongside the two units
+that already exist, running after the close. The engine **keeps**
+`--no-db-push`.
+
+Four reasons this is better than putting it back in the engine:
+
+- A backup is not trading logic. A failure in it must never be able to
+  touch a tick that is also evaluating protective exits.
+- It runs when the market is closed, so it can never compete with a
+  trading tick for the SQLite write lock.
+- Keeping `--no-db-push` on the engine makes a regression to 780
+  commits/day structurally impossible.
+- It mirrors `universe-refresh`, which the Controller already operates
+  and understands.
+
+Both Telegram messages come from the same script, which already has
+`TelegramNotificationService.from_env()` available:
+IMPORTANT on success, CRITICAL on failure naming the git error.
+
+#### THE OPEN QUESTION — how the VM authenticates
+
+Two credential-free-at-runtime options:
+
+1. **Deploy key (SSH), scoped to this one repository, write access.**
+   The VM holds a private key file outside the repo; GitHub holds the
+   public half. **No username, no token expiry, nothing to rotate on a
+   schedule**, and if the VM were compromised the blast radius is this
+   one repository.
+2. **Fine-grained personal access token** in a git credential store.
+   Works, but expires and must be re-issued, and a token is broader than
+   a deploy key unless carefully scoped.
+
+**RECOMMENDATION: the deploy key.** It is the only one that does not
+create a recurring expiry task, and it is the narrowest grant that does
+the job. Per the safety guardrails the key is never committed, never
+logged, and never pasted into a chat.
+
+**Before anything is built, the current state must be read** — the
+remote URL (HTTPS or SSH), whether any credential helper is configured,
+and whether a push is refused for authentication or for some other
+reason. Guessing which of those is true would repeat the mistake that
+paused the project last time.
+
+### P-053 — Confidence-scaled Top-N (the Controller's idea, 2026-10-05)
+- **Status:** DESIGN PROPOSED, **not implemented**. Changes how many
+  positions are opened, so it is trading behavior and waits for explicit
+  approval. Supersedes the "revisit later" recommendation in P-040.
+- **The Controller's idea, in his words:** *"we have 40 students and the
+  entire school has 1,000 students, so why don't we calculate that
+  percently … if we have 40 students, we should filter our ranking and
+  execute four only."* Round **down**, confirmed by the Controller.
+
+#### Why this is better than what Claude proposed in P-040
+
+Claude's P-040 recommendation was to raise the hard threshold later,
+from measurements. That only moves a cliff. The Controller's idea makes
+the **size of the position set a function of how much of the market was
+actually seen**, which is the thing P-040 could not fix.
+
+Run on the real numbers, with the live `top_n = 10` and a full market of
+~11,683:
+
+| symbols fetched | hard guard (D-0068) | **with scaling** | what it means |
+|---|---|---|---|
+| 40 | **refuses** | refuses | the 2026-10-05 incident |
+| 500 | passes | **0** | below the floor of usefulness |
+| 1,000 | passes, takes 10 | **0** | 8.5% of the market seen |
+| 5,000 | passes, takes 10 | **4** | half-blind, so half-sized |
+| 9,000 | passes, takes 10 | **7** | |
+| 11,683 | passes, takes 10 | **10** | unchanged |
+
+The **5,000 row is the whole point**: today that day opens ten positions
+with full confidence on half-blind data. Under this rule it opens four.
+
+Arithmetic note worth recording: applying the Controller's proportion to
+the 40-symbol incident gives `10 × 40/11683 = 0.034`, which floors to
+**zero**. His idea and the existing hard guard **agree** on the
+catastrophic case; they do not compete.
+
+#### The honest limit
+
+Reducing the COUNT does not improve the QUALITY of the picks. Every
+stage in D-0048 is percentile-based — "top 30% by volume" and so on —
+and a percentile of 5,000 symbols is a reasonable estimate of the
+market, while a percentile of 40 is noise. Taking 4 of 40 gives four
+less-bad picks, not four good ones.
+
+**That is exactly why both mechanisms are kept.** The hard guard refuses
+what no proportion can repair; the scaling handles the grey zone the
+guard was never able to judge.
+
+#### Design
+
+```
+effective_top_n = floor(top_n × fetched / baseline)
+```
+
+clamped to `[0, top_n]`, applied as a pure truncation of the already
+ranked survivors — it never changes WHICH symbols rank, only how many of
+the top are published.
+
+**`baseline` must be measured, not invented.** Using a hardcoded 11,683
+would repeat the mistake D-0065 corrected, and the tradable universe
+drifts as listings change. Since D-0068 every snapshot records
+`raw_candidates_fetched`, so:
+
+- `baseline` = the **median** of `raw_candidates_fetched` over the last
+  N completed snapshots (N ≈ 20, about a month of trading days);
+- median, not mean, so one truncated run cannot drag it down;
+- **bootstrap:** until N snapshots exist, use the **maximum**
+  `raw_candidates_fetched` seen so far, which after the first healthy
+  run is the real market size.
+
+#### The case that needs a decision
+
+When `fetched` is above the hard guard but the formula yields **0** — as
+at 1,000 symbols above — the snapshot would be empty. It must be marked
+empty **with a reason naming the scaling**, so the Controller's
+once-a-day `nothing_to_trade_today` message says *why* rather than
+leaving a silent blank day. Anything less reproduces the exact failure
+shape of 2026-10-05.
+
+#### Scope boundary
+
+This governs the universe snapshot's Top-N only. It does **not** touch
+the evaluator's Top-3-per-cycle, the D-0047 portfolio limits, or D-0051
+sizing. Each position is still sized identically; there are simply
+fewer of them, so less capital is deployed on a day we saw less of the
+market — the conservative direction.
+
+#### Still to decide (Controller)
+
+1. `N` for the trailing median — 20 proposed.
+2. Whether a computed 0 above the hard guard should be an explained
+   empty snapshot (proposed) or should instead raise the hard guard's
+   refusal.
