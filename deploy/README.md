@@ -165,6 +165,22 @@ the supervisor.
 
 ---
 
+## The setting that silently breaks this unit
+
+`TimeoutStartSec=4h` on `universe-refresh.service` is not optional.
+
+For `Type=oneshot`, `TimeoutStartSec` bounds the WHOLE run and defaults
+to `DefaultTimeoutStartSec` = **90 seconds**. The full run enriches
+11,683 symbols at one bars request each — roughly **58 minutes**.
+
+The default killed the first real run: the timer fired at 14:19 on
+2026-10-05, systemd killed it 90 seconds later, and the only evidence
+was `Active: inactive (dead)` with no snapshot and no error. Running the
+same script by hand succeeded at once, which is what proved the code was
+fine and the unit was not.
+
+---
+
 ## Timer fallback for older systemd
 
 `OnCalendar` accepted a timezone from systemd v240. Check with
