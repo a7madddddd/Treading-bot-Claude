@@ -4215,3 +4215,89 @@ reasonably have been "the file is not executable" — it was
 `systemctl --user status` showing `active (running)`, plus a fresh
 heartbeat in `engine_lock.sqlite`. An empty journal is not evidence
 either way until the unit reports running.
+
+---
+
+## D-0064 — P-025 measurement tool (read-only)
+
+**Date:** 2026-10-05
+**Decided by:** Controller (approved building it)
+**Status:** IMPLEMENTED — the DECISION it serves is still open
+
+### What it is
+
+`scripts/measure_atr_distribution.py`. It fetches daily bars and prints
+tables. It never opens `paper_session.sqlite`, never writes a snapshot,
+never sends Telegram, never touches the engine or any parameter. Safe to
+run while the engine is live.
+
+### Why a tool instead of a judgement
+
+P-025 is a HYPOTHESIS about pace, not an observed loss. Unlike P-021
+(where DXD was a demonstrable money-losing path and was fixed within the
+hour), narrowing the ATR band has an unknown cost: it could improve
+quality and starve the pool at the same time. The live 2026-10-03
+snapshot had ten survivors out of 77 candidates, so the pool is already
+tight.
+
+The tool exists to answer the one question that decides it: **if we
+narrow the band, how many candidates are left?**
+
+### Faithfulness
+
+It reuses the PRODUCTION objects — `AlpacaAssetsProvider` (including
+D-0056's leveraged/inverse exclusion) and `AlpacaFeatureEnricher` — and
+computes the ATR fraction exactly as Stage D does:
+`features.atr_measure / bar.close`. No parallel implementation. A number
+it prints is a number the pipeline would see.
+
+### First real run — 12 hand-picked liquid symbols
+
+| band | count | share | meaning |
+|---|---|---|---|
+| 0–1% | 1 | 8.3% | below band, rejected |
+| 1–2% | 6 | **50.0%** | slow — ladder rarely fires |
+| 2–3% | 4 | 33.3% | middle |
+| 3–4% | 1 | 8.3% | middle |
+| 4–5% | 0 | 0.0% | fast |
+| >5% | 0 | 0.0% | above band, rejected |
+
+Narrowing cost on this sample: 1%–5% keeps 11 of 12; 2%–4% keeps 5;
+2.5%–3.5% keeps 1.
+
+Pace at the observed extremes:
+
+| symbol | ATR | days to −5% | to −8% | to −10% |
+|---|---|---|---|---|
+| WBD | 1.12% | 4.5 | 7.2 | 9.0 |
+| KO | 1.22% | 4.1 | 6.5 | 8.2 |
+| QQQ | 1.24% | 4.0 | 6.4 | 8.0 |
+| NVDA | 2.11% | 2.4 | 3.8 | 4.7 |
+| MSFT | 2.26% | 2.2 | 3.5 | 4.4 |
+| TSLA | 3.06% | 1.6 | 2.6 | 3.3 |
+
+### What this already suggests — and a correction to Claude's own framing
+
+The tree Claude drew for the Controller weighted both branches equally
+and used ATR 5% for the fast branch. In this sample **nothing reached
+4%**, and the fastest real symbol (TSLA, 3.06%) still takes 3.3 average
+adverse days to the Floor, not 2.
+
+Meanwhile **half the sample sits in the 1–2% slow bucket**, where −5% is
+four to five average adverse days away and the ladder would rarely fire
+at all.
+
+So the emphasis was probably wrong: the fast branch may be largely
+theoretical for liquid names, while the slow branch — strategy quietly
+degrading into a single buy with three quarters of the trade budget idle
+— looks like the COMMON case.
+
+**This is a 12-symbol sample that Claude hand-picked, which is exactly
+the methodological error P-004 records against the earlier ranker
+backtests.** It is a smoke test proving the tool works, NOT evidence
+about the universe. The real run must be whole-market, on the VM.
+
+### Next
+
+Controller runs it whole-market, then decides the band. Nothing changes
+until then.
