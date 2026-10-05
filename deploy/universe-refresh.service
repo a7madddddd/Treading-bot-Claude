@@ -20,4 +20,10 @@ Type=oneshot
 WorkingDirectory=%h/Treading-bot-Claude
 ExecStart=%h/Treading-bot-Claude/deploy/universe-refresh.sh
 
-# Journal, not a file: journalctl --user -u universe-refresh --since today
+# File, not the journal -- /var/log/journal does not exist on this VM
+# and Storage=auto makes the journal volatile, so journalctl --user
+# reports "No journal files were found". Safe here because a USER unit
+# runs as unconfined_t; see trading-engine.service.
+#   tail -40 ~/Treading-bot-Claude/logs/universe.log
+StandardOutput=append:%h/Treading-bot-Claude/logs/universe.log
+StandardError=append:%h/Treading-bot-Claude/logs/universe.log

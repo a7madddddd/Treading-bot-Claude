@@ -16,10 +16,17 @@
 
 set -euo pipefail
 
+# Python buffers stdout when it is redirected to a FILE. Without this,
+# a healthy process can leave an empty-looking log for minutes -- which
+# already misled us once with a hand-started engine whose /tmp log sat
+# at 22 bytes while it was running fine.
+export PYTHONUNBUFFERED=1
+
 REPO_DIR="${REPO_DIR:-/home/opc/Treading-bot-Claude}"
 PYTHON_BIN="${PYTHON_BIN:-python3.11}"
 
 cd "$REPO_DIR"
+mkdir -p logs
 
 if [[ ! -f .env ]]; then
     echo "[engine-run] FATAL: $REPO_DIR/.env not found" >&2
