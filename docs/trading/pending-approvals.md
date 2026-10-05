@@ -203,9 +203,13 @@ the transition period is over.
 
 ## 🟡 OPEN — smaller, still real
 
-### P-018 — No US market holiday calendar (D-0006)
-- **Status:** OPEN. Matters only because the system is meant to run
-  unattended.
+### P-018 — No US market holiday calendar — RESOLVED (D-0060, 2026-10-05)
+- **Status:** SOLVED, and not with a calendar. The engine now asks the
+  BROKER per tick (`is_market_open()` reading `/v2/clock`) before
+  creating any new proposal, failing closed on error. That handles
+  holidays, half-days and unscheduled closures alike and needs no
+  yearly maintenance. 8 tests. See D-0060.
+- The original finding is kept below for history.
 - **FACT:** `src/engine/schedule.py:60` states it in its own docstring —
   `is_d0021_check_time` "does NOT account for US market holidays
   (D-0006) -- a known, explicitly-flagged gap". `src/scheduler/daemon.py:21`
@@ -293,8 +297,10 @@ the transition period is over.
   decided, because a calibrated Stage F is exactly what unlocks a
   populated `score_summary`.
 
-### P-011 — Live DB is one schema version behind the code
-- **Status:** OPEN, verified safe, no decision needed.
+### P-011 — DB schema version — RESOLVED (2026-10-05, by VM evidence)
+- **Status:** CLOSED. The VM reported `schema version: 7`, so migration
+  0007 had already applied there. The repo copy was the stale one.
+- The original finding is kept below for history.
 - **FACT:** the repo's `paper_session.sqlite` is at
   `PRAGMA user_version = 6`; `APPROVED_SCHEMA_VERSION` is 7.
 - **FACT, proven by dry run on a copy of the real DB:** after
@@ -477,8 +483,11 @@ Two further structural problems, independent of direction:
   later with a measured reason, because every component of the research
   layer except price and volume is undefined for a fund.
 
-### P-022 — The VM is running code older than the branch head
-- **Status:** OPEN. Time-critical: it matters before Monday's open.
+### P-022 — VM behind the branch head — RESOLVED (2026-10-05)
+- **Status:** CLOSED. The Controller pulled and restarted; the VM ran
+  the full suite itself (1473 passed, 45 subtests) and now runs under
+  systemd user units.
+- The original finding is kept below for history.
 - **FACT:** the VM reports `327145b`. The branch head is `07e8e23`.
   The VM therefore does NOT have D-0054 (fallback removal) or D-0055
   (startup-message fix).
