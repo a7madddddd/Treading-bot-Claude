@@ -437,8 +437,16 @@ Two further structural problems, independent of direction:
   text from `/v2/assets` (`2X`, `3X`, `ULTRA`, `ULTRASHORT`,
   `INVERSE`, `BEAR`, `SHORT`), combined with an explicit decision on
   whether ordinary ETFs are eligible at all.
-- **CONTROLLER DECISION, genuinely new:** should the Universe trade
-  ETFs at all? The approved strategy's research layer scores
+- **CONTROLLER DECISION, 2026-10-05 — PARTIALLY DECIDED:** the
+  Controller approved excluding leveraged and inverse products NOW
+  ("we need to exclude the DXD from our universe search because this
+  will kill the strategy"), and deferred the broader
+  "should we trade ordinary ETFs at all" question to a separate study
+  ("we didn't want to kill the strategy before we study that thing").
+  So the interim rule is option 3 below — everything except leveraged
+  and inverse — and option 1 versus option 2 becomes P-024.
+- **Original framing of the deferred question:** should the Universe
+  trade ETFs at all? The approved strategy's research layer scores
   fundamentals (P/E, earnings) — fields that do not exist for a fund.
   An ETF therefore scores on a research model built for companies.
   Three options:
@@ -513,3 +521,25 @@ Two further structural problems, independent of direction:
   repo copy is no longer evidence about production.
 - **Lesson recorded:** the repo's `paper_session.sqlite` must not be
   treated as production state while the VM runs with `--no-db-push`.
+
+
+### P-024 — Should the Universe trade ordinary ETFs at all? (deferred study)
+- **Status:** OPEN, deliberately deferred by the Controller on
+  2026-10-05 pending study. P-021's leveraged/inverse exclusion is NOT
+  waiting on this — it proceeds now.
+- **The question:** `MAGS`, `QQQI`, `ILF`, `CGGR`, `BCI` are ordinary
+  (non-leveraged, non-inverse) funds that the live pipeline selected.
+  They are not dangerous the way `DXD` is. But the research layer
+  scores `fundamentals` out of 16 points from P/E and earnings, fields
+  that do not exist for a fund, so every fund is scored by a model
+  built for operating companies and silently loses those points.
+- **What must be studied before deciding:**
+  1. How many points does a fund structurally forfeit in the current
+     scoring, and does that already exclude them in practice?
+  2. Do funds mean-revert on the 5–10% scale the ladder needs, or do
+     they trend more smoothly than single stocks (which would mean the
+     ladder rarely adds and the strategy degrades to a plain buy)?
+  3. Is a fund's lower volatility an advantage (fewer floor hits) or a
+     disadvantage (ladder never triggers)?
+- **Decision needed later:** equities only, or equities plus plain
+  index funds with a fund-aware scoring path.
