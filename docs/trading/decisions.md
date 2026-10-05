@@ -3041,3 +3041,85 @@ either (a) replace `self._sizing_policy = APPROVED_D0051_POLICY` with a
 cleanly (b) revert this commit; the migration 0007 column stays and is
 harmless (new proposals simply store a quantity-aligned value again).
 Both routes require a new Controller decision superseding D-0051.
+
+---
+
+## D-0052 — Mandatory change-tracking: every change updates the written record in the same session
+
+**Date:** 2026-10-05
+**Decided by:** Controller
+**Status:** APPROVED
+**Supersedes:** nothing. Extends CLAUDE.md §0 and §9 with an explicit
+record-keeping obligation.
+
+### Context
+
+Across 2026-09-29 to 2026-10-04, work repeatedly moved faster than the
+written record. Concrete cost, measured:
+
+- The four engine-heartbeat Routines were disabled on 2026-10-02 at
+  14:46 UTC. No decision entry and no `pending-approvals.md` row
+  recorded that. As a result, the system looked "24/7-protected" in the
+  docs while in reality nothing was watching the engine, and the
+  2026-10-04 engine stop went unnoticed until the Controller saw the
+  absence of Telegram messages.
+- `routines/README.md` still documents four live legacy Routines
+  (`trig_01NeX4pSm5jEHPXBJzCaNWkW`, `trig_01581wxFHJzBnuLXJUUuQtDS`,
+  `trig_01TxPK91QKfqtsHVgexhTxVB`, `trig_01UzNbZZgcGj8Jkj9SZHJwJR`).
+  A live account listing on 2026-10-05 returns none of them — they no
+  longer exist. The repo described a state that was four days stale.
+- `--max-hours 24` was presented to the Controller as "24/7". Nothing
+  in the record said what the flag actually does, so the contradiction
+  was not catchable from the docs.
+
+### Decision
+
+Every create / update / fix / delete / enable / disable in this project
+updates the written record **in the same working session as the
+change**. Three files carry the record:
+
+1. `docs/trading/decisions.md` — append a new `D-NNNN` for anything
+   touching trading behavior, execution, risk, DB schema, architecture,
+   or an approved contract. Append-only; supersede, never rewrite.
+2. `CLAUDE.md` — update when a rule about how Claude works changes.
+3. `docs/trading/pending-approvals.md` — the live "where did we stop"
+   board; one `P-NNN` row per open item, marked RESOLVED with date and
+   cause when it closes, never deleted.
+
+Each update states WHAT changed (file paths + concrete behavior), WHY
+(with a number or example), STATUS (done / partial / blocked and on
+what), TESTS (what ran, what result), and NEXT (the single next step).
+
+A commit that changes code and leaves these three files stale is an
+incomplete commit.
+
+### Rationale
+
+The Controller's stated requirement is that at any moment the repo
+alone answers "where did we stop, what is broken, what is next" —
+without reconstructing it from chat history, which does not survive
+context compaction. Operational state that lives only in a session
+transcript is operationally invisible: the disabled-heartbeat case
+above is exactly that failure, and it cost a full trading day of engine
+downtime.
+
+### Implementation
+
+- `CLAUDE.md` §12 — the rule, in full, including the §0.a addition that
+  a session must also read the last `decisions.md` entry at start.
+- `docs/trading/pending-approvals.md` — rewritten 2026-10-05 against a
+  live audit of the account Routines, the git branch, the SQLite state,
+  and the full test suite, so the board reflects measured state and not
+  remembered state.
+
+### Tests
+
+Process decision; no production code path changed. Full suite re-run on
+2026-10-05 as the audit baseline: **1402 passed, 8 subtests passed**.
+(The D-0051 entry's "1411/1411" counted passed tests plus subtests
+under a different pytest invocation; the collected-test count is 1402.)
+
+### Next
+
+Close the open `P-NNN` items on the refreshed board, in the order the
+Controller chooses.

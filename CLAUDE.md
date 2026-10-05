@@ -400,3 +400,51 @@ meaning in Arabic, explain the important parts, state what changed
 and what is genuinely still open, give a recommendation with reasons,
 and surface only the decisions the Controller actually needs to make
 — never paste the raw report and leave the Controller to parse it.
+
+---
+
+## 12. Change-tracking requirement (MANDATORY, added 2026-10-05)
+
+**Controller instruction, 2026-10-05:** every time anything is created,
+updated, fixed, deleted, enabled, or disabled in this project, the
+written record MUST be updated in the SAME working session as the
+change — never "later", never "at the end of the day". The purpose is
+that at any moment the Controller can open the repo and know exactly
+where we stopped, what is done, what is broken, and what is next.
+
+### The three files that must stay current
+
+1. **`docs/trading/decisions.md`** — append a new `D-NNNN` entry for
+   anything that changes trading behavior, execution, risk, schema,
+   architecture, or an approved contract. Append-only: never rewrite or
+   delete an earlier entry; supersede it with a new numbered entry that
+   names the one it replaces.
+2. **`CLAUDE.md`** (this file) — update when a *rule about how Claude
+   works* changes: a new mandatory behavior, a new session-start step,
+   a new process requirement, a new prohibition.
+3. **`docs/trading/pending-approvals.md`** — the live "where did we
+   stop" board. Every open item gets a `P-NNN` row with its status.
+   When an item closes, mark it RESOLVED with the date and the
+   decision/commit that closed it; do not delete the row.
+
+### Minimum content of an update
+
+- WHAT changed (file paths and the concrete behavior).
+- WHY (the problem it solves, with a number or a concrete example).
+- STATUS: done / partially done / blocked, and if blocked, on what.
+- TESTS: what was run and the result.
+- NEXT: the single next step, so a fresh session can resume with no
+  guessing.
+
+### Ordering rule
+
+A commit that changes code but leaves these files stale is an
+incomplete commit. Code and record go in the same commit wherever
+possible; when the record is written as a separate commit, it is
+pushed in the same session, never deferred to the next one.
+
+### Session-start addition to §0
+
+As part of §0.a, after reading `pending-approvals.md`, also read the
+last entry of `decisions.md` so the session knows the true last state
+of the system before saying anything to the Controller.
