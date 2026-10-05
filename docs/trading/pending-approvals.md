@@ -1565,3 +1565,61 @@ notifications sent          : NONE
   derives the target `total_shares` from the execution's own immutable
   fields rather than subtracting from current state, so re-applying is
   idempotent by construction.
+
+### P-047 — Option 3 for P-044 has an idempotency trap (found BEFORE coding)
+- **Status:** OPEN — design constraint for the Controller-approved
+  option 3, recorded before any code was written.
+- **FACT:** `ExecutionService.recover_if_terminal` re-calls
+  `_apply_to_trade_if_terminal` on every engine startup recovery, and
+  its docstring states exactly why that is safe today:
+
+  > "Trade's own fields already are that flag … `ladder1_filled` /
+  > `ladder2_filled` checks, plus `Trade.record_ladder_fill()`'s own
+  > refusal to fill twice"
+
+- **Why option 3 breaks it:** option 3 deliberately records the shares
+  WITHOUT setting `ladder1_filled`, so that the trading decision stays
+  with the Controller. That removes the only thing preventing a second
+  application. A naive `total_shares + filled_qty` would **add the same
+  partial fill again on every restart** — 20 → 22 → 24 → 26. That is a
+  worse bug than the one being fixed, and it would be silent.
+- **The pattern the codebase already uses for this.**
+  `_apply_protective_exit` solves the identical problem without any new
+  flag, and says so: it computes the TARGET `total_shares` from the
+  execution's own immutable fields "never by subtracting
+  `execution.filled_qty` from whatever `total_shares` happens to be
+  right now".
+- **RECOMMENDATION:** option 3 must compute an ABSOLUTE target, never an
+  increment: derive `total_shares` and the weighted average from the
+  full set of TERMINAL BUY executions for the trade (the ledger, all
+  immutable) minus what the protective exit sold. Re-running then
+  converges on the same number however many times it runs, with no new
+  persistence — the same guarantee the sell side already has.
+- **Not implemented yet.** Writing the increment version would have been
+  quick and wrong; this is the one place where being fast is the bug.
+
+### P-048 — Option C of P-045 (freeze on divergence) has no decision channel
+- **Status:** OPEN — answers the Controller's question of 2026-10-05:
+  "if I choose option C … how I can decide and what's the channel I will
+  decide using it".
+- **FACT:** every Controller decision in this system is
+  `(kind, proposal_id)`. `DecisionKind` has exactly three members —
+  `APPROVE`, `REJECT`, `CONFIRM_LADDER2_PARTIAL_FILL`
+  (`src/engine/decision_source.py:35`) — and
+  `_parse_callback_data` (`src/notifications/telegram_decision.py:424`)
+  returns `Optional[Tuple[DecisionKind, str]]`, where the string is a
+  proposal id. A callback without a proposal id is dropped.
+- **Consequence:** a freeze is not about any proposal, so **today there
+  is no way to lift one**. Choosing option C as it stands would mean
+  trading stops and the only exits are restarting the engine or editing
+  the database by hand.
+- **What option C actually requires, therefore:** a new decision kind
+  that is trade- or account-scoped rather than proposal-scoped, a
+  callback payload that carries no proposal id, a persisted freeze flag
+  that survives a restart (an in-memory one would silently unfreeze on
+  the next restart — the worst possible behavior), and a notification
+  carrying the unfreeze button.
+- **RECOMMENDATION:** take option A (detect and report) now, and treat
+  option C as a separate, properly-scoped change afterwards. A freeze
+  whose release mechanism does not exist is more dangerous than the
+  divergence it guards against.
