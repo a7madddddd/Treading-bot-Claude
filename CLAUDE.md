@@ -489,10 +489,21 @@ It does NOT apply to:
   must stay current per §12,
 - anything the Controller explicitly asked to be pushed.
 
-**Local commits are fine and are not a push.** The repository is what
-the Controller's VM pulls from; a commit that never reaches `origin`
-never reaches him. Claude may commit locally to protect work from a
-container reclaim, and must say plainly that it is local-only.
+**Never commit an experiment to the working branch — not even
+locally.** The first version of this rule said a local commit "is not a
+push", which is true in isolation and WRONG in practice. Claude proved
+it within minutes on 2026-10-05: it committed an experimental tool
+locally, then committed an unrelated docs change on top, then pushed —
+and `git push` sends the branch's whole history, so the experiment went
+with it. The Controller got exactly the thing he had asked be kept out.
+
+So an experiment stays EITHER:
+- uncommitted in the working tree, or
+- on a separate throwaway branch that is never pushed.
+
+A commit on the working branch is a push waiting to happen, because the
+next legitimate push will carry it. Treat "I will just commit it
+locally" as the trap it is.
 
 **What matters is the finding, not the tool.** When an experiment
 answers its question, the ANSWER belongs in the docs even if the code
