@@ -29,6 +29,7 @@ import argparse
 import os
 import sys
 from datetime import date, datetime, timezone
+from typing import NamedTuple
 
 
 _here = os.path.abspath(os.path.dirname(__file__))
@@ -36,6 +37,46 @@ _repo_root = os.path.abspath(os.path.join(_here, ".."))
 _src = os.path.join(_repo_root, "src")
 if _src not in sys.path:
     sys.path.insert(0, _src)
+
+
+class RunPlan(NamedTuple):
+    """P-036 + P-037 (2026-10-05). The two decisions a run must make
+    BEFORE it touches the broker: may it publish, and what pool size
+    will it insist on. Pure and importable so the wiring is tested
+    directly rather than inferred from a successful live run."""
+
+    persist: bool
+    min_raw_candidates: int
+    reason: str
+
+
+def plan_run(*, max_symbols: int, allow_test_snapshot: bool,
+             whitelist: tuple, min_candidates: int) -> RunPlan:
+    """Decide persistence and the P-036 threshold.
+
+    Capped runs (`--max-symbols`) are experiments: they execute and
+    print in full, but publish nothing unless explicitly allowed. That
+    is the 2026-10-05 failure made impossible -- a 40-candidate
+    experiment became the day's trading universe.
+
+    The P-036 threshold is suppressed whenever the small pool is
+    deliberate (a whitelist, or a cap), because there it is a stated
+    intent rather than a broken fetch, and P-037 has already made a
+    capped run harmless.
+    """
+    capped = bool(max_symbols and max_symbols > 0)
+    if capped and not allow_test_snapshot:
+        return RunPlan(False, 0,
+                       f"capped run (--max-symbols {max_symbols}): "
+                       f"printed, NOT saved")
+    if capped:
+        return RunPlan(True, 0,
+                       "capped run published by --allow-test-snapshot")
+    if whitelist:
+        return RunPlan(True, 0, "whitelist run: pool guard not applicable")
+    return RunPlan(True, max(0, min_candidates),
+                   f"full run: refusing below {max(0, min_candidates)} "
+                   f"raw candidates")
 
 
 def _require_env(name: str) -> str:
@@ -160,6 +201,23 @@ def main() -> int:
                         "trades are NOT excluded -- Controller-approved "
                         "2026-10-01: a symbol rejected on an earlier day may "
                         "be re-proposed if it ranks today.")
+    p.add_argument("--min-candidates", type=int, default=500,
+                   help="P-036 guard: refuse to publish anything if the "
+                        "provider returns fewer than this many raw "
+                        "candidates. A real whole-market fetch returns "
+                        "~11,700, so anything in the hundreds means the "
+                        "run never saw the market and its percentile "
+                        "stages ranked the wrong population. Ignored in "
+                        "--whitelist mode, where a small pool is the "
+                        "point. 0 disables the guard entirely.")
+    p.add_argument("--allow-test-snapshot", action="store_true",
+                   help="P-037: permit a capped (--max-symbols) run to "
+                        "WRITE its snapshot. Without this a capped run "
+                        "still executes and prints everything, but "
+                        "persists nothing -- so an interactive "
+                        "experiment can never become the day's trading "
+                        "universe, which is what happened on "
+                        "2026-10-05.")
     p.add_argument("--force", action="store_true",
                    help="Run even while the market is open. Default is to "
                         "REFUSE, because this job issues ~11,683 bars "
@@ -351,7 +409,38 @@ def main() -> int:
           f"version={regime.classification_method_version} "
           f"values={dict(regime.reference_series_values)}")
 
-    repo = SqliteSnapshotRepository(conn)
+    # P-037 (2026-10-05): a capped run is an experiment, not the day's
+    # trading policy. It still runs and still prints its full result --
+    # the value of a quick run is the answer, not the row -- but it
+    # writes to an in-memory repository that is discarded when the
+    # process exits. On 2026-10-05 a 40-candidate experiment wrote the
+    # production snapshot and the engine traded a one-symbol universe
+    # for a whole session. --allow-test-snapshot is the deliberate
+    # opt-in for the rare case where a capped run SHOULD be published.
+    plan = plan_run(max_symbols=args.max_symbols,
+                    allow_test_snapshot=args.allow_test_snapshot,
+                    whitelist=whitelist,
+                    min_candidates=args.min_candidates)
+    print(f"[plan] {plan.reason}")
+    test_mode = not plan.persist
+    if test_mode:
+        from d0026.repository import InMemorySnapshotRepository
+        repo = InMemorySnapshotRepository()
+        print("[P-037] capped run (--max-symbols "
+              f"{args.max_symbols}): results will be PRINTED but NOT "
+              "saved. Pass --allow-test-snapshot to publish it.")
+    else:
+        repo = SqliteSnapshotRepository(conn)
+
+    # P-036: the guard is meaningless in whitelist mode, where a small
+    # pool is exactly what was asked for, and it must not fire on a
+    # deliberately capped run either -- --max-symbols already states
+    # the intent, and P-037 above has made that run harmless.
+    min_candidates = plan.min_raw_candidates
+    if min_candidates:
+        print(f"[P-036] guard active: refusing to publish below "
+              f"{min_candidates} raw candidates.")
+
     pipeline = UniversePipeline(
         provider=provider,
         identity_resolver=_TickerAsIdentityResolver(),
@@ -364,17 +453,29 @@ def main() -> int:
         universe_source_version="alpaca-assets-v1",
         identity_mapping_version="ticker-as-id-v1",
         feature_enricher=enricher,
+        min_raw_candidates=min_candidates,
     )
     print(f"[run] effective={effective}, "
           f"whitelist={list(whitelist) or 'ALL'}")
     outcome = pipeline.run(effective, regime)
 
     from d0026.failure import CrashOutcome, SnapshotOutcome
+    from d0026.failure import CrashCategory
     if isinstance(outcome, CrashOutcome):
         print(f"[CRASH] {outcome.category.value}: {outcome.detail}",
               file=sys.stderr)
-        _maybe_telegram(args, "CRITICAL",
-                        f"universe selection CRASH: {outcome.detail[:200]}")
+        # P-036 refusals are IMPORTANT, not CRITICAL: nothing is broken
+        # and nothing was corrupted -- a run was correctly refused. They
+        # still must reach the Controller, because the consequence is a
+        # day with no new universe.
+        level = ("IMPORTANT"
+                 if outcome.category
+                 is CrashCategory.INSUFFICIENT_CANDIDATE_POOL
+                 else "CRITICAL")
+        _maybe_telegram(args, level,
+                        f"universe selection refused/CRASH "
+                        f"({outcome.category.value}): "
+                        f"{outcome.detail[:300]}")
         return 1
 
     snap = outcome.snapshot
@@ -382,6 +483,14 @@ def main() -> int:
           f"is_empty={snap.is_empty}, symbols={len(snap.symbols)}")
     for s in snap.symbols[:10]:
         print(f"  #{s.rank} {s.ticker_as_of_date}")
+    # P-038: show how much of the market this run actually saw. Without
+    # it, a truncated run and a full run print the same shape.
+    print("[data-quality]")
+    for k, v in snap.data_quality_summary:
+        print(f"  {k:<32} {v}")
+    if test_mode:
+        print("[P-037] NOT SAVED -- capped run. The engine will not see "
+              "this.")
     _maybe_telegram(
         args, "OPTIONAL",
         (f"Universe {effective}: {len(snap.symbols)} symbols. "

@@ -1128,8 +1128,9 @@ session starts from substance instead of re-deriving it.
   the fix, and until then every such question needs a live reproduction
   rather than a log read.
 
-### P-036 — No minimum size on an approved snapshot
-- **Status:** OPEN, raised by Claude 2026-10-05 under CLAUDE.md §0.d.
+### P-036 — No minimum size on an approved snapshot — RESOLVED (D-0068, 2026-10-05)
+- **Status:** RESOLVED by D-0068, implemented and tested 2026-10-05 (1515 passed). Original entry below.
+- **Status when raised:** OPEN, raised by Claude 2026-10-05 under CLAUDE.md §0.d.
   Changes selection behavior, so NOT implemented.
 - **FACT:** today's snapshot carried `is_empty = 0` with exactly one
   symbol. The pipeline guards the zero case only; one, two or three
@@ -1143,8 +1144,9 @@ session starts from substance instead of re-deriving it.
   notification is sent, instead of being written as normal. Cheap,
   fully reversible, and it converts a silent bad day into a message.
 
-### P-037 — A test run and the production run write the same table
-- **Status:** OPEN, raised by Claude 2026-10-05. Changes selection
+### P-037 — A test run and the production run write the same table — RESOLVED (D-0068, 2026-10-05)
+- **Status:** RESOLVED by D-0068, implemented and tested 2026-10-05 (1515 passed). Original entry below.
+- **Status when raised:** OPEN, raised by Claude 2026-10-05. Changes selection
   behavior, so NOT implemented.
 - **FACT:** `scripts/run_universe_selection.py --max-symbols 40` and the
   scheduled full run both write a row to `universe_snapshots` keyed only
@@ -1158,8 +1160,9 @@ session starts from substance instead of re-deriving it.
   or record the cap in the snapshot and have `SnapshotUniverseSource`
   skip capped rows. Option A is simpler and fails safe.
 
-### P-038 — The data-quality section of a snapshot is empty
-- **Status:** OPEN, raised by Claude 2026-10-05.
+### P-038 — The data-quality section of a snapshot is empty — RESOLVED (D-0068, 2026-10-05)
+- **Status:** RESOLVED by D-0068, implemented and tested 2026-10-05 (1515 passed). Original entry below.
+- **Status when raised:** OPEN, raised by Claude 2026-10-05.
 - **FACT:** `data_quality_json` on today's snapshot decoded to nothing —
   zero entries. The section that exists to report how sound the inputs
   were reported nothing at all on the single worst universe run to date.

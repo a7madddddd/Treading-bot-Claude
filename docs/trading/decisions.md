@@ -4563,3 +4563,130 @@ Full suite unchanged: 1479 passed, 54 subtests.
 
 If an intraday refresh ever becomes normal practice, throttling becomes
 necessary rather than optional.
+
+---
+
+## D-0068
+
+**Date:** 2026-10-05
+**Status:** APPROVED (Controller instruction, 2026-10-05: "P-037 should be
+fixed now and the P-038 should be fixed now ... fix all issues ... with
+testing with recheck the VM")
+**Supersedes:** nothing. Closes P-036, P-037, P-038.
+
+### Decision
+
+Three defects that together let a 40-candidate experiment become a
+trading day's universe are closed in one change.
+
+**1. A run that did not see the market may not publish (P-036).**
+`UniversePipeline` gains `min_raw_candidates` (default `0` = disabled,
+so every existing caller and test is unchanged). The production runner
+defaults it to `500`. When the provider returns fewer raw candidates
+than that, the run raises `InsufficientCandidatePoolError` and the
+pipeline returns a `CrashOutcome` with the new category
+`INSUFFICIENT_CANDIDATE_POOL`.
+
+CRASH rather than EMPTY is deliberate, and the distinction is the one
+`src/d0026/failure.py` already defines. EMPTY means "the market was
+examined and nothing qualified" — a fact about the trading day. A
+40-candidate run is not that: its percentage stages computed
+percentiles of the wrong population, so even a plausible survivor list
+means nothing. CRASH also has a property EMPTY does not: **nothing is
+written**, so a good snapshot already published for the same date
+survives. An empty snapshot would become the latest row for that date
+and silently replace it.
+
+The guard runs immediately after the fetch, before any enrichment, so a
+refused run costs zero broker calls — the calls that exhausted the rate
+limit on 2026-10-05.
+
+**2. A capped run is an experiment and does not publish (P-037).**
+In `scripts/run_universe_selection.py`, `--max-symbols > 0` now routes
+the snapshot to an `InMemorySnapshotRepository`. The run still executes
+and still prints its full result — the value of a quick run is the
+answer, not the row — but writes nothing. `--allow-test-snapshot` is the
+explicit opt-in for the rare case where a capped run should be
+published.
+
+**3. The data-quality summary is populated (P-038).**
+`ApprovedUniverseSnapshot.data_quality_summary` was hardcoded to `()`
+since the pipeline was written. It now carries, all derived from values
+already in hand at zero extra cost:
+`raw_candidates_fetched`, `identity_resolved`, `identity_rejected`,
+`enriched_with_features`, `missing_features`, `survivors_to_snapshot`,
+`min_raw_candidates_configured`. The runner prints them.
+
+The P-036 threshold is suppressed when the small pool is deliberate — a
+`--whitelist` run, or a capped run (which P-037 has already made
+harmless). That decision is the pure, importable `plan_run()` in the
+runner, so the wiring is tested directly rather than inferred from a
+successful live run.
+
+### Why
+
+On 2026-10-05 (P-035, fully traced) a capped 40-candidate run wrote the
+production snapshot for the day with one surviving symbol, `LOW`. The
+engine read it and traded a one-symbol universe for an entire session.
+Nothing anywhere reported it: `is_empty` was `0`, the data-quality
+section was blank, and the Controller discovered it only by asking why
+no proposal had arrived. Each of the three changes above removes one
+link of that chain, and any one of them alone would have surfaced it.
+
+### Numeric example
+
+The incident run: 40 raw candidates; `30 + 6 + 3 = 39` rejected across
+stages A, C and D; 1 survivor; `is_empty = 0`; `data_quality_summary`
+empty. A real run starts from ~11,683.
+
+Under D-0068 the same invocation produces:
+
+```
+[plan] capped run (--max-symbols 40): printed, NOT saved
+[P-037] NOT SAVED -- capped run. The engine will not see this.
+```
+
+and the day's snapshot is unchanged. Had the pool been small for any
+other reason (a partial fetch, a degraded provider) with no `--max-symbols`,
+the full run would instead refuse:
+
+```
+[CRASH] insufficient_candidate_pool: provider returned 40 raw candidates,
+below the configured minimum of 500. ...
+```
+
+with an IMPORTANT Telegram message — IMPORTANT, not CRITICAL, because
+nothing is broken and nothing was corrupted: a run was correctly
+refused. The consequence (a day with no new universe) still must reach
+the Controller.
+
+### Risk
+
+A legitimate run that genuinely fetches fewer than 500 symbols would be
+refused. The real fetch is ~11,683, so the threshold sits more than 20×
+below normal; the setting is `--min-candidates`, and `0` disables it.
+The failure direction is also the safe one: a refused run costs a day of
+new entries, while a published bad universe is what already cost a day
+of trading and left five positions with a degraded Floor check.
+
+### Tests
+
+- `tests/d0026/stages/test_pool_guard_and_data_quality.py` — 19 tests:
+  crash-not-empty, no snapshot written, an existing good snapshot for
+  the same date survives a refusal, the boundary case (a pool exactly at
+  the minimum is accepted), `0` and the default preserve historical
+  behavior, a negative value is rejected at construction, the enricher
+  is never called on a refused run, and nine data-quality assertions
+  including that the counters add up and every value is an `int` so the
+  JSON column round-trips.
+- `tests/scripts/test_universe_run_plan.py` — 13 tests on `plan_run`,
+  including the exact 2026-10-05 invocation, and a guard that
+  `deploy/universe-refresh.sh`'s invocation line passes none of
+  `--max-symbols`, `--whitelist`, `--allow-test-snapshot`, so the
+  defaults really are production.
+- Full suite: **1515 passed, 54 subtests passed**, no regressions.
+
+### What would change this
+
+Evidence that a real whole-market fetch can legitimately return fewer
+than 500 symbols. Then the threshold is wrong, not the guard.
