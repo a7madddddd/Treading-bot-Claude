@@ -1128,6 +1128,42 @@ session starts from substance instead of re-deriving it.
   the fix, and until then every such question needs a live reproduction
   rather than a log read.
 
+#### D-0068 — live verification on the VM (2026-10-05, 17:50 UTC)
+Run by the Controller on the production host, not in a Claude container.
+
+1. **Full suite on the VM:** `1515 passed, 54 subtests passed`.
+2. **The decision, computed from the VM's own copy of the runner:**
+
+```
+TODAY'S DISASTER COMMAND (--max-symbols 40)
+   persist = False | guard = 0
+   capped run (--max-symbols 40): printed, NOT saved
+
+TOMORROW 06:00 PRODUCTION RUN (no flags)
+   persist = True | guard = 500
+   full run: refusing below 500 raw candidates
+```
+
+3. **Live invocation** of the exact incident command exited 75 at the
+   P-032 market-open guard, having issued one `/v2/clock` call and
+   nothing else.
+4. **Nothing was destroyed:** the latest snapshot for 2026-10-05 is
+   still the 14:52:36 row.
+
+**Honest limit of this verification.** The capped run stopped at the
+market-open guard, so P-037's *refusal to persist* was proved by its 13
+unit tests and by the decision above, not yet by a completed live run.
+The first end-to-end proof is tomorrow's 06:00 ET run, whose snapshot
+will carry a populated `data_quality_summary` (P-038) — that printed
+block is itself the evidence that all three changes are live.
+
+**Deliberately NOT done:** the one-symbol snapshot for 2026-10-05 was
+left in place. At 13:50 ET roughly two hours of trading remained and a
+full run takes ~107 minutes, so a replacement run would finish after the
+close while costing the rate limit the engine needs for its Floor checks
+— the exact trade that caused P-032. Tomorrow's 06:00 run replaces it
+for free.
+
 ### P-036 — No minimum size on an approved snapshot — RESOLVED (D-0068, 2026-10-05)
 - **Status:** RESOLVED by D-0068, implemented and tested 2026-10-05 (1515 passed). Original entry below.
 - **Status when raised:** OPEN, raised by Claude 2026-10-05 under CLAUDE.md §0.d.
