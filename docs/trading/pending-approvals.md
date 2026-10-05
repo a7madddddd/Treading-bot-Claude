@@ -371,3 +371,145 @@ code.
 
 Per CLAUDE.md §12 / D-0052: this file is updated in the same session as
 any change. A commit that leaves it stale is an incomplete commit.
+
+---
+
+## 🚨 ADDED 2026-10-05 (second VM audit) — highest priority
+
+### P-021 — The live Universe selects leveraged and inverse ETFs. One is a −2× inverse fund.
+- **Status:** OPEN. This is the most dangerous finding to date. It is a
+  real money-losing path, not a theoretical one.
+- **FACT, from the Controller's own VM, snapshot `2026-10-03T16:18:56`,
+  the newest snapshot that exists:**
+  `WBD, MUFG, DXD, VOD, MAGS, QQQI, PFE, ILF, CGGR, BCI`
+- Of those ten, only three are ordinary operating companies
+  (`WBD`, `MUFG`, `VOD`, plus `PFE`). The rest are funds:
+  - `DXD` — ProShares UltraShort QQQ: a **−2× LEVERAGED INVERSE** ETF
+  - `MAGS` — Magnificent-7 ETF
+  - `QQQI` — Nasdaq covered-call income ETF
+  - `ILF` — Latin America 40 ETF
+  - `CGGR` — Capital Group Growth ETF
+  - `BCI` — broad commodity ETF
+- **FACT, root cause:** `src/d0026/alpaca_provider.py:94` requests
+  `/v2/assets?status=active&asset_class=us_equity`. Alpaca classifies
+  ETFs, leveraged ETFs and inverse ETFs as `us_equity` — there is no
+  separate asset class for them. A repo-wide search for an ETF,
+  leverage, inverse, or asset-type filter in `src/d0026/` finds
+  **nothing**. No stage of the 8-stage pipeline excludes them.
+
+#### Why `DXD` specifically is a loss generator under the approved ladder
+
+`DXD` rises when the market falls and falls when the market rises. The
+approved ladder (D-0004) BUYS MORE as price falls. So during a normal
+market rally the engine would average down into a leveraged bet against
+that rally — the worst possible direction for this strategy.
+
+Worked example, the ordinary case rather than a tail case. Suppose
+`QQQ` gains 5% over one week:
+
+| Step | `DXD` move | Ladder action |
+|---|---|---|
+| index +2.5% | ≈ −5% | Ladder 1 fires, position doubles |
+| index +4% | ≈ −8% | Ladder 2 fires, position at maximum |
+| index +5% | ≈ −10% | Floor fires, SELL ALL |
+
+The entire three-layer ladder — designed to be worked over a multi-day
+pullback — compresses into days, on a **rising** market, which is the
+market's normal state. Under D-0051 that is the full 5%-of-equity trade
+budget taken to its floor: on $100,000 equity, about **$500 lost**
+per such position, with the ladder having tripled the exposure on the
+way down.
+
+Two further structural problems, independent of direction:
+1. **Volatility decay.** A −2× fund rebalances daily. Over weeks it
+   loses value even if the index ends flat. The ladder holds positions
+   for days to weeks, so time works against the position on top of
+   direction.
+2. **2× amplification breaks the trigger spacing.** The −5% / −8% /
+   −10% levels were chosen for a normal equity's daily range. A −2×
+   fund covers all three on a 5% index move, so the levels no longer
+   represent three distinct decision points.
+
+- **RECOMMENDATION (changes trading behavior — needs Controller
+  approval):** add an instrument-eligibility filter ahead of Stage A
+  that rejects, at minimum, leveraged and inverse products. The
+  cheapest reliable signal available for free is the asset's own name
+  text from `/v2/assets` (`2X`, `3X`, `ULTRA`, `ULTRASHORT`,
+  `INVERSE`, `BEAR`, `SHORT`), combined with an explicit decision on
+  whether ordinary ETFs are eligible at all.
+- **CONTROLLER DECISION, genuinely new:** should the Universe trade
+  ETFs at all? The approved strategy's research layer scores
+  fundamentals (P/E, earnings) — fields that do not exist for a fund.
+  An ETF therefore scores on a research model built for companies.
+  Three options:
+  1. Equities only. Simplest, and matches what the research layer can
+     actually evaluate.
+  2. Equities plus plain index ETFs, with leveraged and inverse
+     excluded.
+  3. Everything except leveraged and inverse.
+- Claude's recommendation is **option 1** for now, moving to option 2
+  later with a measured reason, because every component of the research
+  layer except price and volume is undefined for a fund.
+
+### P-022 — The VM is running code older than the branch head
+- **Status:** OPEN. Time-critical: it matters before Monday's open.
+- **FACT:** the VM reports `327145b`. The branch head is `07e8e23`.
+  The VM therefore does NOT have D-0054 (fallback removal) or D-0055
+  (startup-message fix).
+- **FACT:** the VM's running command is
+  `--universe-mode snapshot` with no `--symbols`, so under the OLD code
+  the fallback is `TSLA,AAPL,SPY`.
+- **FACT:** the VM has no snapshot for 2026-10-05, and its newest is
+  2026-10-03.
+- **FACT:** on the VM, `AAPL` and `SPY` both have
+  `initial_order_reconciled=1, initial_filled_shares=0`, i.e. status
+  ABANDONED, and `_check_watchlist` excludes only AWAITING_INITIAL_FILL
+  and ACTIVE. ABANDONED symbols are therefore eligible candidates
+  again.
+- **Consequence:** at the 09:30 ET tick on Monday 2026-10-06, the
+  running engine can propose INITIAL_ENTRY on `AAPL` and `SPY` —
+  TEST-ONLY symbols — because it has not got the fix.
+- **Action required (Controller):** pull and restart on the VM before
+  Monday's open.
+
+### P-023 — SQLite write contention between the engine and a daily universe run
+- **Status:** OPEN, measured, LOW risk — recorded so the 24/7 wiring
+  does not introduce it by accident.
+- **FACT:** `src/persistence/db.py::connect` sets no journal mode and
+  no busy timeout, so the effective settings are
+  `journal_mode = delete` and `busy_timeout = 5000` ms (both read back
+  directly from a live connection).
+- **FACT, measured with two real processes, not assumed:**
+
+| journal mode | busy timeout | engine READ during a held write | engine WRITE during a held write |
+|---|---|---|---|
+| delete | 5000 ms | ok (0.00 s) | FAILS after 5.01 s |
+| WAL | 5000 ms | ok (0.00 s) | FAILS after 5.01 s |
+| WAL | 30000 ms | ok (0.00 s) | ok (waited 10.05 s) |
+
+- **Important correction to the obvious answer:** WAL does NOT fix
+  this. WAL separates readers from writers, and reads were never
+  blocked. The failing case is writer-versus-writer, and only a larger
+  `busy_timeout` fixes it.
+- **Why the real risk is nonetheless LOW:**
+  `SqliteSnapshotRepository.save` holds its write transaction for a
+  SINGLE one-row `INSERT`. All the slow work — Alpaca fetches,
+  enrichment, the eight stages — happens outside any transaction. Both
+  sides therefore hold write locks for milliseconds, well inside the
+  existing 5-second timeout.
+- **RECOMMENDATION:** raise `busy_timeout` to 30000 ms as cheap
+  insurance when the daily run is wired. Labelled insurance, not a fix
+  for an observed failure — no `database is locked` error has actually
+  been seen in this project.
+
+### P-010 — KO and V — CLOSED (2026-10-05, by VM evidence)
+- No action is needed, and the earlier plan to reject them is moot.
+- **FACT, from the VM:** `pending proposals:` is EMPTY, and both `KO`
+  and `V` show `initial_order_reconciled=1, initial_filled_shares=0`,
+  i.e. status ABANDONED. They resolved themselves to zero fills.
+- The two PENDING rows Claude reported earlier exist only in the
+  repo's own stale copy of the DB. Since 2026-10-03 the VM runs with
+  `--no-db-push`, so the repo DB and the VM DB have diverged and the
+  repo copy is no longer evidence about production.
+- **Lesson recorded:** the repo's `paper_session.sqlite` must not be
+  treated as production state while the VM runs with `--no-db-push`.
