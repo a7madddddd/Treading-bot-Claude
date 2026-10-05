@@ -2295,3 +2295,113 @@ class TestPoliticalD0058(unittest.TestCase):
         _tr, notifier, _src = self._run(
             watchlist=("A",), scores={"A": 90.0}, signals={})
         self.assertEqual(self._events(notifier, "political_daily_report"), [])
+
+
+class TestP019RecoveryPathReleasesSymbol(unittest.TestCase):
+    """P-019 fix (2026-10-05). `_recover_trade`'s INITIAL_ENTRY
+    submission omitted `initial_entry_trade_id`, while the two
+    equivalent call sites both passed it.
+
+    Per `_submit_approved`'s own docstring that argument is what
+    abandons the Trade on a terminal pre-fill refusal. Without it the
+    Trade stays AWAITING_INITIAL_FILL and `_check_watchlist`'s
+    has_open_trade guard locks the symbol out -- the KO/V failure.
+
+    Severity was low because `_recover_approved_without_execution` runs
+    every reconciliation tick and DOES pass it, so the gap self-healed
+    in ~30s. These tests pin the fix anyway: relying on another method
+    to clean up after this one was never a written contract.
+    """
+
+    def _approved_unsubmitted(self, *, entry_price, now):
+        """A Trade in AWAITING_INITIAL_FILL whose INITIAL_ENTRY proposal
+        is APPROVED but has no execution -- the exact crash-window state
+        `recover()` exists to repair."""
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        engine, broker, market_data, _d, notifier, _e = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            watchlist=StaticWatchlistSource(("TSLA",)),
+        )
+        market_data.set_price("TSLA", entry_price)
+        engine._lock.acquire(now=now)
+        engine.run_trigger_check(now=now)
+        trade_id = trade_repo.list_for_symbol("TSLA")[0].trade.trade_id
+        proposal = [p for p in proposal_repo.list_for_trade(trade_id)
+                    if p.proposed_action is TradeAction.INITIAL_ENTRY][0]
+        proposal_repo.record_decision(
+            proposal.proposal_id, approved=True, decided_by="controller",
+            decided_at=now, action=TradeAction.INITIAL_ENTRY,
+        )
+        self.assertIsNone(execution_repo.get_by_proposal_id(proposal.proposal_id))
+        return engine, trade_repo, market_data, notifier, trade_id
+
+    def test_refused_recovery_submission_releases_the_symbol(self):
+        """Price has drifted far past D-0007's 0.5% band, so the
+        submission is refused before any fill. The Trade must be
+        ABANDONED so the symbol is free again."""
+        from trade.models import describe_status as _status
+        now = _now()
+        engine, trade_repo, market_data, notifier, trade_id = \
+            self._approved_unsubmitted(entry_price=100.0, now=now)
+
+        # 20% drift -- far outside the 0.5% revalidation band.
+        market_data.set_price("TSLA", 120.0)
+        engine.recover(now=now + timedelta(seconds=1))
+
+        self.assertEqual(
+            _status(trade_repo.get(trade_id).trade), "ABANDONED",
+            "a recovery submission refused before any fill must abandon "
+            "the Trade, or the symbol is locked out forever",
+        )
+        self.assertTrue(
+            any(e.event == "initial_entry_abandoned" for e in notifier.events),
+            "the abandonment must be reported, not silent",
+        )
+
+    def test_symbol_can_be_proposed_again_after_the_refusal(self):
+        """End to end: the release must actually let a NEW proposal be
+        created for the same symbol."""
+        now = _now()
+        engine, trade_repo, market_data, _n, _tid = \
+            self._approved_unsubmitted(entry_price=100.0, now=now)
+        market_data.set_price("TSLA", 120.0)
+        engine.recover(now=now + timedelta(seconds=1))
+
+        engine.run_trigger_check(now=now + timedelta(seconds=2))
+        self.assertEqual(
+            len(trade_repo.list_for_symbol("TSLA")), 2,
+            "the symbol must be available for a fresh trade once released",
+        )
+
+    def test_a_successful_recovery_submission_does_NOT_abandon(self):
+        """The guard must only fire on a terminal refusal. A healthy
+        recovery submits normally and leaves the Trade alone."""
+        from trade.models import describe_status as _status
+        now = _now()
+        engine, trade_repo, market_data, _n, trade_id = \
+            self._approved_unsubmitted(entry_price=100.0, now=now)
+
+        engine.recover(now=now + timedelta(seconds=1))  # price unchanged
+
+        self.assertEqual(_status(trade_repo.get(trade_id).trade),
+                         "AWAITING_INITIAL_FILL")
+
+    def test_all_three_initial_entry_call_sites_pass_the_argument(self):
+        """A structural guard. The three INITIAL_ENTRY submission sites
+        must stay consistent -- this is the inconsistency P-019 was."""
+        import inspect
+        import re
+        from engine import engine as engine_module
+
+        source = inspect.getsource(engine_module)
+        calls = re.findall(r"self\._submit_approved\((.*?)\n\s*\)",
+                           source, re.DOTALL)
+        with_trade_id = [c for c in calls if "initial_entry_trade_id" in c]
+        self.assertEqual(
+            len(with_trade_id), 3,
+            "expected exactly three INITIAL_ENTRY submission sites to pass "
+            "initial_entry_trade_id (recovery, per-tick recovery, and the "
+            "decision path); found "
+            f"{len(with_trade_id)}. A new site without it would silently "
+            "reintroduce the symbol-lockout bug.",
+        )

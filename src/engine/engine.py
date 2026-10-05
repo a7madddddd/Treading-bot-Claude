@@ -528,11 +528,32 @@ class Engine:
                         # gap-fix in _apply_decision (queue drain) OR
                         # future recovery ticks. Not fatal.
                         continue
+                    # P-019 fix (2026-10-05): initial_entry_trade_id was
+                    # MISSING here while the two equivalent call sites
+                    # (_recover_approved_without_execution and
+                    # _apply_decision) both pass it. Per
+                    # _submit_approved's own docstring that argument is
+                    # what abandons the Trade on a terminal pre-fill
+                    # refusal -- without it the Trade stays in
+                    # AWAITING_INITIAL_FILL and _check_watchlist's
+                    # has_open_trade guard locks the symbol out, which
+                    # is exactly the KO/V failure.
+                    #
+                    # Severity was low because
+                    # _recover_approved_without_execution runs on EVERY
+                    # reconciliation tick, covers the same condition and
+                    # DOES pass the argument, so the gap self-healed in
+                    # about 30 seconds. Fixed anyway: an inconsistency
+                    # between three call sites doing the same thing is a
+                    # trap for the next reader, and relying on another
+                    # method to clean up after this one is not a
+                    # contract anybody wrote down.
                     self._submit_approved(
                         proposal.proposal_id,
                         current_price=price,
                         active_floor_price=proposal.floor_trigger,
                         now=now,
+                        initial_entry_trade_id=proposal.trade_id,
                     )
                     continue
                 self._execution_service.recover_if_terminal(proposal.proposal_id, now=now)

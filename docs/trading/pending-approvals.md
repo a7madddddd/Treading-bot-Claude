@@ -168,7 +168,7 @@ the transition period is over.
   script that sources `.env` before exec'ing python. Pairs with P-015,
   whose refresh job wants a `systemd` timer on the same VM.
 
-### P-014 note — the fallback is LIVE on the VM right now
+### P-014 note — RESOLVED (2026-10-05): the fallback is gone from the VM, confirmed by the engine's own startup message
 - The command above passes `--universe-mode snapshot` and NO
   `--symbols`, so `symbols` resolves to the default `TSLA,AAPL,SPY`
   and becomes the fallback watchlist per P-014.
@@ -253,7 +253,13 @@ the transition period is over.
   therefore sit for an unbounded time and keep its symbol locked.
   Worth a decision on a PENDING TTL.
 
-### P-019 — Recovery path can leave a symbol locked (low severity, self-healing)
+### P-019 — Recovery path symbol lockout — RESOLVED (2026-10-05)
+- **Status:** FIXED. `_recover_trade` now passes
+  `initial_entry_trade_id`, matching the other two INITIAL_ENTRY call
+  sites. 4 tests, including a structural guard asserting that exactly
+  three call sites pass it, so a new one cannot silently reintroduce
+  the lockout.
+- The original finding is kept below for history.
 - **Status:** OPEN, low.
 - **FACT:** `src/engine/engine.py:490` submits an INITIAL_ENTRY from the
   startup recovery path WITHOUT passing `initial_entry_trade_id`. The
@@ -574,7 +580,7 @@ Two further structural problems, independent of direction:
 - **Decision needed later:** equities only, or equities plus plain
   index funds with a fund-aware scoring path.
 
-### P-025 — Inside the APPROVED ATR band, the same ladder behaves 5× differently
+### P-025 — ATR band — RESOLVED (D-0065, 2026-10-05): narrowed to 2%–4% on measured evidence
 - **Status:** OPEN, newly surfaced 2026-10-05 under CLAUDE.md §0.d
   (re-challenge an approved decision when evidence demands). Raised
   by Claude, not asked for.
@@ -691,7 +697,7 @@ Controller's VM, not inferred:
 | `Linger` | `yes` — survives logout and reboot |
 | timer next elapse | `Tue 2026-10-06 12:45 GMT` = 08:45 EDT |
 
-### P-028 — The first autonomous trading day is tomorrow, with the ATR band undecided
+### P-028 — RESOLVED (2026-10-05): the band was decided (D-0065) before the first autonomous day
 - **Status:** OPEN. A decision is needed BEFORE 08:45 ET tomorrow.
 - **FACT:** the timer fires at 08:45 America/New_York on 2026-10-06 and
   writes the first automatic snapshot. The engine then has a universe
@@ -721,7 +727,7 @@ Controller's VM, not inferred:
   keeps the decision clean — the engine is currently trading nothing
   anyway, so nothing is lost that is not already lost.
 
-### P-029 — The daily universe run may not finish before the open
+### P-029 — RESOLVED (D-0066, 2026-10-05): timer moved to 06:00 ET, ~3.5h of headroom. Measuring the real throughput remains a nice-to-have, not a blocker.
 - **Status:** OPEN and TIME-CRITICAL. The timer fires tomorrow 08:45 ET.
 - **FACT, measured on the VM 2026-10-05:** the broker returns **12,591**
   tradable symbols. D-0056 excludes **908** as leveraged or inverse
@@ -762,7 +768,7 @@ Controller's VM, not inferred:
   entirely; and time one run so the figure is measured rather than
   assumed.
 
-### P-025 — first real measurement (the band decision)
+### P-025 measurement — CLOSED (D-0065): the data below is what the decision was made on
 - **Status:** OPEN, now with data. 150-symbol sample, VM, 2026-10-05.
 
 | band | count | share | branch |
@@ -799,7 +805,7 @@ Controller's VM, not inferred:
   post-A/B/C pool first if the Controller wants certainty rather than a
   well-supported choice.
 
-### P-030 — systemd's 90-second default would have killed the daily run every morning
+### P-030 — RESOLVED (2026-10-05): TimeoutStartSec=4h
 - **Status:** RESOLVED same day (2026-10-05), recorded because it is the
   most instructive failure of the deployment.
 - **FACT:** for `Type=oneshot`, `TimeoutStartSec` bounds the entire run
@@ -824,7 +830,7 @@ Controller's VM, not inferred:
   only because the first run was forced immediately instead of waiting
   for tomorrow.
 
-### P-031 — A test snapshot is currently the LIVE universe for today
+### P-031 — SELF-RESOLVING: tomorrow's 06:00 run supersedes it (get_latest_for_date returns the newest row for the date). No action needed.
 - **Status:** OPEN, needs one action.
 - **FACT:** the manual 40-symbol diagnostic run wrote a real snapshot
   for `2026-10-05` containing exactly ONE symbol: `LOW`.
