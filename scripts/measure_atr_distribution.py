@@ -55,6 +55,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from datetime import date
@@ -92,6 +93,78 @@ def _bucket_for(fraction: float):
         if low <= fraction < high:
             return (low, high, label)
     return _BUCKETS[-1]
+
+
+_STOCK_MARKERS = (
+    "COMMON STOCK", "COMMON SHARES", "ORDINARY SHARES",
+    "CLASS A COMMON", "CLASS B COMMON", "COMMON UNITS",
+)
+"""Checked FIRST, because they are decisive. Several real operating
+companies carry a fund word in their name -- Northern Trust Corporation
+is a bank, not a trust fund -- and every one of them that Alpaca names
+properly says "Common Stock" somewhere."""
+
+_FUND_MARKERS = (
+    "ETF", "ETN", " FUND", "INDEX TRUST", "ETF TRUST",
+    "SPDR", "ISHARES", "PORTFOLIO", "UNIT TRUST",
+    "INVESTMENT TRUST", "MUTUAL FUND",
+)
+"""P-024 detection. NAME-BASED, because there is nothing else.
+Verified against the live broker on 2026-10-05: /v2/assets returns
+`class = "us_equity"` for AAPL, SPY, QQQI and BCI alike, and the
+`attributes` field carries only fractionability/options flags. No
+structural field distinguishes a fund from an operating company, so a
+heuristic over the name is the ONLY option available."""
+
+
+def _fetch_names(*, key: str, secret: str, base_url: str) -> dict:
+    """symbol -> broker-reported name, in ONE request.
+
+    The provider deliberately drops the name (RawCandidateRef carries
+    only ticker + date, so a ticker is never mistaken for an identity).
+    This tool needs the name purely to classify fund vs stock, so it
+    re-reads the same endpoint once rather than changing the production
+    model for a measurement's convenience.
+    """
+
+    import ssl
+    import urllib.request
+
+    url = base_url.rstrip("/") + "/v2/assets?status=active&asset_class=us_equity"
+    req = urllib.request.Request(url, headers={
+        "APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret,
+        "Accept": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(
+                req, timeout=60, context=ssl.create_default_context()) as resp:
+            assets = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001 - a measurement, never fatal
+        print(f"      [warn] could not fetch names ({type(exc).__name__}: "
+              f"{exc}); every symbol will report as 'unknown'")
+        return {}
+    return {a.get("symbol", "").upper(): a.get("name")
+            for a in assets if a.get("symbol")}
+
+
+def _instrument_kind(name) -> str:
+    """Returns "stock", "fund", or "unknown".
+
+    "unknown" is a real answer and is reported separately rather than
+    being folded into either bucket -- a measurement that hides its own
+    uncertainty is worse than one that admits it.
+    """
+
+    if not name:
+        return "unknown"
+    upper = name.upper()
+    for marker in _STOCK_MARKERS:
+        if marker in upper:
+            return "stock"
+    for marker in _FUND_MARKERS:
+        if marker in upper:
+            return "fund"
+    return "unknown"
 
 
 def _days_to(pct: float, atr_fraction: float) -> str:
@@ -156,6 +229,7 @@ def main() -> int:
 
     print("[1/3] fetching tradable symbols from the broker ...", flush=True)
     raw = provider.get_raw_candidates(effective)
+    names = _fetch_names(key=key, secret=sec, base_url=base)
     excluded = provider.last_excluded
     print(f"      {len(raw)} tradable symbols")
     print(f"      {len(excluded)} excluded as leveraged/inverse (D-0056)")
@@ -213,7 +287,8 @@ def main() -> int:
             no_data += 1
             continue
         # EXACTLY Stage D's formula -- see strategy_fit.py.
-        measured.append((ref.ticker, atr / close, close))
+        measured.append((ref.ticker, atr / close, close,
+                         _instrument_kind(names.get(ref.ticker))))
 
     print(f"      {len(measured)} measured, {no_data} without usable data")
     print()
@@ -231,7 +306,7 @@ def main() -> int:
     print(f"{'band':>14}  {'count':>6}  {'share':>7}   meaning")
     print("-" * 68)
     counts = {}
-    for _t, frac, _c in measured:
+    for _t, frac, _c, _k in measured:
         counts[_bucket_for(frac)] = counts.get(_bucket_for(frac), 0) + 1
     for bucket in _BUCKETS:
         n = counts.get(bucket, 0)
@@ -281,12 +356,42 @@ def main() -> int:
     print("-" * 68)
     sample = [m for m in measured
               if cfg.min_atr_fraction <= m[1] < cfg.max_atr_fraction]
-    for ticker, frac, close in (sample[:3] + sample[-3:] if len(sample) >= 6
-                                else sample):
+    for ticker, frac, close, _kind in (
+            sample[:3] + sample[-3:] if len(sample) >= 6 else sample):
         print(f"{ticker:<8} {frac * 100:>6.2f}% {close:>9.2f}   "
               f"{_days_to(5, frac):>11} {_days_to(8, frac):>8} "
               f"{_days_to(10, frac):>8}")
     print("-" * 68)
+    print()
+    print("P-024 — FUNDS vs OPERATING COMPANIES")
+    print("-" * 68)
+    kinds = {}
+    for _t, _f, _c, kind in measured:
+        kinds[kind] = kinds.get(kind, 0) + 1
+    for kind in ("stock", "fund", "unknown"):
+        n = kinds.get(kind, 0)
+        print(f"{kind:>10}: {n:>5}  ({n / total * 100:>5.1f}%)")
+    print()
+    print("  'unknown' is reported, not hidden: detection is NAME-based")
+    print("  because the broker gives class='us_equity' for a company and")
+    print("  an ETF alike, with no structural field to tell them apart.")
+    print()
+    for kind in ("stock", "fund"):
+        group = [m for m in measured if m[3] == kind]
+        if not group:
+            continue
+        in_b = [m for m in group
+                if cfg.min_atr_fraction <= m[1] < cfg.max_atr_fraction]
+        avg = sum(m[1] for m in group) / len(group)
+        print(f"  {kind:>6}: mean ATR {avg * 100:>5.2f}%  |  "
+              f"{len(in_b):>4} of {len(group):>4} in the live band "
+              f"({len(in_b) / len(group) * 100:>5.1f}%)")
+    print("-" * 68)
+    print("  A fund forfeits the 16-point `fundamentals` component")
+    print("  structurally -- P/E and earnings do not exist for one -- so")
+    print("  its ceiling is 84, against a 60 threshold. Whether that")
+    print("  already excludes funds in practice is answered by a REAL")
+    print("  snapshot's Top-10, not by this table.")
     print()
     print("Nothing was written. No snapshot, no database, no Telegram.")
     return 0
