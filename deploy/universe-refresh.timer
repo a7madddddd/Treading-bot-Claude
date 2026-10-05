@@ -1,12 +1,18 @@
 # USER TIMER. Install to ~/.config/systemd/user/
 #
-# 08:45 America/New_York, weekdays. Two reasons for that exact time:
+# 06:00 America/New_York, weekdays. Two reasons for that exact time:
 #
-#  - It must COMPLETE before the first D-0021 trigger at 09:30 ET.
-#    SnapshotUniverseSource looks up today's ET date, so a snapshot
-#    written at 09:31 is 45 minutes too late for the first cycle. The
-#    run enriches hundreds of symbols against Alpaca, so it needs real
-#    headroom, not five minutes.
+#  - It must COMPLETE before the first D-0021 trigger at 09:30 ET, and
+#    the run is far longer than first assumed. Measured on the VM
+#    2026-10-05: the broker returns 12,591 tradable symbols, D-0056
+#    excludes 908 as leveraged/inverse, and enrichment costs ONE bars
+#    request per remaining symbol with no batch path -- 11,683 requests.
+#    At Alpaca's common free-tier 200/min that is ~58 minutes.
+#
+#    The original 08:45 would therefore have finished around 09:43,
+#    AFTER the open, and the first trigger would still have found no
+#    snapshot. 06:00 leaves three and a half hours of headroom, which
+#    also absorbs a slower-than-expected rate without a redesign.
 #
 #  - The timezone is named explicitly rather than computed in UTC. The
 #    US switches between EST and EDT twice a year; a fixed UTC time
@@ -20,7 +26,7 @@
 Description=Run the D-0026 universe selection every weekday before the open
 
 [Timer]
-OnCalendar=Mon-Fri 08:45 America/New_York
+OnCalendar=Mon-Fri 06:00 America/New_York
 # If the VM was powered off at 08:45, run as soon as it is back rather
 # than skipping the trading day entirely.
 Persistent=true
