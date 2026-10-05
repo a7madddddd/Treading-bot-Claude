@@ -1281,8 +1281,9 @@ was suspected. Where a suspicion did not survive reading the code, it is
 recorded as cleared rather than quietly dropped — a list padded with
 non-bugs is worse than a short one.
 
-### P-041 — A market-data outage floods the Controller with CRITICAL alerts
-- **Status:** OPEN. Confirmed by code reading AND by what the Controller
+### P-041 — A market-data outage floods the Controller with CRITICAL alerts — RESOLVED (D-0070, 2026-10-05)
+- **Status:** RESOLVED by D-0070, Controller-approved and pushed 2026-10-05.
+- **Status when raised:** OPEN. Confirmed by code reading AND by what the Controller
   experienced on 2026-10-05 ("I have so many messages told me the data
   not available for the item").
 - **FACT:** `Engine._notify` (`src/engine/engine.py:2113`) sends every
@@ -1306,8 +1307,9 @@ non-bugs is worse than a short one.
   shape; the outage key would be `(symbol, "market_data_outage")`,
   cleared on the first successful price read.
 
-### P-042 — A long proposal message can be silently dropped by Telegram
-- **Status:** OPEN. Structural; whether it fires on a given day depends
+### P-042 — A long proposal message can be silently dropped by Telegram — RESOLVED (D-0070, 2026-10-05)
+- **Status:** RESOLVED by D-0070 (both halves: the 4096-char cap and the delivery report), Controller-approved and pushed 2026-10-05.
+- **Status when raised:** OPEN. Structural; whether it fires on a given day depends
   on how much the research APIs return.
 - **FACT:** Telegram's `sendMessage` rejects any `text` longer than 4096
   characters with HTTP 400. `TelegramNotificationService._format_text`

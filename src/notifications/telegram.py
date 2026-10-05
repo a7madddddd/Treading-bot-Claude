@@ -109,6 +109,32 @@ class TelegramNotificationService(INotificationService):
         chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
         return cls(bot_token=bot_token, chat_id=chat_id, **kwargs)  # type: ignore[arg-type]
 
+    TELEGRAM_MAX_TEXT_CHARS = 4096
+    """Telegram's hard limit on sendMessage `text`. Longer bodies are
+    rejected with HTTP 400 -- and a rejected proposal message is the one
+    carrying the inline approve/reject buttons, so the Controller would
+    never see the trade at all (P-042)."""
+
+    _TRUNCATION_MARKER = "\n\n[…message shortened to fit Telegram…]"
+
+    @classmethod
+    def _fit(cls, text: str) -> str:
+        """Truncates to Telegram's limit, keeping the HEAD of the body.
+
+        The head is what matters: the symbol, the prices, the quantity
+        and the safeguards all appear before the advisory research
+        block. Cutting the tail therefore loses the optional part and
+        never the decision-critical part.
+
+        The cap lives HERE, in the transport, and not in each enricher,
+        because the limit is Telegram's. An enricher added later must
+        not have to know about it to be safe.
+        """
+        if len(text) <= cls.TELEGRAM_MAX_TEXT_CHARS:
+            return text
+        keep = cls.TELEGRAM_MAX_TEXT_CHARS - len(cls._TRUNCATION_MARKER)
+        return text[:keep].rstrip() + cls._TRUNCATION_MARKER
+
     def _format_text(self, event: NotificationEvent) -> str:
         lines = [f"[{event.level.value}] {event.event}"]
         if event.symbol:
@@ -117,7 +143,7 @@ class TelegramNotificationService(INotificationService):
         for key, value in event.extra:
             lines.append(f"{key}: {value}")
         lines.append(event.effective_timestamp().isoformat())
-        return "\n".join(lines)
+        return self._fit("\n".join(lines))
 
     def send(self, event: NotificationEvent) -> NotificationResult:
         url = f"{_TELEGRAM_API_BASE}/bot{self._bot_token}/sendMessage"

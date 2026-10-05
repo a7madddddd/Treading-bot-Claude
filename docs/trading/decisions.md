@@ -4777,3 +4777,89 @@ never landing in the future in either season; and the 23-hour
 under-count reproduced explicitly. Naive datetimes are read as UTC.
 
 Full suite: **1538 passed, 54 subtests passed**, no regressions.
+
+---
+
+## D-0070
+
+**Date:** 2026-10-05
+**Status:** APPROVED (Controller, 2026-10-05: "about the bug number one …
+I approve your fix"; "it should wait until the result return if it sent
+a failure message … you have to [be] sure I receive it")
+**Closes:** P-041, and the delivery half of P-042.
+
+### Decision
+
+**1. One alert per symbol per market-data outage (P-041).**
+`Engine` gains `_outages: Set[str]`, `_notify_outage()` and
+`_clear_outage()`. All seven `market_data_unavailable` sites now go
+through `_notify_outage`, which alerts CRITICAL the first time and
+suppresses identical repeats until prices return. Every successful price
+read now goes through one wrapper, `Engine._price()`, which clears the
+outage and sends a single IMPORTANT all-clear.
+
+Routing the READ through one wrapper is what makes this correct: the
+all-clear fires from the same place the price succeeds, so the alert
+state cannot drift out of step with reality.
+
+**Suppressing the alert does not suppress the check.** The engine keeps
+polling every tick, so it notices the moment data returns — there is a
+test for exactly that, because the opposite would be a far worse bug
+than the one being fixed.
+
+**2. Delivery is reported, not discarded (P-042, second half).**
+`Engine._notify` now returns a bool and prints a `[notify-failed]` line
+to stdout — which systemd appends to `logs/engine.log` — naming the
+event, symbol, attempt count, HTTP status and error. It still never
+raises, never retries a trade and never blocks execution
+(CLAUDE.md §6).
+
+**3. Telegram text is capped at the transport (P-042, first half).**
+`TelegramNotificationService._fit()` truncates to 4096 characters, the
+documented `sendMessage` limit, keeping the HEAD and marking the cut.
+
+### Why
+
+**P-041, arithmetic from the incident.** `_check_floor_trigger` runs for
+every ACTIVE trade on every reconciliation tick (30 s). Five open
+positions during the 2026-10-05 rate-limit outage = 10 CRITICAL messages
+a minute, 600 an hour, all identical. The Controller reported exactly
+this. A Controller buried under 600 copies mutes the channel, and the
+next message after that is a Floor execution or a submission failure.
+The alert channel is the only channel, so degrading it degrades every
+protection that depends on it.
+
+**P-042.** Telegram rejects text over 4096 characters with HTTP 400.
+Nothing capped it: `CompositeEnricher` joins five enabled sub-enrichers
+(Perplexity, Finnhub, AlphaVantage, Tiingo, Polygon) with no overall
+limit, and only one of them caps itself. The rejected message is the one
+carrying the inline approve/reject buttons, and `_notify` discarded the
+result, so the trade would simply never reach the Controller — then
+expire quietly under D-0068's 60-minute TTL.
+
+The cap belongs in the transport because the limit is the transport's:
+an enricher added next year must not have to know about it to be safe.
+The HEAD is kept because the decision-critical part (symbol, prices,
+quantity, safeguards) is at the top and the advisory research block is
+at the bottom.
+
+### Tests
+
+- `tests/engine/test_p041_outage_alert_dedup.py` — 13 tests: the first
+  outage alerts immediately at CRITICAL; twenty consecutive ticks still
+  produce one alert; the price source is still polled every tick;
+  recovery sends exactly one IMPORTANT all-clear; no all-clear without a
+  preceding outage; a second outage after recovery alerts again; and the
+  delivery-reporting cases, including that a refused send is written to
+  stdout and never raises.
+- `tests/notifications/test_p042_telegram_length_cap.py` — 9 tests:
+  boundary at exactly 4096 and at 4097, a 100,000-character body, the
+  truncation being visible, the head kept and the tail dropped, and a
+  normal message left byte-identical.
+- Full suite: **1560 passed, 54 subtests passed**, no regressions.
+
+### Still open
+
+P-043 (no escalation when an outage persists) and the Controller's
+request to rewrite the Telegram message for a non-technical reader are
+NOT in this decision. Both are presented separately for approval.

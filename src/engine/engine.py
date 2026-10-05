@@ -322,6 +322,10 @@ class Engine:
         self._notifier = notifier
         self._lock = lock
         self._notified: Set[Tuple[str, str]] = set()
+        # P-041: symbols currently in a market-data outage. Membership
+        # means "the Controller has already been told"; it is cleared by
+        # the first successful price read for that symbol.
+        self._outages: Set[str] = set()
         # Controller-approved 2026-10-01: optional callback invoked at
         # the END of each tick to persist the live DB (and ONLY the DB
         # file) to the remote git branch, so a cloud-container reclaim
@@ -521,7 +525,7 @@ class Engine:
                     and self._execution_repo.get_by_proposal_id(proposal.proposal_id) is None
                 ):
                     try:
-                        price = self._market_data.get_last_trade(proposal.symbol)
+                        price = self._price(proposal.symbol)
                     except MarketDataUnavailableError:
                         # Leave APPROVED; next reconciliation tick with
                         # working market data will retry via the same
@@ -567,16 +571,15 @@ class Engine:
 
     def _recreate_missing_initial_entry(self, trade_id: str, symbol: str, *, now: datetime) -> None:
         try:
-            price = self._market_data.get_last_trade(symbol)
+            price = self._price(symbol)
         except MarketDataUnavailableError as exc:
-            self._notify(
-                level=NotificationLevel.CRITICAL,
+            self._notify_outage(
+                symbol=symbol,
                 event="market_data_unavailable",
                 message=(
                     f"[recovery] Could not re-create the missing Initial Entry proposal for "
                     f"trade {trade_id!r} ({symbol}): {exc}"
                 ),
-                symbol=symbol,
             )
             return
 
@@ -667,17 +670,16 @@ class Engine:
                     continue
                 # APPROVED, INITIAL_ENTRY, no execution row -- retry.
                 try:
-                    price = self._market_data.get_last_trade(proposal.symbol)
+                    price = self._price(proposal.symbol)
                 except MarketDataUnavailableError as exc:
-                    self._notify(
-                        level=NotificationLevel.CRITICAL,
+                    self._notify_outage(
+                        symbol=proposal.symbol,
                         event="market_data_unavailable",
                         message=(
                             f"Recovery: could not fetch current price for "
                             f"{proposal.symbol} to retry approved Initial Entry "
                             f"{proposal.proposal_id}: {exc}."
                         ),
-                        symbol=proposal.symbol,
                     )
                     continue
                 self._notify(
@@ -791,13 +793,12 @@ class Engine:
             return
 
         try:
-            price = self._market_data.get_last_trade(trade.symbol)
+            price = self._price(trade.symbol)
         except MarketDataUnavailableError as exc:
-            self._notify(
-                level=NotificationLevel.CRITICAL,
+            self._notify_outage(
+                symbol=trade.symbol,
                 event="market_data_unavailable",
                 message=f"Could not get current price for {trade.symbol} (trade {trade_id}) for Floor check: {exc}",
-                symbol=trade.symbol,
             )
             return
 
@@ -1167,10 +1168,10 @@ class Engine:
         # current price and D-0007's ±0.5% band.
         if approved and proposal.proposed_action is TradeAction.INITIAL_ENTRY:
             try:
-                price = self._market_data.get_last_trade(proposal.symbol)
+                price = self._price(proposal.symbol)
             except MarketDataUnavailableError as exc:
-                self._notify(
-                    level=NotificationLevel.CRITICAL,
+                self._notify_outage(
+                    symbol=proposal.symbol,
                     event="market_data_unavailable",
                     message=(
                         f"Could not fetch current price for {proposal.symbol} to submit "
@@ -1178,7 +1179,6 @@ class Engine:
                         f"Proposal remains APPROVED; submission will be retried on the next "
                         f"reconciliation tick that has market data."
                     ),
-                    symbol=proposal.symbol,
                 )
                 return
             # An INITIAL_ENTRY has no prior position and therefore no
@@ -1229,10 +1229,10 @@ class Engine:
                 return
             trade = trade_record.trade
             try:
-                price = self._market_data.get_last_trade(proposal.symbol)
+                price = self._price(proposal.symbol)
             except MarketDataUnavailableError as exc:
-                self._notify(
-                    level=NotificationLevel.CRITICAL,
+                self._notify_outage(
+                    symbol=proposal.symbol,
                     event="market_data_unavailable",
                     message=(
                         f"Could not fetch current price for {proposal.symbol} to submit "
@@ -1240,7 +1240,6 @@ class Engine:
                         f"Proposal remains APPROVED; the per-cycle _process_trade path "
                         f"will retry on the next :30 tick with a fresh price."
                     ),
-                    symbol=proposal.symbol,
                 )
                 return
             self._submit_approved(
@@ -1722,13 +1721,12 @@ class Engine:
         self, symbol: str, *, now: datetime, political_signal=None,
     ) -> None:
         try:
-            price = self._market_data.get_last_trade(symbol)
+            price = self._price(symbol)
         except MarketDataUnavailableError as exc:
-            self._notify(
-                level=NotificationLevel.CRITICAL,
+            self._notify_outage(
+                symbol=symbol,
                 event="market_data_unavailable",
                 message=f"Could not get current price for {symbol} to start a new watchlist-driven trade: {exc}",
-                symbol=symbol,
             )
             return
 
@@ -1791,13 +1789,12 @@ class Engine:
             # by this per-cycle Ladder/Floor loop.
 
         try:
-            price = self._market_data.get_last_trade(trade.symbol)
+            price = self._price(trade.symbol)
         except MarketDataUnavailableError as exc:
-            self._notify(
-                level=NotificationLevel.CRITICAL,
+            self._notify_outage(
+                symbol=trade.symbol,
                 event="market_data_unavailable",
                 message=f"Could not get current price for {trade.symbol} (trade {trade_id}): {exc}",
-                symbol=trade.symbol,
             )
             return
 
@@ -2113,11 +2110,101 @@ class Engine:
     def _notify(
         self, *, level: NotificationLevel, event: str, message: str,
         symbol: Optional[str] = None, interactive_actions: tuple = (),
-    ) -> None:
-        self._notifier.send(NotificationEvent(
+    ) -> bool:
+        """Sends, and REPORTS whether it arrived (P-042).
+
+        This used to discard the NotificationResult entirely, so a
+        message Telegram refused -- an over-length proposal, a revoked
+        token, a chat the bot was removed from -- vanished with no trace
+        anywhere. The message that vanishes is the one carrying the
+        approve/reject buttons.
+
+        A failure is written to stdout, which systemd appends to
+        logs/engine.log. That is the ONLY channel left when the
+        notification channel itself is the thing that is broken, so it
+        must not be silent.
+
+        It deliberately does NOT retry the trade, block execution, or
+        raise -- CLAUDE.md §6 and docs/trading/execution.md. It only
+        reports.
+        """
+        result = self._notifier.send(NotificationEvent(
             level=level, event=event, message=message, symbol=symbol,
             interactive_actions=interactive_actions,
         ))
+        success = bool(getattr(result, "success", True))
+        if not success:
+            print(
+                f"[notify-failed] event={event} symbol={symbol} "
+                f"level={level.value} "
+                f"attempts={getattr(result, 'attempts', '?')} "
+                f"status={getattr(result, 'status_code', '?')} "
+                f"error={getattr(result, 'error', '?')}",
+                flush=True,
+            )
+        return success
+
+    def _price(self, symbol: str) -> float:
+        """Single entry point for a live price (P-041).
+
+        Wrapping the read is what makes the outage dedup correct: the
+        all-clear fires from the SAME place the price succeeds, so it
+        can never drift out of step with the alert. Raising
+        MarketDataUnavailableError is unchanged -- every existing caller
+        still catches it exactly as before.
+        """
+        price = self._market_data.get_last_trade(symbol)
+        self._clear_outage(symbol)
+        return price
+
+    def _notify_outage(
+        self, *, symbol: str, event: str, message: str,
+    ) -> None:
+        """P-041: one alert per symbol per outage, not one per tick.
+
+        `_check_floor_trigger` runs for every ACTIVE trade on every
+        reconciliation tick (30 s). With five open positions, an
+        hour-long market-data outage sent 600 identical CRITICAL
+        messages on 2026-10-05. A Controller buried under 600 copies
+        stops reading the channel -- and the next message after that is
+        a Floor execution or a submission failure. Degrading the alert
+        channel degrades every protection that depends on it.
+
+        The alert still fires, immediately, the FIRST time. Only the
+        repeats are suppressed, and `_clear_outage` sends one
+        all-clear when prices come back, so the Controller always knows
+        the current state.
+        """
+        if symbol in self._outages:
+            return
+        self._outages.add(symbol)
+        self._notify(
+            level=NotificationLevel.CRITICAL,
+            event=event,
+            message=(
+                message
+                + "\n\nFurther identical alerts for this symbol are "
+                  "suppressed until prices return; one all-clear will "
+                  "follow."
+            ),
+            symbol=symbol,
+        )
+
+    def _clear_outage(self, symbol: str) -> None:
+        """Called on every successful price read. Sends the all-clear
+        exactly once, and only if an outage was actually open."""
+        if symbol not in self._outages:
+            return
+        self._outages.discard(symbol)
+        self._notify(
+            level=NotificationLevel.IMPORTANT,
+            event="market_data_recovered",
+            message=(
+                f"Market data for {symbol} is available again. "
+                f"Protective checks are being evaluated normally."
+            ),
+            symbol=symbol,
+        )
 
     # ------------------------------------------------------------------
     # Real-clock composition. Every method above is a plain function of
