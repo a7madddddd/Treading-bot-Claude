@@ -33,9 +33,12 @@ the transition period is over.
 
 ## 🚨 BLOCKING — in priority order
 
-### P-014 — In snapshot mode the engine silently falls back to the TSLA test watchlist
-- **Status:** OPEN. Highest priority: it can open real paper trades on
-  test symbols.
+### P-014 — Snapshot-mode TSLA fallback — RESOLVED (D-0054, 2026-10-05)
+- **Status:** APPROVED by the Controller and IMPLEMENTED. Snapshot mode
+  now passes `fallback_watchlist=None`, and an empty universe is
+  REPORTED once per ET trading date instead of being silent. 10 new
+  tests; suite 1402 -> 1412 PASS. See D-0054.
+- The original finding is kept below for history.
 - **FACT, proven by code read:** `scripts/run_paper_session.py:497`
   constructs the universe source as
   `SnapshotUniverseSource(snapshot_repo, fallback_watchlist=symbols)`
@@ -91,9 +94,12 @@ the transition period is over.
 - **Note for whichever is chosen:** the refresh must land BEFORE the
   09:30 ET trigger, or the first tick of the day sees no universe.
 
-### P-016 — Engine startup message always reports "no snapshot", even when one exists
-- **Status:** OPEN. A one-line fix; listed high because it destroyed the
-  Controller's visibility into P-014 and P-015.
+### P-016 — Startup message always reported "no snapshot" — RESOLVED (D-0055, 2026-10-05)
+- **Status:** FIXED. Now calls `get_latest_for_date` with the same ET
+  effective-date helper the Engine uses, and a real lookup failure is
+  printed instead of silently becoming "no snapshot". Verified against
+  the live DB. See D-0055.
+- The original finding is kept below for history.
 - **FACT, proven by direct call:** `scripts/run_paper_session.py:648`
   calls `snapshot_repo.get_snapshot_for(now.date())`. That method does
   not exist on `SqliteSnapshotRepository`. Verified:

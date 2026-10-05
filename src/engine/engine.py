@@ -91,7 +91,7 @@ from trade.repository import TradeRepository
 
 from .decision_source import ControllerDecision, DecisionKind, PendingDecisionSource
 from .lock import EngineLock
-from .schedule import is_d0021_check_time
+from .schedule import D0021_TIMEZONE_ET, is_d0021_check_time
 from .watchlist import WatchlistSource
 
 _LADDER_ACTIONS: Tuple[TradeAction, ...] = (TradeAction.LADDER_1, TradeAction.LADDER_2)
@@ -1097,6 +1097,41 @@ class Engine:
     _TOP_N_PER_CYCLE = 3
     _MIN_SCORE = 60.0
 
+    def _notify_nothing_to_trade(self, reason: str, *, now: datetime) -> None:
+        """Controller-approved 2026-10-05: on a day where the Engine has
+        nothing it can legitimately propose, say so ONCE, instead of
+        staying silent.
+
+        Silence is ambiguous -- the Controller cannot tell "the universe
+        was empty today" from "the engine is dead" or "the pipeline
+        crashed". One positive message per trading day removes that
+        ambiguity. `reason` names WHICH of the no-trade cases fired, so
+        a genuine pipeline failure (no snapshot at all) is
+        distinguishable from a normal quiet day (candidates evaluated,
+        none scored high enough).
+
+        Deduplicated per US-Eastern trading date via the same
+        `_notified` set `_notify_once` uses. That set is in-memory, so
+        an Engine restart mid-day re-sends it once -- deliberately kept,
+        because a restart is itself something the Controller should see.
+        """
+
+        trading_date = now.astimezone(D0021_TIMEZONE_ET).date().isoformat()
+        self._notify_once(
+            kind="nothing_to_trade",
+            key=trading_date,
+            level=NotificationLevel.IMPORTANT,
+            event="nothing_to_trade_today",
+            message=(
+                f"No new trade proposals for {trading_date} (ET).\n"
+                f"Reason: {reason}\n"
+                "The engine is running normally; existing positions "
+                "continue to be monitored (Ladder / Floor / Trailing "
+                "are unaffected). This is a status message, not an error."
+            ),
+            symbol=None,
+        )
+
     def _check_watchlist(self, *, now: datetime) -> None:
         """Watchlist-driven Trade creation.
 
@@ -1146,6 +1181,21 @@ class Engine:
                 )
 
         if not candidates:
+            # Nothing proposable this tick. Distinguish the cases so the
+            # Controller can tell a pipeline failure from a quiet day.
+            if not seen_syms:
+                reason = (
+                    "no universe snapshot for today -- the D-0026 "
+                    "selection run produced no symbols (or has not run "
+                    "yet). Per D-0026 no-universe = no-trade."
+                )
+            else:
+                reason = (
+                    f"all {len(seen_syms)} universe symbol(s) already "
+                    "have an open trade, so there is nothing new to "
+                    "propose."
+                )
+            self._notify_nothing_to_trade(reason, now=now)
             return
 
         if self._evaluator is None:
@@ -1236,6 +1286,25 @@ class Engine:
                 )
 
         accepted = accepted_results[: self._TOP_N_PER_CYCLE]
+
+        if not accepted:
+            # Candidates existed but none survived research. Report it
+            # once per trading day, with the counts, so the Controller
+            # sees that the pipeline ran and simply found nothing good
+            # enough -- not that the engine is stuck.
+            n_cand = len(candidates)
+            n_hard = sum(1 for r in ranked if not r.passes_hard_filter)
+            best = max((r.soft_score for r in ranked
+                        if r.passes_hard_filter), default=None)
+            best_txt = ("none passed the hard filter" if best is None
+                        else f"best score {best:.1f} < required "
+                             f"{self._MIN_SCORE:.0f}")
+            self._notify_nothing_to_trade(
+                f"{n_cand} candidate(s) evaluated, {n_hard} rejected by "
+                f"the hard filter, and {best_txt}.",
+                now=now,
+            )
+            return
 
         for r in accepted:
             self._start_new_trade(r.symbol, now=now)

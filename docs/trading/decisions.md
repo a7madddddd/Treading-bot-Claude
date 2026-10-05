@@ -3273,3 +3273,177 @@ dry-run against a copy of the live DB: `user_version` 6 → 7,
 
 Controller decides the order. Claude's recommended order is P-014,
 then P-015 together with P-016, then P-010.
+
+---
+
+## D-0054 — No fallback watchlist in snapshot mode; empty universe is reported, not silent
+
+**Date:** 2026-10-05
+**Decided by:** Controller
+**Status:** APPROVED and IMPLEMENTED
+**Supersedes:** the B22 transition-period fallback allowance in
+`docs/trading/pre-apply-checklist.md` (row B22). D-0026 §6 now applies
+strictly in production.
+
+### Context
+
+The Controller restated the standing rule: `TSLA`, `AAPL` and `SPY` are
+TEST-ONLY. They are allowed into a trade in exactly ONE way — if the
+D-0026 Universe itself selects them after research, like any other
+symbol in the market. Never as a hardcoded list, never as a fallback,
+never as a default.
+
+`scripts/run_paper_session.py` violated that. In snapshot mode it
+constructed the universe source with `fallback_watchlist=symbols`,
+where `--symbols` defaults to `TSLA,AAPL,SPY`. Per
+`src/engine/snapshot_watchlist.py` the fallback is returned whenever
+today's snapshot is missing or empty. The newest snapshot was for
+2026-10-01, so every snapshot-mode run from 2026-10-02 onward was
+eligible to open an INITIAL_ENTRY on those three test symbols — under a
+flag named `--universe-mode snapshot`, which implies the opposite. The
+VM's live run (PID 159529) passed no `--symbols` at all, so the default
+was in force there.
+
+### Decision
+
+1. In snapshot mode the fallback is `None`. No universe for the current
+   ET trading date means NO new trade that day. Existing positions are
+   unaffected — Ladder, Floor and Trailing run regardless of watchlist
+   emptiness.
+2. Silence is not acceptable as the signal for "nothing to trade". The
+   Engine sends exactly ONE `nothing_to_trade_today` notification per
+   ET trading date, naming WHICH no-trade case fired, so the Controller
+   can tell a pipeline failure from a normal quiet day, and can tell
+   both from a dead engine.
+
+### Rationale
+
+The Controller's words: "we didn't want to suggest any proposal for a
+day that didn't have any succeeded items to propose. We can say we
+didn't have anything to trade today, so I can know on Telegram the
+system is working fine and we didn't have any bug — just today we
+didn't have anything to trade."
+
+Silence is ambiguous and the ambiguity already cost a day: the
+2026-10-04 engine stop went unnoticed because absence of messages was
+indistinguishable from a quiet market.
+
+### The three reported cases
+
+| Case | Message says |
+|---|---|
+| watchlist empty | no universe snapshot for today; D-0026 no-universe = no-trade |
+| all symbols already have an open trade | `N universe symbol(s) already have an open trade` |
+| candidates evaluated, none accepted | `N candidate(s) evaluated, M rejected by the hard filter`, plus either `none passed the hard filter` or `best score X < required 60` |
+
+Every message ends with "The engine is running normally; existing
+positions continue to be monitored (Ladder / Floor / Trailing are
+unaffected). This is a status message, not an error." Level is
+IMPORTANT, never CRITICAL — it is not a fault.
+
+### Implementation
+
+- `scripts/run_paper_session.py` — snapshot mode now passes
+  `fallback_watchlist=None`.
+- `src/engine/engine.py` — new `Engine._notify_nothing_to_trade`,
+  deduplicated per US-Eastern trading date through the existing
+  `_notified` set. Called from the two empty paths in
+  `_check_watchlist`: no candidates at all, and no candidate accepted
+  after ranking.
+- `src/engine/engine.py` — imports `D0021_TIMEZONE_ET` from
+  `engine/schedule.py` for the ET date, rather than inventing a second
+  timezone convention.
+
+The dedup set is in-memory, so an Engine restart mid-day re-sends the
+message once. Kept deliberately: a restart is itself something the
+Controller should see.
+
+### Tests
+
+New `TestNothingToTradeNotification` in `tests/engine/test_engine.py`,
+10 tests:
+- empty watchlist reports the no-snapshot reason
+- **no Trade is created for TSLA / AAPL / SPY from an empty watchlist**
+  — the P-014 guarantee itself
+- reported once per trading day, not once per tick (3 ticks → 1 message)
+- reported again on the next trading day (2 dates → 2 messages)
+- the dedup key uses the ET date, not the UTC date: 20:00 UTC and
+  02:00 UTC next day are the same ET date → 1 message, where a UTC key
+  would wrongly send 2
+- all symbols already open reports that reason
+- all candidates hard-filtered reports the counts
+- all candidates below min score reports the best score
+- a productive cycle sends NO such message
+- the message is IMPORTANT and labelled "not an error"
+
+Full suite: 1402 → **1412 passed, 8 subtests passed**. No regressions.
+
+Verified against the live DB, not only in tests: with the fix,
+`get_latest_for_date(2026-10-01)` returns the real snapshot
+(`NVDA, KO, AMZN, V`, `is_empty=False`), and the current ET date
+(2026-10-05) correctly returns None.
+
+### Next
+
+P-015 — wire the D-0026 selection run so a snapshot exists every
+trading morning. Until that is done, this decision means the engine
+will correctly trade nothing.
+
+---
+
+## D-0055 — Engine startup message reported "no snapshot" unconditionally
+
+**Date:** 2026-10-05
+**Decided by:** Claude (bug fix, no trading-behavior change)
+**Status:** IMPLEMENTED
+**Supersedes:** the startup-message block added in commit `feb422a`.
+
+### Context
+
+The Controller received this on every engine start, including starts
+where a snapshot existed:
+
+> Engine live in snapshot mode. No universe snapshot for today yet —
+> engine will pick it up on the next cycle once it is written.
+
+Two independent bugs in the same block produced it:
+
+1. It called `snapshot_repo.get_snapshot_for(now.date())`. That method
+   does not exist — `SqliteSnapshotRepository` defines
+   `get_latest_for_date`. Verified directly:
+   `hasattr(SqliteSnapshotRepository, "get_snapshot_for")` is `False`,
+   and the call raises
+   `AttributeError: 'SqliteSnapshotRepository' object has no attribute 'get_snapshot_for'`.
+   A bare `except Exception` swallowed it and set `today_snap = None`,
+   so the else branch fired every time.
+2. It passed `now.date()`, a UTC date, while
+   `SnapshotUniverseSource` looks the snapshot up by the US Eastern
+   trading date. Between 00:00 and 04:00 UTC those differ by one day,
+   so even with (1) fixed the message could contradict the Engine.
+
+Severity is in the consequence, not the code: this is what hid both the
+stale universe (P-015) and the live TSLA fallback (P-014) from the
+Controller for days. He was told daily that no snapshot existed, which
+made a broken pipeline look like a pipeline that had simply not run.
+
+### Decision
+
+Call the real method with the SAME effective-date helper the Engine's
+own watchlist source uses, so the message cannot disagree with the
+Engine. A genuine lookup failure now prints the exception class and
+message instead of being silently reported as "no snapshot". The
+no-snapshot message now also states the consequence explicitly: per
+D-0054, no new trade will be opened today.
+
+### Implementation
+
+`scripts/run_paper_session.py` — uses
+`engine.snapshot_watchlist._current_effective_date_et(now)` and
+`snapshot_repo.get_latest_for_date(effective_date)`.
+
+### Tests
+
+Verified against the live DB rather than only in a test: the fixed call
+returns the real 2026-10-01 snapshot (4 symbols) that the old call
+could never return, and correctly returns None for 2026-10-05.
+Full suite: 1412 passed, 8 subtests passed.

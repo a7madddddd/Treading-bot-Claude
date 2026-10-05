@@ -448,3 +448,22 @@ pushed in the same session, never deferred to the next one.
 As part of §0.a, after reading `pending-approvals.md`, also read the
 last entry of `decisions.md` so the session knows the true last state
 of the system before saying anything to the Controller.
+
+### 12.a — Push policy (Controller-approved, 2026-10-05)
+
+Two classes, decided by the Controller:
+
+**Push WITHOUT asking** — commands the Controller gave, decision-log
+entries, `pending-approvals.md` updates, documentation, and
+test-only changes. These are recorded and pushed in the same session,
+per §12.
+
+**NEVER push before explicit Controller approval** — anything that
+changes, or could change, trading strategy or trading behavior:
+entries, exits, sizing, ladder levels, floor, trailing, risk limits,
+execution behavior, candidate selection, scorer weights, filters, or
+schedules that gate trading. Present the design in Arabic, wait, then
+implement.
+
+When a change is partly both, the trading-behavior part decides: hold
+the whole commit until approved.
