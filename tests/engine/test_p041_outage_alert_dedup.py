@@ -188,3 +188,77 @@ class TestDeliveryIsReported(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestP043Escalation(unittest.TestCase):
+    """P-043: a persistent outage must be reported as a STATE ("this
+    position is currently unprotected"), distinct from the EVENT ("an
+    outage started") that P-041 covers. It fires once, so it cannot
+    re-create the flood P-041 removed."""
+
+    def setUp(self):
+        self.repos = _repos()
+        self.md = _FailingMarketData()
+        self.engine, _, _, _, self.notifier, _ = _make_engine(
+            *self.repos, market_data=self.md)
+        _active_trade(self.repos[0], trade_id="T-1", symbol="TSLA")
+        self.engine.start(now=_now())
+        self.notifier.events.clear()
+
+    def _escalations(self):
+        return [e for e in self.notifier.events
+                if e.event == "protection_unevaluated"]
+
+    def _tick(self, n):
+        for _ in range(n):
+            self.engine.run_reconciliation_tick(now=_now())
+
+    def test_a_short_outage_does_not_escalate(self):
+        self._tick(Engine.OUTAGE_ESCALATION_MISSES - 1)
+        self.assertEqual(self._escalations(), [])
+
+    def test_it_escalates_at_the_threshold(self):
+        self._tick(Engine.OUTAGE_ESCALATION_MISSES)
+        self.assertEqual(len(self._escalations()), 1)
+
+    def test_it_escalates_only_once_however_long_the_outage_lasts(self):
+        self._tick(Engine.OUTAGE_ESCALATION_MISSES * 5)
+        self.assertEqual(len(self._escalations()), 1)
+
+    def test_the_message_says_the_position_is_unchecked(self):
+        self._tick(Engine.OUTAGE_ESCALATION_MISSES)
+        body = self._escalations()[0].message
+        self.assertIn("OPEN and UNCHECKED", body)
+        self.assertIn("NOT been evaluated", body)
+
+    def test_the_message_states_that_nothing_is_sold_automatically(self):
+        # The Controller must not fear that a data outage could trigger
+        # a blind sell.
+        self._tick(Engine.OUTAGE_ESCALATION_MISSES)
+        self.assertIn("Nothing will be sold automatically",
+                      self._escalations()[0].message)
+
+    def test_it_is_critical(self):
+        self._tick(Engine.OUTAGE_ESCALATION_MISSES)
+        self.assertIs(self._escalations()[0].level,
+                      NotificationLevel.CRITICAL)
+
+    def test_recovery_resets_the_counter(self):
+        self._tick(Engine.OUTAGE_ESCALATION_MISSES - 1)
+        self.md.healed = True
+        self.engine.run_reconciliation_tick(now=_now())
+        self.md.healed = False
+        self._tick(Engine.OUTAGE_ESCALATION_MISSES - 1)
+        self.assertEqual(self._escalations(), [],
+                         "a healed gap must not carry misses forward")
+
+    def test_a_second_long_outage_escalates_again(self):
+        self._tick(Engine.OUTAGE_ESCALATION_MISSES)
+        self.md.healed = True
+        self.engine.run_reconciliation_tick(now=_now())
+        self.md.healed = False
+        self._tick(Engine.OUTAGE_ESCALATION_MISSES)
+        self.assertEqual(len(self._escalations()), 2)
+
+    def test_threshold_is_five_minutes_at_the_30s_interval(self):
+        self.assertEqual(Engine.OUTAGE_ESCALATION_MISSES * 30, 300)

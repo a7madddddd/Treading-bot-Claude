@@ -61,12 +61,24 @@ class TestFormattedPayloadRespectsTheLimit(unittest.TestCase):
         text = svc._format_text(_event("z" * 50_000))
         self.assertLessEqual(len(text), T.TELEGRAM_MAX_TEXT_CHARS)
 
-    def test_the_header_survives_truncation(self):
-        # The level/event header and the symbol line are prepended, so
-        # they must still be present after the cut.
+    def test_the_head_of_the_body_survives_truncation(self):
+        # D-0071 drops the machine header on a self-describing event, so
+        # the first line of the payload is the body's own first line --
+        # which is where the symbol and the decision numbers live.
         svc = T(bot_token="t", chat_id="c", transport=lambda *a, **k: None)
-        text = svc._format_text(_event("z" * 50_000))
-        self.assertIn("LOW", text.splitlines()[1])
+        text = svc._format_text(_event("LOW — Buy\n" + "z" * 50_000))
+        self.assertTrue(text.startswith("LOW — Buy"))
+
+    def test_an_operational_event_keeps_its_header(self):
+        # Only self-describing events lose the header; a technical
+        # event still needs to say what it is.
+        svc = T(bot_token="t", chat_id="c", transport=lambda *a, **k: None)
+        ev = NotificationEvent(
+            level=NotificationLevel.CRITICAL, event="floor_executed_full",
+            message="sold", symbol="LOW", extra=())
+        text = svc._format_text(ev)
+        self.assertIn("floor_executed_full", text)
+        self.assertIn("Symbol: LOW", text)
 
     def test_a_normal_message_is_not_altered(self):
         svc = T(bot_token="t", chat_id="c", transport=lambda *a, **k: None)

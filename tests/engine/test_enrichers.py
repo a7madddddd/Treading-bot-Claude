@@ -267,7 +267,7 @@ class TestComposite(unittest.TestCase):
             def enrich(self, s): return "a"
         c = CompositeEnricher([_Raises(), _OK()])
         got = c.enrich("TSLA")
-        self.assertEqual(got, "— Research (advisory):\na")
+        self.assertEqual(got, "— Research:\na")  # D-0071 shortened header
 
     def test_order_preserved(self):
         class _A:

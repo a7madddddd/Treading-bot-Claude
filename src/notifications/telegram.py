@@ -27,7 +27,9 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import timezone
 from typing import Callable, Mapping, Optional
+from zoneinfo import ZoneInfo
 
 from .service import INotificationService, NotificationEvent, NotificationResult
 
@@ -135,14 +137,44 @@ class TelegramNotificationService(INotificationService):
         keep = cls.TELEGRAM_MAX_TEXT_CHARS - len(cls._TRUNCATION_MARKER)
         return text[:keep].rstrip() + cls._TRUNCATION_MARKER
 
+    _ET = ZoneInfo("America/New_York")
+
+    # D-0071: events whose body already says, in plain words, what the
+    # message is. For these the internal event name and the duplicated
+    # symbol line are noise -- the Controller asked for a message a
+    # non-technical reader can act on.
+    _SELF_DESCRIBING_EVENTS = frozenset({
+        "proposal_awaiting_approval",
+        "political_proposal_awaiting_approval",
+    })
+
     def _format_text(self, event: NotificationEvent) -> str:
-        lines = [f"[{event.level.value}] {event.event}"]
-        if event.symbol:
-            lines.append(f"Symbol: {event.symbol}")
+        """D-0071 (Controller, 2026-10-05): drop the machine-facing
+        parts, keep every number the decision rests on.
+
+        Removed: the `[LEVEL] internal_event_name` header and the
+        duplicated `Symbol:` line on self-describing events, and the
+        microsecond ISO timestamp everywhere.
+
+        Kept, unchanged: prices, quantities, cost, and all three
+        safeguard levels. Those are the decision, not decoration.
+
+        The timestamp becomes `HH:MM ET` because that is the clock the
+        Controller trades against; the UTC microsecond form told him
+        nothing he could use.
+        """
+        lines = []
+        if event.event not in self._SELF_DESCRIBING_EVENTS:
+            lines.append(f"[{event.level.value}] {event.event}")
+            if event.symbol:
+                lines.append(f"Symbol: {event.symbol}")
         lines.append(event.message)
         for key, value in event.extra:
             lines.append(f"{key}: {value}")
-        lines.append(event.effective_timestamp().isoformat())
+        stamp = event.effective_timestamp()
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        lines.append(stamp.astimezone(self._ET).strftime("%H:%M ET"))
         return self._fit("\n".join(lines))
 
     def send(self, event: NotificationEvent) -> NotificationResult:

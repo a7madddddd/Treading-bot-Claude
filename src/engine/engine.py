@@ -60,7 +60,7 @@ from __future__ import annotations
 import time as _time_module
 import uuid
 from datetime import datetime, timezone
-from typing import Callable, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from execution.broker_client import (
     BrokerClientError,
@@ -127,10 +127,7 @@ def _format_price_context_block(
         change = buy_price - prev
         pct = (change / prev) * 100.0
         arrow = "▲" if change > 0 else ("▼" if change < 0 else "•")
-        lines.append(f"  Previous close: ${prev:,.2f}")
-        lines.append(
-            f"  Change now:     {arrow} ${change:+,.2f}  ({pct:+.2f}%)"
-        )
+        lines.append(f"Change   {arrow} {pct:+.2f}% vs yesterday")
 
     hi = price_context.get("today_high")
     lo = price_context.get("today_low")
@@ -138,20 +135,15 @@ def _format_price_context_block(
         isinstance(hi, (int, float)) and hi > 0
         and isinstance(lo, (int, float)) and lo > 0
     ):
-        lines.append(f"  Today range:    ${lo:,.2f} - ${hi:,.2f}")
+        lines.append(f"Today    ${lo:,.2f} - ${hi:,.2f}")
 
-    op = price_context.get("today_open")
-    if isinstance(op, (int, float)) and op > 0:
-        lines.append(f"  Today open:     ${op:,.2f}")
+    # D-0071: today's OPEN was dropped. The Controller kept the daily
+    # range, which already bounds the session, and the open added a
+    # fourth number without changing any decision.
 
     if not lines:
         return ""
-    return (
-        "\n"
-        "Price context (why this level now):\n"
-        + "\n".join(lines)
-        + "\n"
-    )
+    return "\n" + "\n".join(lines) + "\n"
 
 
 def _format_proposal_message(
@@ -193,17 +185,16 @@ def _format_proposal_message(
         fl = proposal.floor_trigger
         context_block = _format_price_context_block(buy_price, price_context)
         return (
-            f"{prefix}🎯 {symbol} — Initial Entry\n"
+            f"{prefix}🎯 {symbol} — Buy\n"
+            f"\n"
+            f"Buy      {qty} shares at ${buy_price:,.2f}\n"
+            f"Cost     ${cost:,.2f}"
             f"{context_block}"
             f"\n"
-            f"Buy price: ${buy_price:,.2f}\n"
-            f"Quantity:  {qty} shares\n"
-            f"Cost:      ${cost:,.2f}\n"
-            f"\n"
-            f"Downside safeguards (auto-computed from buy price):\n"
-            f"  Ladder 1 buy at: ${l1:,.2f}  (-5%)\n"
-            f"  Ladder 2 buy at: ${l2:,.2f}  (-8%)\n"
-            f"  Auto-sell floor: ${fl:,.2f}  (-10%, protective)"
+            f"Protection:\n"
+            f"  Buy more at   ${l1:,.2f}   (-5%)\n"
+            f"  Buy more at   ${l2:,.2f}   (-8%)\n"
+            f"  Auto-sell at  ${fl:,.2f}   (-10%)"
         )
 
     if action in (TradeAction.LADDER_1, TradeAction.LADDER_2):
@@ -225,22 +216,19 @@ def _format_proposal_message(
         if avg_at is not None:
             after = (
                 f"\n"
-                f"Current avg entry: ${avg_at:,.2f}"
+                f"Average ${avg_at:,.2f}"
             )
         if floor is not None:
             after += (
                 f"\n"
-                f"Active floor: ${floor:,.2f}  (unchanged by this ladder)"
+                f"Auto-sell stays at ${floor:,.2f}"
             )
         return (
-            f"{prefix}📉 {symbol} — {label} (buy more, price down {pct}%)\n"
+            f"{prefix}📉 {symbol} — Buy more (down {pct}% from entry)\n"
             f"\n"
-            f"Trigger price:  ${trigger:,.2f}\n"
-            f"Reference entry: ${entry_ref:,.2f}\n"
-            f"Change from entry: -{pct}%\n"
-            f"\n"
-            f"Additional buy: {qty} shares\n"
-            f"Cost:           ${cost:,.2f}"
+            f"Buy      {qty} shares at ${trigger:,.2f}\n"
+            f"Cost     ${cost:,.2f}\n"
+            f"Entry    ${entry_ref:,.2f}"
             f"{after}"
         )
 
@@ -326,6 +314,10 @@ class Engine:
         # means "the Controller has already been told"; it is cleared by
         # the first successful price read for that symbol.
         self._outages: Set[str] = set()
+        # P-043: consecutive failed price reads per symbol, and the
+        # symbols already escalated, so the escalation is sent once.
+        self._outage_misses: Dict[str, int] = {}
+        self._outage_escalated: Set[str] = set()
         # Controller-approved 2026-10-01: optional callback invoked at
         # the END of each tick to persist the live DB (and ONLY the DB
         # file) to the remote git branch, so a cloud-container reclaim
@@ -1268,6 +1260,11 @@ class Engine:
     _TOP_N_PER_CYCLE = 3
     _MIN_SCORE = 60.0
 
+    OUTAGE_ESCALATION_MISSES = 10
+    """P-043: consecutive failed price reads before the engine reports
+    that a position's protective floor is going unevaluated. 10 misses
+    at the 30-second reconciliation interval is five minutes."""
+
     PROPOSAL_TTL_SECONDS = 3600.0
     """Controller-approved 2026-10-05: a PENDING proposal that gets no
     decision within 60 minutes expires, and an expired INITIAL_ENTRY
@@ -2175,6 +2172,42 @@ class Engine:
         all-clear when prices come back, so the Controller always knows
         the current state.
         """
+        misses = self._outage_misses.get(symbol, 0) + 1
+        self._outage_misses[symbol] = misses
+
+        # P-043 (Controller-approved 2026-10-05). The first alert says
+        # an outage HAPPENED. This one says the position is currently
+        # UNPROTECTED, which is a different fact and the one the
+        # Controller acts on -- close by hand, or wait.
+        #
+        # ESCALATION_MISSES ticks at the 30s reconciliation interval is
+        # five minutes. A blip never reaches it; a real outage always
+        # does. It fires ONCE, so it cannot re-create the flood P-041
+        # just removed.
+        #
+        # It deliberately triggers NO automatic action. Selling on
+        # missing data is the one thing that must never happen: the
+        # floor LEVEL is known (it is frozen from the initial entry,
+        # D-0009, and persisted), but whether the market has crossed it
+        # is exactly what cannot be known without a price.
+        if (misses >= self.OUTAGE_ESCALATION_MISSES
+                and symbol not in self._outage_escalated):
+            self._outage_escalated.add(symbol)
+            minutes = int(misses * 30 / 60)
+            self._notify(
+                level=NotificationLevel.CRITICAL,
+                event="protection_unevaluated",
+                message=(
+                    f"{symbol}: no price data for about {minutes} "
+                    f"minute(s).\n"
+                    f"The protective floor has NOT been evaluated in "
+                    f"that time.\n"
+                    f"The position is OPEN and UNCHECKED. Nothing will "
+                    f"be sold automatically without a price."
+                ),
+                symbol=symbol,
+            )
+
         if symbol in self._outages:
             return
         self._outages.add(symbol)
@@ -2193,9 +2226,13 @@ class Engine:
     def _clear_outage(self, symbol: str) -> None:
         """Called on every successful price read. Sends the all-clear
         exactly once, and only if an outage was actually open."""
+        self._outage_misses.pop(symbol, None)
+        was_escalated = symbol in self._outage_escalated
+        self._outage_escalated.discard(symbol)
         if symbol not in self._outages:
             return
         self._outages.discard(symbol)
+        del was_escalated
         self._notify(
             level=NotificationLevel.IMPORTANT,
             event="market_data_recovered",

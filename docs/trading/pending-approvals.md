@@ -1339,8 +1339,9 @@ non-bugs is worse than a short one.
   The cap belongs in the client, not in each enricher, because the
   limit is the transport's and new enrichers must not have to know it.
 
-### P-043 — "Floor not evaluated" has no escalation if it persists
-- **Status:** OPEN, lower priority than P-041/P-042 and recorded as
+### P-043 — "Floor not evaluated" has no escalation if it persists — RESOLVED (D-0071, 2026-10-05)
+- **Status:** RESOLVED by D-0071, Controller-approved and pushed 2026-10-05.
+- **Status when raised:** OPEN, lower priority than P-041/P-042 and recorded as
   such.
 - **FACT:** on `MarketDataUnavailableError`, `_check_floor_trigger`
   notifies and returns without evaluating the Floor

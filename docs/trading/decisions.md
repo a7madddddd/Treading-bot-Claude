@@ -4863,3 +4863,98 @@ at the bottom.
 P-043 (no escalation when an outage persists) and the Controller's
 request to rewrite the Telegram message for a non-technical reader are
 NOT in this decision. Both are presented separately for approval.
+
+---
+
+## D-0071
+
+**Date:** 2026-10-05
+**Status:** APPROVED (Controller, 2026-10-05: "I need to make the
+telegram message as for the non-technical person"; "keep the English";
+"short it [research] as you can, but without touch the important
+points"; "keep the daily limit"; "about the bug number three. Yes, fix
+it.")
+**Closes:** P-043, and the Controller's message-readability request.
+
+### Decision
+
+**1. The Telegram message is written for a non-technical reader.**
+Removed: the `[LEVEL] internal_event_name` header and the duplicated
+`Symbol:` line on self-describing events (proposal notifications only —
+operational events keep their header, because there the event name IS
+the information); the microsecond UTC timestamp, replaced by `HH:MM ET`;
+today's OPEN price; and the phrase "auto-computed from buy price".
+
+Kept exactly as they were: every price, the quantity, the cost, the
+daily range (Controller: "keep the daily limit"), and all three
+protection levels. Language stays English (Controller's choice).
+
+Before / after, rendered from the code, same proposal:
+
+```
+[IMPORTANT] proposal_awaiting_approval        🎯 LOW — Buy
+Symbol: LOW
+🎯 LOW — Initial Entry                        Buy      20 shares at $250.00
+                                              Cost     $5,000.00
+Price context (why this level now):           Change   ▲ +0.77% vs yesterday
+  Previous close: $248.10                     Today    $247.80 - $252.30
+  Change now:     ▲ $+1.90  (+0.77%)
+  Today range:    $247.80 - $252.30           Protection:
+  Today open:     $249.50                       Buy more at   $237.50   (-5%)
+                                                Buy more at   $230.00   (-8%)
+Buy price: $250.00                              Auto-sell at  $225.00   (-10%)
+Quantity:  20 shares
+Cost:      $5,000.00                          — Research:
+                                              • ...
+Downside safeguards (auto-computed ...):      14:26 ET
+  Ladder 1 buy at: $237.50  (-5%)
+  ...
+2026-10-05T18:17:07.953730+00:00
+```
+
+735 characters → **336**, with no decision input removed.
+
+**2. The research block is capped as a whole (600 characters).**
+`CompositeEnricher` joined five sub-enrichers with no combined limit.
+Sources are kept in constructor order and **whole** — a source is
+included only if it fits entirely, so the Controller never reads half a
+sentence — and the block says `(N more source(s) not shown)` rather than
+ending as if complete. The cap applies only to the advisory block, which
+sits BELOW the prices and the protection levels.
+
+**3. P-043: a persistent outage is escalated once, as a STATE.**
+`Engine.OUTAGE_ESCALATION_MISSES = 10` consecutive failed price reads —
+five minutes at the 30-second reconciliation interval — sends one
+CRITICAL `protection_unevaluated` message per symbol per outage:
+
+```
+TSLA: no price data for about 5 minute(s).
+The protective floor has NOT been evaluated in that time.
+The position is OPEN and UNCHECKED. Nothing will be sold
+automatically without a price.
+```
+
+D-0070's alert says an outage *started*; this says the position is
+*currently unprotected*. The second is the one the Controller acts on.
+A recovery resets the counter, so a healed gap never carries misses
+forward into the next outage.
+
+**It triggers no automatic action, deliberately.** The floor LEVEL is
+known throughout — it is frozen from the initial entry (D-0009) and
+persisted, so it survives a restart and an outage alike. What cannot be
+known without a price is whether the market has crossed it. Selling on
+missing data is the one thing that must never happen.
+
+### Tests
+
+- `tests/engine/test_p041_outage_alert_dedup.py` — 9 added (22 total):
+  no escalation below the threshold, exactly one at it, still one after
+  five times the threshold, the wording states the position is open and
+  unchecked and that nothing is sold automatically, recovery resets the
+  counter, and a second long outage escalates again.
+- `tests/notifications/test_p042_telegram_length_cap.py` — the head of
+  the body survives truncation; an operational event keeps its header.
+- Updated rather than deleted: `tests/engine/test_enrichers.py` and
+  `tests/notifications/test_telegram.py` now assert the new intent
+  (shortened research header; `08:00 ET` instead of the UTC ISO stamp).
+- Full suite: **1570 passed, 54 subtests passed**, no regressions.
