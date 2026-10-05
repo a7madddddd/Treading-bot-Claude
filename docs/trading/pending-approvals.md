@@ -902,3 +902,90 @@ check: data provider returned HTTP 429 for 'GOOGL': too many requests.
 - **What would change the recommendation:** if the Controller ever
   wants an intraday refresh as normal practice, option 2 becomes
   necessary rather than optional.
+
+---
+
+## 📋 BACKLOG — Controller-requested, deliberately NOT now (2026-10-05)
+
+Recorded with their real questions attached. The point is that a future
+session starts from substance instead of re-deriving it.
+
+### P-033 — Futures contracts
+- **Status:** BACKLOG. Requested by the Controller 2026-10-05, to be
+  designed later.
+- **What it is:** extend the system beyond US equities to futures.
+- **UNKNOWN, must be verified first:** whether the current broker
+  exposes futures on the API this project uses at all. Everything below
+  is moot until that is answered, and it should be the first thing
+  checked — not assumed from memory.
+- **Why this is architecture, not a feature flag.** Four approved
+  contracts assume an instrument that behaves like a share, and a
+  futures contract breaks each one:
+
+  1. **Expiry breaks the frozen reference (D-0009).** A trade is
+     anchored to its original initial-entry fill price for the life of
+     the position. A futures contract expires, and continuing the
+     position means rolling into a different contract at a different
+     price. "The trade is the symbol" stops being true, and the Ladder
+     and Floor levels have nothing stable to hang from.
+  2. **Leverage is intrinsic, so D-0051 sizing does not translate.**
+     Sizing computes `floor(dollars / price)` from 5% of equity. A
+     contract controls a notional far larger than its margin, so the
+     same formula would buy a position many times the intended risk —
+     the same class of error D-0051 was created to fix, in a new form.
+  3. **The ATR band (D-0065) is a percentage of price.** For a
+     margined contract the meaningful denominator is margin or
+     notional, not price, so 2%–4% means something different and the
+     measured evidence behind it does not carry over.
+  4. **Near-24-hour sessions break D-0021 and D-0060.** The trigger
+     schedule is seven fixed ET times inside a 09:30–16:00 session, and
+     the market-open gate asks a binary open/closed question. Neither
+     survives a contract that trades almost continuously.
+
+- **Also unaddressed:** contract multipliers, tick sizes, margin calls
+  (an equity position cannot be liquidated by the broker for margin;
+  a futures position can, which is an exit path the engine does not
+  model at all).
+- **Recommended shape when it is taken up:** treat it as a parallel
+  instrument class with its own sizing, its own schedule and its own
+  reference-price contract, rather than widening the equity path.
+  Mixing them is how the 60× exposure bug (D-0051) and the leveraged-
+  ETF bug (D-0056) both happened — one path, two instrument behaviors.
+
+### P-034 — A "remind me later" action on Telegram proposals
+- **Status:** BACKLOG. Requested by the Controller 2026-10-05.
+- **What it is:** a third inline button beside Approve and Reject.
+- **It interacts directly with something built TODAY, which is why the
+  obvious implementation is probably wrong.** D-0059 gives a PENDING
+  proposal a 60-minute TTL. A naive "remind me later" would extend that
+  TTL and re-send the same proposal.
+- **Why that would be close to useless.** D-0007 revalidation refuses a
+  submission once price has drifted more than **0.5%** from the
+  proposal's trigger. A proposal held for an hour so it can be
+  re-offered will, in most sessions, simply be refused on approval. The
+  Controller would get a button that looks like a choice and mostly
+  is not.
+- **The better framing, recorded so it is not re-derived:** what is
+  actually wanted is almost certainly *"I am interested in this SYMBOL,
+  ask me again with a FRESH price"* — a snooze on the symbol, not a
+  stay of execution on a stale proposal. That suggests:
+  - expire the current proposal normally (no change to D-0059);
+  - mark the symbol as Controller-flagged;
+  - have `_check_watchlist` give a flagged symbol priority on the next
+    D-0021 cycle, if it still passes every stage, with a fresh price
+    and a fresh proposal.
+  That is a different and smaller change than extending a TTL, and it
+  produces a proposal that can actually be approved.
+- **Open questions for the design session:**
+  1. How long does a flag last — one cycle, the trading day, or until
+     cleared?
+  2. Does a flagged symbol bypass `_MIN_SCORE`, or only reorder within
+     the qualifiers (as D-0058's political slot does)? Bypassing a
+     threshold on request is a different risk from reordering.
+  3. Does it occupy one of the three per-cycle proposal slots, or sit
+     outside the cap?
+  4. What happens if the symbol stops passing the pipeline — silence,
+     or a message saying why it will not return?
+- **Touches:** `src/notifications/telegram.py` (the button),
+  `src/engine/decision_source.py` (a third `DecisionKind`),
+  `Engine._apply_decision`, and `_check_watchlist`.
