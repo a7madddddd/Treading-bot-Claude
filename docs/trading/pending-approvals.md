@@ -1524,8 +1524,29 @@ notifications sent          : NONE
   from the broker; the Controller decides. Observability only, which
   makes it the cheapest and least risky of the open items.
 
-### P-046 — Protective floor as a resting broker-side order (Controller's idea, deferred)
-- **Status:** DEFERRED by the Controller, 2026-10-05: "about the floor
+### P-046 — Protective floor as a resting broker-side order — CLOSED, NOT PROCEEDING (Controller, 2026-10-05)
+- **Status:** **CLOSED by Controller decision, 2026-10-05**, after the
+  broker facts were verified: *"let's forget to make alpaca who will
+  decide … that will close."*
+- **What closed it.** The live account check returned
+  `shorting_enabled: True` with a 4× multiplier, and Alpaca has no
+  reduce-only flag. So a stray or duplicate sell is **accepted and opens
+  a short** rather than being rejected — an unbounded-loss shape that
+  does not exist anywhere in the approved strategy. Buying that
+  protection would have meant taking on a worse failure mode than the
+  one it fixes, and the Controller declined to hand the exit decision to
+  the broker.
+- **What the gap still is, stated honestly:** if the engine is dead, the
+  VM is off, or market data is unavailable, **there is no protective
+  exit at all**. That remains true and is not solved by this closure.
+  The mitigations that DO exist are the ones built on 2026-10-05:
+  `Restart=always` with lingering, the D-0070 outage alert, and the
+  D-0071 five-minute "position is OPEN and UNCHECKED" escalation — the
+  Controller is told, and can act by hand.
+- **The research below is kept** because it is the verified record of
+  why this was not done, and because any future revisit starts from it
+  rather than repeating the broker checks.
+- **Original entry, status DEFERRED by the Controller, 2026-10-05:** "about the floor
   point, note it down, we will return for it and discuss it."
 - **The Controller's observation, which is correct:** the floor level is
   computed from the initial entry price, which is frozen (D-0009) and
@@ -1840,8 +1861,35 @@ notifications sent          : NONE
   proposal history. Losing the VM's disk means the engine cannot
   reconstruct any of that, and every open position loses its ladder and
   floor references even though the shares still exist at the broker.
-- **RECOMMENDATION:** a once-daily backup after the close — a copy of
-  the SQLite file to a second location, or a single git commit per day
-  rather than per tick. One commit a day is 1/780th of the old cost and
-  removes the single point of failure. Deliberately NOT per-tick: that
-  is the behavior the flag was added to stop.
+- **CONTROLLER HISTORY (2026-10-05), which rules out the obvious
+  answer:** he previously tried to have the VM push the database to
+  GitHub and it failed — the VM had no GitHub username or push
+  permission — and *"that was pause the entire project."* So **any
+  recommendation that depends on the VM authenticating to GitHub is not
+  acceptable**, and a git-based daily commit is off the table unless he
+  separately decides to set up a deploy key or token.
+
+- **RECOMMENDATION, in two steps, the first needing no credentials at
+  all:**
+
+  **Step 1 — a local rotated copy after the close.** A nightly
+  `sqlite3 ... ".backup"` of `paper_session.sqlite` into a `backups/`
+  directory, keeping the last N days. Zero credentials, zero network,
+  runs as a user timer beside the two that already exist.
+  **Be honest about what this does and does not do:** it protects
+  against a corrupt write, a bad migration, or an accidental deletion —
+  the likely failures. It does **not** protect against losing the VM's
+  disk, because the copy is on that same disk.
+
+  **Step 2 — off-machine, only if the Controller wants it.** That
+  requires some credential. GitHub needs a deploy key or token, which is
+  what failed before. The alternative worth looking at first is Oracle
+  Object Storage, because the VM is already an OCI instance and can
+  authenticate with an instance principal — **no password, no key to
+  leak, nothing to rotate**. That is a separate decision with its own
+  setup, not a prerequisite for step 1.
+
+- **Why step 1 is worth doing on its own:** the realistic failure here
+  is not the datacentre losing a disk; it is a bad write or a mistaken
+  command destroying `paper_session.sqlite` while the engine is running.
+  A nightly local copy covers that for the cost of one timer.
