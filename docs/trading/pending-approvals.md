@@ -840,3 +840,59 @@ Controller's VM, not inferred:
   needed.
 - **Action:** run the real job once today, which both replaces the
   one-symbol snapshot and measures the true runtime for P-029.
+
+### P-032 — Universe run starved the engine's Floor checks — RESOLVED (D-0067, 2026-10-05)
+- **Status:** FIXED. `run_universe_selection.py` now refuses to start
+  while the market is open unless `--force` is passed, failing closed
+  when market state cannot be determined. All three paths tested
+  against the real broker; the fail-closed test found and fixed a bug
+  where the guard produced a traceback instead of its refusal message.
+  See D-0067.
+- Verified recovered: all five open positions returned live prices
+  immediately after the run was stopped.
+- The original finding is kept below for history.
+- **What happened:** a MANUAL universe run was started at 14:54 UTC
+  (10:54 ET) — mid-session, with the market open. It issues ~11,683
+  bars requests and exhausts Alpaca's rate limit. The engine, polling
+  every 30 seconds for its open positions, then received HTTP 429:
+
+```
+[CRITICAL] market_data_unavailable
+Symbol: GOOGL
+Could not get current price for GOOGL (trade GOOGL-07c7589f) for Floor
+check: data provider returned HTTP 429 for 'GOOGL': too many requests.
+```
+
+- **Why it is a SAFETY issue, not noise.** Read
+  `Engine._check_floor_trigger`: on `MarketDataUnavailableError` it
+  notifies and **returns without evaluating the floor**. So for the
+  duration of the universe run, the protective Floor and the Trailing
+  Floor were not being evaluated on five real open positions — `TSLA`,
+  `GOOGL`, `QQQ`, `NVDA`, `AMZN`. The engine never crashed and retried
+  every 30s, and the observed failures were intermittent rather than
+  total, but the protection was degraded for the whole window.
+- **This is Claude's error, not a design fault.** The approved 06:00 ET
+  schedule avoids the collision entirely: the market is closed, the run
+  finishes around 07:00, and there are no positions to poll. Claude
+  asked the Controller to start a full run by hand at 10:54 ET without
+  accounting for the collision with the live engine.
+- **Resolution:** the Controller stopped the run. The one-symbol test
+  snapshot remains today's universe, which is acceptable.
+- **CONTROLLER DECISION needed — a guard so this cannot recur:**
+  1. **Refuse by default during market hours.**
+     `run_universe_selection.py` asks the broker whether the market is
+     open and exits unless `--force` is passed. Cheapest, and it uses
+     the `is_market_open()` method D-0060 already added.
+  2. **Throttle the universe run** to leave headroom for the engine.
+     More correct in principle, but it lengthens a run that is already
+     ~58 minutes and the right headroom figure is unknown.
+  3. **Give the engine a separate, prioritised data path.** Most
+     robust, most work, and probably unnecessary once (1) exists.
+- **Claude's RECOMMENDATION: option 1.** The 06:00 schedule already
+  means the production path never collides, so the guard exists purely
+  to stop a human — including Claude — from doing by hand what the
+  timer would never do. `--force` keeps it possible when genuinely
+  needed, with the consequence stated out loud.
+- **What would change the recommendation:** if the Controller ever
+  wants an intraday refresh as normal practice, option 2 becomes
+  necessary rather than optional.
