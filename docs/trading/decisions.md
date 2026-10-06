@@ -6088,3 +6088,123 @@ The test harness method was named `run()`, which collides with
 `unittest.TestCase.run()` — the framework calls it with a `result`
 kwarg and 13 tests failed with `TypeError` before any assertion ran.
 Renamed to `_drive()`.
+
+## D-0081 — The real funnel, measured: 26 survivors, and the ATR band is what decides the watchlist
+
+**Date:** 2026-10-06
+**Status:** MEASUREMENT — no behaviour changed, no parameter changed
+**Source:** the first real 06:00 ET universe run on the Controller's VM,
+snapshot written 10:01 ET for effective date 2026-10-06
+
+### The numbers, from the VM
+
+| stage | rejected | left | kill rate |
+|---|---|---|---|
+| raw_candidates_fetched | — | **12,589** | |
+| A missing market data | 2,763 | 9,826 | 21.9% |
+| A tradability | 7,468 | 2,358 | 76.0% |
+| B data quality | **0** | 2,358 | 0% |
+| C execution quality | 1,414 | 944 | 60.0% |
+| **D strategy fit (ATR 2–4% + trend)** | **918** | **26** | **97.2%** |
+| E regime | 0 | 26 | 0% |
+| G concentration | 0 | 26 | 0% |
+| **H top_n cap** | **16** | **10** | 61.5% |
+
+Arithmetic closes exactly: 12,589 − 12,579 = 10.
+
+Recovered from `rejection_summary_json`, because
+`survivors_to_snapshot` turned out NOT to be the number anyone
+assumed — see below.
+
+### Finding 1 — `survivors_to_snapshot` is measured AFTER the cap
+
+`UniversePipeline` runs `candidates = result.survivors` through
+`ORDERED_CANDIDATE_STAGES`, and `PipelineStage.TOP_N` is in that
+tuple. So `survivors_to_snapshot = 10` only because `top_n = 10`. It
+is the published count, never the surviving pool.
+
+The pool is recoverable as `10 + rejection_summary["H_top_n:not_in_top_n"]`
+= 10 + 16 = **26**.
+
+Claude told the Controller to wait for `survivors_to_snapshot` as the
+number that would size the watchlist percentage. That was wrong, and
+reading the stage loop would have shown it.
+
+### Finding 2 — P-059 is rejected by its own measurement
+
+The percentage rule the Controller and Claude designed was
+`top_n = 10% of survivors`. On real data:
+
+```
+10% of 26 = 2 symbols
+```
+
+**Two.** The rule would have CUT the watchlist from 10 to 2 — the exact
+opposite of its purpose. Claude's estimate for this number was 560
+survivors (56 symbols), computed by compounding four percentile
+stages. The real figure is 26: **wrong by 22×.**
+
+Why the estimate failed: the per-symbol gates, which cannot be modelled
+as percentages, do nearly all the work. Stage D alone removed 918 of
+the 944 that reached it.
+
+The Controller withdrew this item yesterday on his own instinct
+("I will remove that"), before any number existed. That instinct was
+right and the data now proves it. Had he not withdrawn it, Claude
+would have built it.
+
+### Finding 3 — the ATR band is what actually chooses the watchlist
+
+Stage D kills **97.2%** of everything reaching it. Only 26 symbols in
+a 12,589-symbol market have ATR between 2% and 4% of price AND survive
+liquidity, price, spread and trend.
+
+```
+min_atr_fraction = 0.02
+max_atr_fraction = 0.04
+```
+
+D-0065 narrowed this band yesterday from 1%–5% on measured evidence.
+That decision, not the scorer weights and not `top_n`, is what
+determines which symbols the Controller sees. It also explains why the
+day's ten are dominated by funds: individual stocks are mostly either
+more volatile than 4% or quieter than 2%.
+
+**No change proposed here.** The band is Controller-approved on
+measured evidence and one day is not grounds to revisit it. Recorded
+because the project did not know where its own bottleneck was.
+
+### Finding 4 — the real opportunity is the cap going UP, not a percentage
+
+26 survived every safety stage. 10 are published. **16 are never
+scored or seen.** The engine then picks its best 3 from 10 instead of
+from 26.
+
+Since the surviving pool is this small, a percentage is pointless:
+"publish everything that survived" is the natural rule, and `top_n`
+exists as a Controller operational cap, not a calibration value.
+
+Deferred deliberately: one day's figure is not evidence that 26 is
+typical. Needs several days of `10 + H_top_n:not_in_top_n` before any
+proposal.
+
+### Finding 5 — Stage B is inert too
+
+`B data quality` rejected **zero** candidates, because symbols with
+missing features are already dropped in Stage A as
+`missing_market_data`. Added to P-060, which already records three
+config percentages that no code reads.
+
+### First measurement for P-065
+
+```
+completeness = enriched_with_features / identity_resolved
+             = 9,826 / 12,589
+             = 78.05%
+```
+
+Note what this means for the reverted D-0077: a 78% day would have
+been classified as degraded and the Controller's limits cut — on a day
+when every part of the pipeline worked and a full snapshot was
+published. **The revert was correct, and this is the first number that
+demonstrates it.** 19 more days are needed before a band can be set.

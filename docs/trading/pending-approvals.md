@@ -2406,9 +2406,22 @@ on stale technicals, which is a trading-behavior change. A correct fix
 is selective per-field caching, which needs the fields each of the six
 sources supplies to be read one by one first. Not yet done.
 
-## P-059 — The watchlist percentage, waiting on a measured number
+## P-059 — The watchlist percentage — REJECTED BY ITS OWN MEASUREMENT
 
-**Status:** OPEN — deferred by the Controller, 2026-10-06
+**Status:** CLOSED 2026-10-06 — see D-0081. The measurement arrived and
+killed the idea: the surviving pool is **26**, so `10% of survivors`
+= **2 symbols**, which would CUT the watchlist from 10 to 2. Claude's
+estimate was 560 survivors (56 symbols) — wrong by 22×, because the
+per-symbol gates do nearly all the filtering and cannot be modelled as
+percentages. The Controller withdrew this on instinct before any number
+existed; the data proves the instinct right.
+**Superseded by:** the opposite question — whether `top_n` should RISE
+to publish all survivors, since 16 of 26 are currently never scored.
+Deferred: one day is not evidence that 26 is typical.
+
+### Original entry, kept for the record
+
+**Status:** was OPEN — deferred by the Controller, 2026-10-06
 **Blocks on:** one real 06:00 ET universe run
 
 Making `top_n` a percentage of the surviving pool instead of a fixed 10
@@ -2437,6 +2450,13 @@ min_market_cap_percentile  = 0.40   no stage reads it
 max_gap_fraction           = 0.05   no stage reads it
 max_pairwise_correlation   = 0.70   stage G documents it, does not apply it
 ```
+
+**Added 2026-10-06 from the first real run (D-0081):** Stage B
+(`min_completeness_fraction = 0.90`) is **also effectively inert** —
+it rejected **zero** of 2,358 candidates, because symbols with missing
+features are already dropped in Stage A as `missing_market_data`. So
+four things in the pipeline configuration look like active gates and
+are not.
 
 All three are declared in `UniverseSelectionConfig`, validated in its
 `__post_init__`, and described in its docstring under the stage that
@@ -2643,3 +2663,61 @@ day-to-day variation, and that variation has not been measured yet.
 | **P-063 research caching** | **decided — awaiting a field-level design** |
 | ~~P-064 pre-send risk check~~ | **RESOLVED — D-0080** |
 | **P-065 degraded-day cap reduction** | **decided — awaiting ~20 days of measurement** |
+
+---
+
+## P-066 — Should `top_n` RISE? 16 of 26 survivors are never scored
+
+**Status:** OPEN — needs several days of measurement first
+**Opened:** 2026-10-06 from D-0081
+
+The first real run measured the surviving pool at **26** symbols out of
+12,589. `top_n = 10` publishes ten of them, so **16 symbols that passed
+every safety stage are never scored, never ranked by the evaluator, and
+never seen.** The engine then picks its best 3 from 10 rather than from
+26.
+
+This is the inverse of P-059, which assumed the pool was large and
+wanted to cut it. It is small, so the question is whether to publish
+all of it.
+
+Since the pool is this small a percentage is meaningless — "publish
+every survivor" is the natural rule, and `top_n` is documented in
+`config.py` as a *Controller operational cap, not a calibration value*.
+
+**What is needed before proposing anything:** several days of
+`10 + rejection_summary["H_top_n:not_in_top_n"]`, to know whether 26 is
+typical or whether 2026-10-06 was unusually narrow. One day is not
+evidence.
+
+**Cost side, already known:** more watchlist symbols means more
+research calls per cycle (P-058: Alpha Vantage is already over its free
+limit at 10 symbols). D-0080's Layer 1 reduces this a lot on capped
+days — measured zero research calls for a whole simulated day once the
+daily cap was reached — but it does not remove the cost on an open day.
+
+## P-067 — The ATR band is what actually selects the watchlist
+
+**Status:** OPEN — informational, no change proposed
+**Opened:** 2026-10-06 from D-0081
+
+Stage D (`min_atr_fraction = 0.02`, `max_atr_fraction = 0.04`) rejected
+**918 of the 944** candidates that reached it — a **97.2%** kill rate.
+Every other stage combined narrows 12,589 to 944; this one stage
+narrows 944 to 26.
+
+So the band approved in D-0065 yesterday, not the scorer weights and
+not `top_n`, is what determines which symbols the Controller sees. It
+also explains why the day's ten are dominated by funds: individual
+stocks mostly sit either above 4% or below 2%.
+
+**Deliberately not proposing a change.** The band is Controller-approved
+on measured evidence (a 150-symbol study), and one day is not grounds
+to revisit it. Recorded because the project did not know where its own
+bottleneck was, and because any future discussion about "why do I only
+see ETFs" or "why so few candidates" starts here rather than with the
+scorer.
+
+**What would justify revisiting it:** several days showing the pool
+stuck in the low tens, combined with evidence that the 2–4% band
+excludes symbols the ladder would have handled well.
