@@ -2721,3 +2721,139 @@ scorer.
 **What would justify revisiting it:** several days showing the pool
 stuck in the low tens, combined with evidence that the 2–4% band
 excludes symbols the ladder would have handled well.
+
+---
+
+# 2026-10-06, market open — four defects the first 10-symbol day exposed
+
+All four pre-date today. None was introduced by D-0079 or D-0080. What
+changed is that the watchlist went from 1 symbol to 10, so what used to
+cost seconds now costs minutes and became visible.
+
+## P-068 — `fut.result(timeout=...)` does NOT bound the wait. THE HANG.
+
+**Status:** OPEN — **highest priority**, the cause of today's outage
+**Severity:** blocks the protective Floor while the market is open
+
+Measured on the VM, 2026-10-06:
+
+```
+heartbeat age        418 s  (6m58s)   frozen at 09:31:17 ET
+elapsed / cpu        01:03:59 / 00:00:12
+10 s later           01:04:09 / 00:00:12   <-- cpu FROZEN
+threads              2  (main + one hung worker)
+```
+
+CPU time did not advance by one second in ten. The process was not
+working; it was blocked on a socket read that never returned.
+
+**The mechanism**, in `engine/research_hub.py`:
+
+```python
+with _fut.ThreadPoolExecutor(max_workers=self._max_workers) as ex:
+    ...
+    data = fut.result(timeout=self._deadline)   # 60s -- raises, caught
+```
+
+The timeout releases the *wait*. It does not release the *thread*.
+Leaving the `with` block calls `shutdown(wait=True)`, which blocks
+until every worker finishes — including the hung one. **Forever.**
+
+The same shape is nested inside `_fetch_perplexity`, which opens its
+own `ThreadPoolExecutor` and uses `result(timeout=55.0)`.
+
+So the code reads as if every source is bounded at 60 seconds. Nothing
+is bounded at all. With 1 watchlist symbol this was survivable; with
+10 it hung on the first cycle of the first real day.
+
+**The culprit source is still UNKNOWN.** The sockets that would name it
+died with the process on restart. `api.telegram.org`
+(149.154.166.110, verified by DNS) is the engine's expected long-poll
+and is not it. `scripts/engine_health.py --watch` now captures the
+sockets at the moment of a hang so the next occurrence names it.
+
+**Fix direction (not applied — market was open):**
+
+```python
+ex = ThreadPoolExecutor(...)
+try:
+    ...
+finally:
+    ex.shutdown(wait=False, cancel_futures=True)
+```
+
+plus a deadline on the whole watchlist cycle, not only per source.
+This touches research collection, which feeds the scorer, so it is a
+trading-behaviour change and needs the Controller's approval.
+
+## P-069 — No heartbeat inside `_check_watchlist`
+
+**Status:** OPEN
+**Severity:** a live engine can be mistaken for a dead one
+
+`run_trigger_check` beats before and after `_check_watchlist`, never
+inside it:
+
+```python
+self._heartbeat(now=now)
+self._check_watchlist(now=now)     # minutes, zero beats
+self._heartbeat(now=now)
+```
+
+Today the heartbeat reached **418 s**, past `EngineLock`'s
+`STALE_THRESHOLD_SECONDS = 300`. A second engine starting in that
+window would have judged the live one dead and taken the lock — **two
+engines against one broker account.**
+
+**Fix direction:** beat after each symbol's research, inside the loop.
+
+## P-070 — One sequential loop: the Floor waits behind research
+
+**Status:** OPEN — **the most dangerous of the four**
+**Severity:** protective exits unevaluated while the market moves
+
+`_check_floor_trigger` runs in `run_reconciliation_tick`, every 30 s —
+correct. But the runner's loop is sequential:
+
+```python
+while not stop_flag:
+    engine.run_reconciliation_tick(now=now)   # the Floor is here
+    if is_d0021_check_time(now):
+        engine.run_trigger_check(now=now)     # research blocks here
+    sleep_fn(args.reconcile_seconds)
+```
+
+So while research runs, reconciliation does not. Today that left **five
+open positions with no Floor evaluation for seven minutes**, with the
+market open.
+
+This is why P-066 (raise `top_n` to publish all 26 survivors) must not
+be done before this is fixed: more symbols means a longer blackout.
+
+**Fix direction:** the protective path must not share a thread with
+candidate research. Options: run the watchlist check in a worker with a
+hard deadline, or give reconciliation its own thread. Architectural —
+needs design and approval, not a patch.
+
+## P-071 — "nothing to trade" has ONE slot a day, and the pre-open message spends it
+
+**Status:** OPEN — small, and it is what made today look silent
+**Severity:** cosmetic, but it hid a real event
+
+`_notify_nothing_to_trade` deduplicates on the trading date alone:
+
+```python
+kind="nothing_to_trade", key=trading_date
+```
+
+D-0021's window is ±90 s, so the 09:30 check first fires at **09:28:30
+— before the open**. The broker correctly answers "closed", the message
+goes out, and **the day's only slot is spent on a non-event.** Every
+later reason for the same day is then silenced.
+
+That is exactly what the Controller saw: a "market is CLOSED" message
+at 09:28, then nothing at all, while the engine was hung.
+
+**Fix direction:** put the reason in the dedup key, and send nothing at
+all for a closed market inside the pre-open tolerance window — it is
+not news.
