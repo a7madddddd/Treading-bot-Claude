@@ -3189,3 +3189,66 @@ today's cause.
 
 Recorded because an abandoned theory that goes unrecorded gets
 rediscovered and re-argued.
+
+---
+
+## P-083 — The political windows measure from the trade date, but we only ever see the filing date
+
+**Status:** OPEN — BLOCKING any political data-source work
+**Severity:** the political component cannot score, with ANY source
+**Found:** 2026-10-06, while verifying replacement data sources
+
+`src/research/political_cluster.py` drops a trade whose `trade_date` is
+older than 30 days, and the cluster score — the only component that can
+reach the entry threshold of 5 — counts distinct buyers within **14
+days** of `trade_date`.
+
+Both windows are measured from the TRADE date. By law a member has up to
+45 days to file, and in practice far longer. Measured from 5,000 real
+recent disclosures:
+
+```
+median lag between trade and filing     71 days
+filed within 14 days of the trade        5.3%
+filed within 30 days of the trade       21.2%
+filed later than 30 days                78.8%
+filed later than 14 days                94.7%
+```
+
+The source's own figure over all 69,546 rows: 32-day median, 230-day
+90th percentile.
+
+**Consequence:** on the first day we can possibly see a trade, about 79%
+of them are already outside our 30-day window and about 95% are outside
+the 14-day cluster window. The cluster score is therefore almost always
+0, the composite stays under the threshold of 5, and no symbol is ever
+admitted — which matches the fact that the reserved political slot has
+never been observed to fire.
+
+**This is not a data problem.** The expired paid provider would have hit
+the same wall. Wiring any new source into these windows yields a working
+integration that still scores zero.
+
+**Options, for the Controller:**
+
+1. **Window on the filing date instead of the trade date.** "Three
+   members were disclosed buying X this fortnight" is a signal we can
+   actually observe. It changes what the signal MEANS — clustered
+   disclosure, not clustered trading — and that is a strategy question,
+   not an implementation detail.
+2. **Keep the trade date and widen the windows** to cover the real lag
+   (e.g. 90-day lookback, 45-day cluster). Keeps the original meaning,
+   but a 45-day-old cluster is weak evidence about today's price.
+3. **Two separate signals** — a fresh-disclosure signal on the filing
+   date and a slow conviction signal on the trade date, weighted
+   differently. The most faithful, the most work.
+
+**RECOMMENDATION: option 1,** because it is the only one that scores on
+information we actually hold on the day we act, and because the
+disclosure cluster is itself the tradable event — the market reacts when
+a filing becomes public, not when the member traded 71 days earlier.
+
+**Do not wire any data source until this is decided.**
+
+Full measurements and the source comparison:
+`docs/trading/political-data-source-research-2026-10-06.md`
