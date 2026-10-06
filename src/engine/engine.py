@@ -300,11 +300,18 @@ class Engine:
         macro_calendar=None,
         political_universe_source=None,
         cycle_metrics_recorder=None,
+        risk_enforcer=None,
     ) -> None:
         # D-0079: optional, and None in every existing test. Records one
         # row per evaluation cycle for the Controller to query later; no
         # production code reads it back and nothing branches on it.
         self._cycle_metrics_recorder = cycle_metrics_recorder
+        # D-0080 (P-064): the SAME enforcer ExecutionService already
+        # holds, consulted BEFORE a proposal is sent as well as after.
+        # None means the pre-send check is simply absent -- the
+        # submission-time check is untouched either way, so a None here
+        # can never widen risk.
+        self._risk_enforcer = risk_enforcer
         self._trade_repo = trade_repo
         self._proposal_repo = proposal_repo
         self._execution_repo = execution_repo
@@ -1538,6 +1545,120 @@ class Engine:
             scored=True,
         ))
 
+    # ---- D-0080 (P-064): check the portfolio caps BEFORE sending ----
+    #
+    # The Controller's words: "the submission risk violated should be
+    # before my approval." Today the D-0047 check runs at submission,
+    # i.e. AFTER he approves, so on a day already at the cap he
+    # receives a proposal, approves it, and only then gets
+    # `submission_risk_violated` -- he approved something that was
+    # refusable before it was ever sent.
+    #
+    # He approved BOTH checks: "You can check before send and check
+    # after send. No problem." So this ADDS a gate and changes nothing
+    # about the existing one.
+    #
+    # TWO PROPERTIES THAT MAKE THIS SAFE TO ADD:
+    #
+    # 1. It can only ever REMOVE a proposal, never create or permit
+    #    one. The submission-time check in ExecutionService is
+    #    untouched, so the enforced risk envelope is identical or
+    #    tighter -- it cannot widen.
+    #
+    # 2. It FAILS OPEN, which is the opposite of the submission check
+    #    and deliberately so. If the portfolio snapshot cannot be read,
+    #    this sends the proposal anyway: the worst case is today's
+    #    behaviour (approve, then refused), which is annoying. Failing
+    #    closed would let a transient snapshot error silently suppress
+    #    every proposal for a day, which looks exactly like a dead
+    #    engine. The submission check still fails CLOSED, so the real
+    #    risk is still caught there.
+    #
+    # LADDERS ARE DELIBERATELY NOT PRE-CHECKED. A ladder adds to a
+    # position the Controller already approved, and
+    # `check_ladder_addition` does not consult the trade-count caps at
+    # all. Pre-checking one could block a ladder that WOULD be allowed
+    # at submission, because exposure moves between the two moments --
+    # stranding an open position without its ladder, which is the one
+    # outcome D-0034 exists to prevent.
+
+    def _caps_already_exhausted(self, *, now: datetime) -> Optional[str]:
+        """Layer 1: are the trade-count caps spent for today?
+
+        Checked ONCE per cycle, BEFORE any candidate is scored, because
+        the evaluator calls the research hub for every watchlist symbol
+        across six sources. On a day already at the cap that spend buys
+        nothing, and P-058 records that one of those sources is over
+        its free daily limit already.
+
+        Returns the reason string when no new trade may be opened, or
+        None to continue. Fails OPEN: any error returns None.
+        """
+        if self._risk_enforcer is None:
+            return None
+        try:
+            limits = self._risk_enforcer._limits
+            snapshot = self._risk_enforcer._snapshot_builder()
+            if snapshot.open_trades >= limits.max_concurrent_trades:
+                return (f"all {limits.max_concurrent_trades} concurrent "
+                        f"trade slots are in use ({snapshot.open_trades} "
+                        f"open). No new proposal can execute until one "
+                        f"closes, so none is sent.")
+            if snapshot.new_trades_today >= limits.max_daily_new_trades:
+                return (f"today's {limits.max_daily_new_trades} new-trade "
+                        f"limit is already used "
+                        f"({snapshot.new_trades_today} opened). No new "
+                        f"proposal can execute today, so none is sent.")
+        except Exception:  # noqa: BLE001 - fail OPEN, never suppress
+            return None
+        return None
+
+    def _pre_send_risk_block(self, *, symbol: str,
+                             notional: float) -> Optional[str]:
+        """Layer 2: the full D-0047 check for THIS symbol and size,
+        using the same enforcer and the same notional the
+        submission-time check will use.
+
+        Returns the violation reason, or None to send the proposal.
+        Fails OPEN.
+        """
+        if self._risk_enforcer is None:
+            return None
+        try:
+            result = self._risk_enforcer.check_new_trade(
+                symbol=symbol, proposed_notional=notional,
+            )
+        except Exception:  # noqa: BLE001 - fail OPEN
+            return None
+        if result.allowed:
+            return None
+
+        # THE ENFORCER FAILS CLOSED INTERNALLY, AND THAT MUST NOT LEAK
+        # INTO THIS CHECK.
+        #
+        # When the portfolio snapshot cannot be built,
+        # PortfolioRiskEnforcer does not raise -- it returns VIOLATED
+        # with a single `snapshot_unavailable` check. That is exactly
+        # right at submission time: without knowing current exposure,
+        # refusing the order is the safe answer.
+        #
+        # Here it is exactly wrong. "We could not tell" is not "a limit
+        # was breached", and treating it as one means a transient
+        # broker/snapshot failure silently suppresses every proposal
+        # for the rest of the day -- indistinguishable, from the
+        # Controller's side, from a dead engine. The submission check
+        # still refuses the order if the snapshot is still unavailable
+        # when he approves, so nothing unsafe gets through.
+        #
+        # Caught by a test, not by reading: the first version of this
+        # method returned the block, and the fail-open test proved it
+        # suppressed all three proposals.
+        if any(c.name == "snapshot_unavailable" for c in result.checks):
+            return None
+
+        return (result.first_violation_reason()
+                or "portfolio risk limits violated")
+
     def _check_watchlist(self, *, now: datetime) -> None:
         """Watchlist-driven Trade creation.
 
@@ -1553,6 +1674,24 @@ class Engine:
         """
 
         if not self._market_open_for_new_proposals(now=now):
+            return
+
+        # D-0080 Layer 1 -- before any research call is spent.
+        capped = self._caps_already_exhausted(now=now)
+        if capped is not None:
+            self._notify_once(
+                kind="caps_exhausted",
+                key=now.astimezone(D0021_TIMEZONE_ET).date().isoformat(),
+                level=NotificationLevel.IMPORTANT,
+                event="caps_exhausted_no_new_proposals",
+                message=(
+                    f"No new proposals this cycle: {capped}\n\n"
+                    "The engine is running normally; existing positions "
+                    "are still monitored and their protective exits are "
+                    "unaffected."
+                ),
+                symbol=None,
+            )
             return
 
         candidates: list = []
@@ -1902,6 +2041,32 @@ class Engine:
             # the pre-D-0051 fixed 10/10/20 -- that would silently size
             # a position the Controller never approved.
             return
+        # D-0080 Layer 2 (P-064): the portfolio check runs HERE, before
+        # start_trade() persists a Trade and a TradeProposal row. After
+        # it would leave orphaned rows for a proposal that was never
+        # sent. The notional is the same expression
+        # ExecutionService._submit uses at submission time, so the two
+        # checks cannot disagree about the size being judged.
+        blocked = self._pre_send_risk_block(
+            symbol=symbol, notional=strategy.initial_qty * price,
+        )
+        if blocked is not None:
+            self._notify_once(
+                kind="pre_send_risk_blocked",
+                key=(f"{now.astimezone(D0021_TIMEZONE_ET).date().isoformat()}"
+                     f"|{symbol}"),
+                level=NotificationLevel.OPTIONAL,
+                event="pre_send_risk_blocked",
+                message=(
+                    f"{symbol} was not proposed: {blocked}\n\n"
+                    "Nothing was sent for approval because it could not "
+                    "have executed. No trade or proposal row was "
+                    "created."
+                ),
+                symbol=symbol,
+            )
+            return
+
         trade_id = f"{symbol}-{uuid.uuid4().hex[:8]}"
         proposal_id = f"{trade_id}-initial_entry-{uuid.uuid4().hex[:8]}"
         _trade_record, proposal = self._trade_proposal_service.start_trade(

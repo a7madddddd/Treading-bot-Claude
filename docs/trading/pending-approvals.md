@@ -2571,10 +2571,11 @@ and never the price-derived ones. That design pass has not been done.
 requests/day per source against an Alpha Vantage free limit of 25. Six
 of every seven calls are for data that does not change within a day.
 
-## P-064 — Risk check BEFORE the proposal is sent (DECIDED, not built)
+## P-064 — Risk check BEFORE the proposal is sent
 
-**Status:** APPROVED by the Controller 2026-10-06 — not built, and it
-was missing from the board entirely
+**Status:** RESOLVED 2026-10-06 — built and tested as **D-0080**, both
+layers, with the submission-time check untouched. 25 new tests; full
+suite 1732 passed. Not yet pushed at the time of writing.
 **His words:** *"Also the submission risk violated should be before my
 approval."*
 
@@ -2640,5 +2641,5 @@ day-to-day variation, and that variation has not been measured yet.
 | P-061 migration splitter | needs a decision |
 | P-062 ungated evaluator fallback | needs a decision |
 | **P-063 research caching** | **decided — awaiting a field-level design** |
-| **P-064 pre-send risk check** | **decided — not built** |
+| ~~P-064 pre-send risk check~~ | **RESOLVED — D-0080** |
 | **P-065 degraded-day cap reduction** | **decided — awaiting ~20 days of measurement** |
