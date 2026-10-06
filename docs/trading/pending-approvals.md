@@ -2857,3 +2857,234 @@ at 09:28, then nothing at all, while the engine was hung.
 **Fix direction:** put the reason in the dedup key, and send nothing at
 all for a closed market inside the pre-open tolerance window — it is
 not news.
+
+---
+
+## P-072 — The committee-relevance bonus can never fire in production
+
+**Status:** OPEN — dead path, found 2026-10-06 by call-site search
+**Severity:** a scoring component that is written, tested, and never reached
+
+`political_cluster.build_signals()` accepts `sector_lookup` and uses it
+to decide `committee_match`, which is worth **+3 of the 25-point
+political composite** and is also the FIRST sort key in
+`PoliticalUniverseSource._top_tickers()`
+(`include_committee_matched_first=True`).
+
+The only production caller is
+`PoliticalUniverseSource._refresh_if_stale()`:
+
+```python
+signals = build_signals(list(trades), now=today)
+```
+
+No `sector_lookup`. So `sector_lookup` defaults to `{}`, `sic` is always
+None, `committee_matches_sector()` always returns False, and:
+
+- `committee_match` is **always False** on every live signal,
+- the +3 bonus is **never granted**,
+- the "committee-matched first" ordering **never reorders anything**.
+
+`committee_mapper.py` (19 committee codes, ~100 SIC keywords) and the
+committee tuples on all 15 politician profiles are therefore inert at
+runtime.
+
+**Worked consequence:** two distinct whitelist buyers in 14 days give
+`cluster_score = 5.0`, `alpha_sum` bonus ≤ 2.0, committee bonus 0.0 →
+`weighted_signal ≤ 7.0`. With the committee bonus it would be ≤ 10.0.
+Against `min_signal_strength = 5.0` both pass, but the political
+component the evaluator scores is understated by up to 3 points of 25
+on every politically-backed candidate, forever.
+
+**Fix direction:** the hub already fetches `sic_description` per symbol
+from Polygon for the portfolio filter. Pass that map into
+`build_signals`. Note the data shapes differ: the mapper matches SIC
+description keywords, while `data/sectors.json` carries GICS-style
+sector names — only the Polygon SIC text matches the mapper's keywords.
+
+---
+
+## P-073 — CapitolTrades is not wired into the engine at all
+
+**Status:** OPEN — documented as a source, reachable only by hand
+**Severity:** one of three advertised political sources is absent in production
+
+`PoliticalAggregator` supports three sources. The runner builds it with
+two:
+
+```python
+agg = PoliticalAggregator(quiverquant=qq, edisclosure=ed)
+```
+
+`capitol_scrapers` is omitted, so it defaults to `{}` and
+`from_capitol_trades()` returns `[]` on the first line, every cycle.
+
+`CapitolTradesScraper` has exactly one caller in the whole repository:
+`scripts/run_research_cycle.py`, which takes a SINGLE `--politician`
+slug. There is no code path that builds the per-politician scraper dict
+the aggregator expects.
+
+**Consequence:** the module docstrings, `politicians.py`, and the
+decision log all describe CapitolTrades as a tracked source. At runtime
+the political signal comes from QuiverQuant only — and from eDisclosure,
+which per P-074 contributes nothing usable.
+
+---
+
+## P-074 — eDisclosure contributes zero usable signal by construction
+
+**Status:** OPEN — fully implemented, structurally incapable of producing a ticker
+**Severity:** the "early warning" source cannot influence any score
+
+`EDisclosureSource` deliberately does not parse filing PDFs, so it has
+no tickers. `from_edisclosure()` emits each filing as a pseudo-trade
+with `ticker="PENDING"`.
+
+`build_signals()` then drops exactly those rows:
+
+```python
+if t.ticker == "PENDING":
+    continue
+```
+
+So every eDisclosure row is fetched, normalized, de-duplicated — and
+discarded before scoring. Additionally `house_recent_filings()` returns
+`[]` on **every** path, including success: it only probes whether the
+annual ZIP exists and declines to parse it.
+
+**Net:** the House half is a reachability probe that always yields
+nothing; the Senate half yields filings that are always dropped. The
+startup banner can still print `eDisclosure-only`, which reads as "a
+source is attached" when the effective political signal is empty.
+
+**Fix direction:** either parse the PTR PDFs (adds a dependency), or
+stop counting eDisclosure as a signal source and label it explicitly as
+a filing-existence monitor.
+
+---
+
+## P-075 — A single politician's buy can never add a symbol
+
+**Status:** OPEN — intended? needs an explicit Controller ruling
+**Severity:** changes what "we follow politician trades" actually means
+
+`PoliticalUniverseSource` admits a ticker only when
+`weighted_signal >= 5.0`. The composite is
+`cluster_score + committee_bonus + alpha_bonus`, and `cluster_score`
+comes from DISTINCT buyers in the last **14** days:
+
+```python
+if n_cluster <= 1: cluster_score = 0.0
+else: cluster_score = min(20.0, (n_cluster - 1) * 5.0)
+```
+
+One buyer → 0.0. The committee bonus is dead (P-072). The alpha bonus is
+capped at 2.0. So a single whitelisted buy tops out at **2.0 < 5.0** and
+the symbol is never added.
+
+**Worked example:** the highest-alpha politician on the list
+(`alpha_weight = 1.5`) buying alone gives `alpha_sum = 0.5`,
+`weighted_signal = 0.5`. Even all 15 politicians buying on 15 different
+days, if no two fall inside the same 14-day window, give 0.0.
+
+Two distinct buyers inside 14 days is the real entry condition.
+
+**Note on the 30-day window:** `_LOOKBACK_DAYS = 30` only governs which
+trades are counted at all; the cluster score — the only component that
+can clear the bar — uses the 14-day window.
+
+---
+
+## P-076 — The sector cap cannot bind: 75 tickers are mapped out of ~12,589
+
+**Status:** OPEN — stage runs, rejects ~nothing
+**Severity:** an approved diversification rule is not in force
+
+`ConcentrationStage` enforces `max_sector_fraction = 0.30`, but only for
+candidates carrying a `sector=` fragment. Unknown sector bypasses the
+cap by design:
+
+```python
+if sector == "unknown":
+    survivors.append(c)
+    continue
+```
+
+The fragment comes from `StaticSectorProvider`, backed by
+`data/sectors.json`, which contains **75 tickers** (largest bucket:
+information_technology, 10).
+
+**Worked consequence:** on a 12,589-symbol market, at most 75 candidates
+(0.6%) can ever be sector-known. For a pool of 560 reaching Stage G the
+cap would be `ceil(0.30 * 560) = 168` per sector — and with ≤ 75 mapped
+symbols in total, no sector can reach 168. **The stage cannot reject a
+single candidate.** D-0048's sector cap is effectively unenforced.
+
+The in-engine `PortfolioFilter` is the one that actually binds
+(`max_per_sector = 1`, see P-077) — a far stricter rule than 30%, from a
+different code path and a different data source.
+
+---
+
+## P-077 — One open position per sector, from a second, undocumented rule
+
+**Status:** OPEN — needs to be stated in the strategy docs
+**Severity:** materially limits how many proposals can coexist
+
+`PortfolioFilterConfig` defaults are `max_per_sector = 1` and
+`correlation_cap = 0.70`, bucketed from Polygon's SIC description
+through a 27-entry substring map.
+
+This is a HARD cap of one open trade per sector bucket, applied after
+scoring — stricter than D-0048's 30% and nowhere reflected in the
+approved strategy documents. Combined with the derived concurrency cap
+from D-0079, the binding constraint on a given day may be the sector
+rule, not the slot count.
+
+**Worked example:** with 12 derived slots, a day whose survivors are 8
+semiconductor names and 2 banks can open at most **2** trades — one per
+bucket — not 10.
+
+**Also:** the bucket map keys off Polygon SIC text. A symbol with no SIC
+description (most ETFs) gets `None` and is not bucketed, so funds are
+exempt from the one-per-sector rule while operating companies are not.
+
+---
+
+## P-078 — No request-quota guard anywhere, against hard free-tier limits
+
+**Status:** OPEN — the most likely mechanical cause of low scores
+**Severity:** silently zeroes a 20-point scoring component
+
+`grep` for `sleep`, `throttle`, `Limiter`, `quota` across
+`src/marketdata/` returns **nothing**. There is no budget counter, no
+per-day cap, no backoff beyond `http_retry`'s 429/5xx retry.
+
+`SymbolResearchHub._fetch_av()` makes **five** Alpha Vantage calls per
+symbol (RSI, MACD, BBands, SMA-50, SMA-200) with no caching — the only
+cached value in the hub is SPY's 30-day return.
+
+**Worked arithmetic against the documented free tier (25 requests/day):**
+
+```
+5 calls/symbol x 10 candidates x 7 cycles/day = 350 calls/day
+budget                                        =  25 calls/day
+```
+
+The budget is exhausted inside the **first cycle, on the fifth symbol**.
+Every later call returns an error or a rate-limit notice, every fetch is
+wrapped in `except Exception: pass`, and the fields simply stay absent.
+
+**Consequence:** `_score_technicals` (weight **20** of 90) scores on
+absent data for essentially every candidate after the first few of the
+day. The 60-point bar is then being judged against a ceiling that is
+lower than designed — and nothing logs that a quota ran out, because
+fail-open treats an exhausted quota exactly like a missing field.
+
+QuiverQuant's documented free tier is 150 requests/month; the political
+source calls it once per trading day, which fits — but the same absence
+of a guard applies.
+
+**Fix direction:** a per-source daily budget counter that (a) stops
+calling once spent, and (b) records the exhaustion in the cycle metrics
+row, so a low score is distinguishable from a starved score.
