@@ -70,7 +70,7 @@ class TestFreshDatabaseBootstrap(unittest.TestCase):
         self.assertEqual(get_schema_version(conn), 0)
         bootstrap_schema(conn)
         self.assertEqual(get_schema_version(conn), APPROVED_SCHEMA_VERSION)
-        self.assertEqual(APPROVED_SCHEMA_VERSION, 8)
+        self.assertEqual(APPROVED_SCHEMA_VERSION, 9)
 
     def test_trades_table_has_expected_columns(self):
         conn = connect(":memory:")
@@ -562,7 +562,7 @@ class TestRealMigrationsDirectoryDefaultBehavior(unittest.TestCase):
         conn = connect(":memory:")
         bootstrap_schema(conn)
         self.assertEqual(get_schema_version(conn), APPROVED_SCHEMA_VERSION)
-        self.assertEqual(APPROVED_SCHEMA_VERSION, 8)
+        self.assertEqual(APPROVED_SCHEMA_VERSION, 9)
         self.assertTrue(EXPECTED_TABLES.issubset(_table_names(conn)))
 
 

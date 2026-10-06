@@ -27,8 +27,10 @@ def _m(**kw):
 
 
 class TestTheSchema(unittest.TestCase):
-    def test_approved_version_is_eight(self):
-        self.assertEqual(APPROVED_SCHEMA_VERSION, 8)
+    def test_approved_version_is_nine(self):
+        # 8 added cycle_metrics (D-0079); 9 added cycle_symbol_scores
+        # (D-0082). Pinned so a bump is always deliberate.
+        self.assertEqual(APPROVED_SCHEMA_VERSION, 9)
 
     def test_bootstrap_creates_the_table(self):
         conn = sqlite3.connect(":memory:")
@@ -37,7 +39,7 @@ class TestTheSchema(unittest.TestCase):
             "PRAGMA table_info(cycle_metrics)")}
         self.assertIn("above_min_score", cols)
         self.assertEqual(
-            conn.execute("PRAGMA user_version").fetchone()[0], 8)
+            conn.execute("PRAGMA user_version").fetchone()[0], 9)
 
     def test_migrating_a_version_7_database_adds_only_this_table(self):
         """The upgrade path a real file takes, not a fresh create."""

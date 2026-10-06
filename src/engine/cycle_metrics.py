@@ -58,6 +58,40 @@ def scheduled_slot_for(now: datetime) -> str:
 
 
 @dataclass(frozen=True)
+class SymbolScore:
+    """One symbol's full evaluation inside one scheduled check.
+
+    D-0082. Exists because `cycle_metrics` stores the cycle TOTAL only,
+    and on 2026-10-06 that was not enough to establish why five cycles
+    of ten symbols produced zero proposals: the total says nobody
+    reached 60, and nothing else.
+
+    `components` is the evaluator's `score_breakdown` verbatim. An
+    ABSENT key and a 0.0 value are different facts and are stored
+    differently (NULL vs 0.0), because a hard-filtered symbol gets an
+    empty breakdown while a scored symbol can legitimately earn zero.
+
+    `sources_succeeded` / `sources_failed` are what make a 0.0
+    readable at all -- `trade_evaluator._score_fundamentals` documents
+    its own ambiguity ("0 if no data"), so the component alone cannot
+    say whether the data was missing or bad.
+    """
+
+    symbol: str
+    rank_in_cycle: int
+    soft_score: float
+    passed_hard_filter: bool
+    hard_filter_reasons: tuple
+    components: dict
+    sources_succeeded: tuple
+    sources_failed: tuple
+    current_price: Optional[float]
+    rsi_14: Optional[float]
+    day_volume: Optional[float]
+    pe_ratio: Optional[float]
+
+
+@dataclass(frozen=True)
 class CycleMetrics:
     """One watchlist evaluation cycle, as it happened."""
 
@@ -69,6 +103,10 @@ class CycleMetrics:
     min_score_required: float
     best_score: Optional[float]
     proposals_created: int
+    symbols: tuple = ()
+    """D-0082: one SymbolScore per evaluated symbol, in ranked order.
+    Empty on the unscored (evaluator-failure) path."""
+
     scored: bool = True
     """False when the candidates were never scored -- the
     evaluator-failure fallback. Then `rejected_hard_filter`,
@@ -114,6 +152,49 @@ def record_cycle_metrics(conn: sqlite3.Connection, m: CycleMetrics) -> None:
     )
 
 
+_SYMBOL_SQL = (
+    "INSERT OR REPLACE INTO cycle_symbol_scores ("
+    "  effective_date, scheduled_slot, symbol, cycle_at, rank_in_cycle,"
+    "  soft_score, passed_hard_filter, hard_filter_reasons,"
+    "  s_fundamentals, s_technicals, s_momentum, s_news, s_trend,"
+    "  s_rel_strength, s_political, s_risk_discount,"
+    "  sources_succeeded, sources_failed, current_price, rsi_14,"
+    "  day_volume, pe_ratio"
+    ") VALUES (" + ",".join(["?"] * 22) + ")"
+)
+
+_COMPONENT_KEYS = ("fundamentals", "technicals", "momentum", "news",
+                   "trend", "rel_str", "political", "risk")
+"""The keys trade_evaluator puts in score_breakdown. A key that is
+ABSENT is written as NULL, not 0.0 -- see SymbolScore."""
+
+
+def record_symbol_scores(conn: sqlite3.Connection, m: CycleMetrics) -> None:
+    """One row per evaluated symbol for this scheduled check."""
+    if not m.symbols:
+        return
+    slot = scheduled_slot_for(m.cycle_at)
+    day = m.effective_date.isoformat()
+    at = m.cycle_at.isoformat()
+    rows = []
+    for s in m.symbols:
+        comps = [None if k not in s.components else float(s.components[k])
+                 for k in _COMPONENT_KEYS]
+        rows.append((
+            day, slot, s.symbol, at, int(s.rank_in_cycle),
+            float(s.soft_score), 1 if s.passed_hard_filter else 0,
+            "; ".join(s.hard_filter_reasons) or None,
+            *comps,
+            ",".join(s.sources_succeeded) or None,
+            ",".join(s.sources_failed) or None,
+            None if s.current_price is None else float(s.current_price),
+            None if s.rsi_14 is None else float(s.rsi_14),
+            None if s.day_volume is None else float(s.day_volume),
+            None if s.pe_ratio is None else float(s.pe_ratio),
+        ))
+    conn.executemany(_SYMBOL_SQL, rows)
+
+
 def make_recorder(conn: sqlite3.Connection):
     """Returns a recorder that never raises.
 
@@ -128,6 +209,7 @@ def make_recorder(conn: sqlite3.Connection):
     def _record(m: CycleMetrics) -> None:
         try:
             record_cycle_metrics(conn, m)
+            record_symbol_scores(conn, m)
         except Exception as exc:  # noqa: BLE001 - never break a cycle
             print(f"[cycle-metrics] not recorded: "
                   f"{type(exc).__name__}: {exc}", flush=True)

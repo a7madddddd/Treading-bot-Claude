@@ -15,7 +15,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, Iterator, Optional
 
-APPROVED_SCHEMA_VERSION = 8
+APPROVED_SCHEMA_VERSION = 9
 
 BUSY_TIMEOUT_MS = 30000
 """SQLite busy timeout, in milliseconds (default would be 5000).
