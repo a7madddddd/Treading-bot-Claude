@@ -5770,10 +5770,12 @@ The engine proposes at most 3 symbols per cycle from those scoring
 number of symbols above the bar was never recorded. The Controller asked
 for it so the question is settled from data.
 
-New table `cycle_metrics`, one row per evaluation cycle:
-`cycle_at`, `effective_date`, `candidates_evaluated`,
-`rejected_hard_filter`, **`above_min_score`**, `min_score_required`,
-`best_score`, `proposals_created`.
+New table `cycle_metrics`, **one row per SCHEDULED check** (not per
+firing — see defect 3 below): `effective_date`, `scheduled_slot`,
+`cycle_at`, `candidates_evaluated`, `rejected_hard_filter`,
+**`above_min_score`**, `min_score_required`, `best_score`,
+`proposals_created`, `scored`. Primary key
+`(effective_date, scheduled_slot)`.
 
 Three deliberate properties:
 
@@ -5835,7 +5837,7 @@ aligned.
   `tests/risk/test_enforcer.py` (asserts behaviour at the derived cap
   instead of the literal 5, plus a new one-below-the-cap case),
   `tests/persistence/test_db.py` (the two deliberate version pins).
-- **Full suite: 1702 passed, 54 subtests passed.** Run three times.
+- **Full suite: 1707 passed, 54 subtests passed.** Run three times.
 - Migration exercised against a **copy of the live database**:
   user_version 7 → 8, one new table, zero rows changed in any of the 11
   pre-existing tables, nothing dropped, idempotent over three runs.
@@ -5871,6 +5873,68 @@ That probe also surfaced P-062: the fallback proposes every candidate
 with no score gate at all, and D-0079 widens that path from 5 symbols
 to 12. Pre-existing behaviour, recorded for the Controller's decision,
 not changed here.
+
+### Three more defects found when the Controller asked to re-check
+
+He approved the push and in the same message said to re-check the
+`metrics rows: 0` finding because he thought it would cause another
+bug. It had caused three.
+
+**3. ONE SCHEDULED CHECK WAS STORING SEVEN ROWS.** The engine loop
+ticks every 30s and `is_d0021_check_time()` accepts a ±90s window, so
+one scheduled check calls `run_trigger_check` **seven times** —
+measured by replaying the real cadence, not assumed. The key was
+`(cycle_at, effective_date)` and `cycle_at` differs on every firing, so
+a day stored **49 rows for 7 real checks**. Every count and average the
+Controller computed would have been inflated 7×, and because prices
+move within 90 seconds the duplicates carry slightly different scores,
+so they would have looked like genuinely distinct cycles.
+
+Fixed by keying on `(effective_date, scheduled_slot)`, where
+`scheduled_slot` is the D-0021 wall-clock time the firing belongs to
+("09:30".."15:30" ET). `INSERT OR REPLACE` then collapses the seven
+firings into one row, last write winning — the freshest view of that
+check. Verified by replaying a full trading day: **49 firings → 7
+rows**, one per slot.
+
+**4. `scored` WAS NEVER WRITTEN TO THE DATABASE.** It existed only as
+a dataclass field. The table had no such column and the INSERT did not
+list it — while the paragraph above and P-062 both stated that the
+cycle is "written with `scored = 0`". That was false in the record
+before it was false in the code.
+
+Fixed by adding the column AND a `CHECK` constraint, because `scored`
+and the NULL score columns encode the same fact and must never be
+allowed to disagree:
+
+```sql
+CHECK ( (scored = 1 AND above_min_score IS NOT NULL
+                    AND rejected_hard_filter IS NOT NULL)
+     OR (scored = 0 AND above_min_score IS NULL
+                    AND rejected_hard_filter IS NULL
+                    AND best_score IS NULL) )
+```
+
+The database now refuses an inconsistent row; two tests assert it
+raises `IntegrityError` in both directions.
+
+**5. `record_cycle_metrics` CALLED `conn.commit()`.** Harmless today —
+the connection is `isolation_level=None` (autocommit) — but it is a
+loaded gun: the moment this is ever called from inside a
+`transaction()` block, a metrics write would commit the caller's
+half-finished trade state. Removed.
+
+The test for this was written WRONG first: it grepped the module source
+for `"conn.commit()"` and failed by matching the phrase in its own
+docstring — the identical mistake as the D-0077 shadow test, which
+passed while the behaviour was wrong. Replaced with a behavioural test
+that opens a transaction, inserts a caller row, records metrics, rolls
+back, and asserts the caller's row did NOT survive. Verified as a
+negative control: reintroducing `conn.commit()` makes it fail.
+
+Also dropped: the separate `idx_cycle_metrics_date`. The primary key
+already indexes `effective_date` as its leading column, so it was
+redundant.
 
 ### Not in this change
 

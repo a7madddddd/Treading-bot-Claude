@@ -2513,10 +2513,13 @@ now put up to 12 unscored symbols in front of the Controller in one
 cycle instead of 5. The blast radius grew even though the path itself
 did not change.
 
-D-0079 does record it honestly: the cycle is written to
-`cycle_metrics` with `scored = 0` and NULL score columns, so these
-cycles are distinguishable in the data and excluded from
-`WHERE above_min_score IS NOT NULL`.
+D-0079 records it honestly: the cycle is written to `cycle_metrics`
+with `scored = 0` and NULL score columns, so these cycles are
+distinguishable in the data and excluded from
+`WHERE above_min_score IS NOT NULL`. (That claim was false when first
+written — `scored` was a dataclass field that no column stored. The
+column, and a `CHECK` constraint that stops it disagreeing with the
+NULLs, were added when the Controller asked for a re-check.)
 
 **Decision needed:** is "propose everything unscored" still the right
 fallback at 12 chairs, or should an evaluator failure propose nothing

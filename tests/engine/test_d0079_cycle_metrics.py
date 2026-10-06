@@ -2,7 +2,7 @@
 
 import sqlite3
 import unittest
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from engine.cycle_metrics import (
     CycleMetrics, make_recorder, record_cycle_metrics,
@@ -64,8 +64,8 @@ class TestRecording(unittest.TestCase):
         return self.conn.execute(
             "SELECT cycle_at, effective_date, candidates_evaluated, "
             "rejected_hard_filter, above_min_score, min_score_required, "
-            "best_score, proposals_created FROM cycle_metrics "
-            "ORDER BY cycle_at").fetchall()
+            "best_score, proposals_created, scheduled_slot, scored "
+            "FROM cycle_metrics ORDER BY scheduled_slot").fetchall()
 
     def test_one_cycle_writes_one_row(self):
         record_cycle_metrics(self.conn, _m())
@@ -95,18 +95,83 @@ class TestRecording(unittest.TestCase):
         record_cycle_metrics(self.conn, _m(best_score=None))
         self.assertIsNone(self._rows()[0][6])
 
-    def test_seven_cycles_in_a_day_write_seven_rows(self):
+    def test_the_seven_scheduled_checks_of_a_day_write_seven_rows(self):
+        # 13:30..19:30 UTC == 09:30..15:30 ET, D-0021's seven slots.
         for h in (13, 14, 15, 16, 17, 18, 19):
             record_cycle_metrics(self.conn, _m(
                 cycle_at=datetime(2026, 10, 6, h, 30, tzinfo=timezone.utc)))
-        self.assertEqual(len(self._rows()), 7)
+        rows = self._rows()
+        self.assertEqual(len(rows), 7)
+        self.assertEqual([r[8] for r in rows],
+                         ["09:30", "10:30", "11:30", "12:30",
+                          "13:30", "14:30", "15:30"])
 
-    def test_the_same_cycle_twice_is_one_row_not_two(self):
+    def test_the_SEVEN_firings_of_one_check_collapse_to_one_row(self):
+        """The bug this key exists for. Measured: the loop ticks every
+        30s and is_d0021_check_time accepts +/-90s, so ONE scheduled
+        check fires seven times. Keyed on the instant that stored 49
+        rows a day for 7 real checks."""
+        base = datetime(2026, 10, 6, 13, 28, 30, tzinfo=timezone.utc)
+        for i in range(7):
+            record_cycle_metrics(self.conn, _m(
+                cycle_at=base + timedelta(seconds=30 * i),
+                above_min_score=i))
+        rows = self._rows()
+        self.assertEqual(len(rows), 1, "seven firings must be one row")
+        self.assertEqual(rows[0][8], "09:30")
+        self.assertEqual(rows[0][4], 6, "the LAST firing must win")
+
+    def test_the_same_check_twice_is_one_row_not_two(self):
         record_cycle_metrics(self.conn, _m(above_min_score=2))
         record_cycle_metrics(self.conn, _m(above_min_score=5))
         rows = self._rows()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0][4], 5)  # the retry wins
+
+    def test_scored_is_actually_PERSISTED(self):
+        """It was a dataclass field only -- never written to the
+        database -- while the decision log claimed it was stored."""
+        record_cycle_metrics(self.conn, _m(scored=True))
+        self.assertEqual(self._rows()[0][9], 1)
+
+    def test_scored_zero_is_persisted_too(self):
+        record_cycle_metrics(self.conn, _m(
+            scored=False, rejected_hard_filter=None,
+            above_min_score=None, best_score=None))
+        self.assertEqual(self._rows()[0][9], 0)
+
+    def test_the_database_REFUSES_an_inconsistent_row(self):
+        """`scored` and the NULL columns encode the same fact, so they
+        can never be allowed to disagree."""
+        with self.assertRaises(sqlite3.IntegrityError):
+            record_cycle_metrics(self.conn, _m(
+                scored=True, above_min_score=None))
+        with self.assertRaises(sqlite3.IntegrityError):
+            record_cycle_metrics(self.conn, _m(
+                scored=False, above_min_score=7,
+                rejected_hard_filter=None, best_score=None))
+
+    def test_the_writer_does_not_commit_the_callers_transaction(self):
+        """BEHAVIOURAL, not a source-text grep.
+
+        The first version of this test searched the module source for
+        "conn.commit()" and failed by matching the phrase inside its
+        own docstring -- the same mistake as the D-0077 shadow test,
+        which passed while the behaviour was wrong. So this drives the
+        real thing: open a transaction, write a row of the caller's
+        own, record metrics, then ROLL BACK. If the metrics write
+        committed, the caller's row survives the rollback.
+        """
+        self.conn.execute("CREATE TABLE caller_work (v INTEGER)")
+        self.conn.execute("BEGIN IMMEDIATE")
+        self.conn.execute("INSERT INTO caller_work (v) VALUES (1)")
+        record_cycle_metrics(self.conn, _m())
+        self.conn.execute("ROLLBACK")
+        survived = self.conn.execute(
+            "SELECT COUNT(*) FROM caller_work").fetchone()[0]
+        self.assertEqual(
+            survived, 0,
+            "the metrics write committed the caller's open transaction")
 
 
 class TestTheRecorderNeverBreaksACycle(unittest.TestCase):
@@ -394,10 +459,14 @@ class TestTheMigrationSplitterTrap(unittest.TestCase):
             "comments or string literals, so these fragments are "
             f"truncated SQL: {offenders}")
 
-    def test_0008_splits_into_exactly_two_statements(self):
+    def test_0008_is_one_intact_statement(self):
+        """One CREATE TABLE and nothing else: the PRIMARY KEY on
+        (effective_date, scheduled_slot) already indexes the only
+        column the Controller queries by, so the separate index the
+        first draft carried was redundant."""
         sql = open("src/persistence/migrations/0008_cycle_metrics.sql",
                    encoding="utf-8").read()
         frags = [s.strip() for s in sql.split(";") if s.strip()]
-        self.assertEqual(len(frags), 2)
+        self.assertEqual(len(frags), 1)
         self.assertIn("CREATE TABLE cycle_metrics", frags[0])
-        self.assertIn("CREATE INDEX", frags[1])
+        self.assertTrue(sqlite3.complete_statement(frags[0] + ";"))
