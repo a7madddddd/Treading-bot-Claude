@@ -10,12 +10,21 @@ into a yes/no + 0-100 score + breakdown. Combines:
     - RSI extreme (>90 overbought / <10 oversold)
     - macro regime = RISK_OFF (unless explicitly disabled)
 
-  SOFT SCORE (weighted contributions, 0..100):
-    - Fundamentals    (weight 20)  — P/E reasonable, buy ratio, insider positive
-    - Technicals      (weight 25)  — RSI healthy, MACD bullish, golden cross
-    - Momentum        (weight 15)  — day change positive, above SMA50
-    - News            (weight 10)  — fresh news + Perplexity catalysts
-    - Risk discounts  (-up to 20)  — Perplexity risks, bearish MACD, BB extreme
+  SOFT SCORE (weighted contributions, 0..90 before discounts — the
+  weights below are the ones EvaluatorConfig actually carries; this
+  list was stale until 2026-10-06 and claimed 20/25/15/10):
+    - Technicals      (weight 20)  — RSI healthy, MACD bullish, golden cross
+    - Fundamentals    (weight 16)  — P/E reasonable, buy ratio, insider positive
+    - Political       (weight 15)  — congressional cluster signal
+    - Trend           (weight 13)  — 5d / 30d / 90d returns
+    - Momentum        (weight 10)  — day change positive, above SMA50
+    - Rel. strength   (weight  9)  — vs SPY over 30 trading days
+    - News            (weight  7)  — fresh news + catalyst/risk polarity
+    - Risk discounts  (-up to 20)  — bearish MACD, BB extreme, high realized
+                                     vol. The per-risk-BULLET charge was
+                                     removed by D-0083: it cost every
+                                     candidate the same -9.0, so it
+                                     separated nothing.
 
 Every rule, weight, and threshold is a module-level constant so the
 Controller can tune without touching logic. Nothing here places or
@@ -245,8 +254,21 @@ def _score_news(r: SymbolResearch, cfg: EvaluatorConfig) -> float:
 def _risk_discount(r: SymbolResearch, cfg: EvaluatorConfig) -> float:
     """0..max_risk_discount — SUBTRACTED from the raw score."""
     discount = 0.0
-    if r.perplexity_risks:
-        discount += min(10.0, 3.0 * len(r.perplexity_risks))
+    # D-0083 (2026-10-06): the Perplexity-risk-COUNT rule was removed
+    # here. It charged 3.0 per risk bullet, and the research prompt
+    # (deep_research.py) asks for exactly 3 bullets and caps the list at
+    # 3, so EVERY symbol paid exactly -9.0 in every cycle -- measured on
+    # 2026-10-06, where MUFG, TX and SMH all carried -9.0 and nothing
+    # else fired. A discount that every candidate pays identically
+    # cannot separate a safe symbol from a risky one; it only lowered
+    # the whole distribution 9 points under a fixed 60-point bar. The
+    # prompt even ends with "If nothing material, say so", so a
+    # "no material risk" answer arrived as a bullet and was charged for.
+    #
+    # The three rules below are kept BECAUSE THEY DISCRIMINATE: each one
+    # fires on a measured condition of that specific symbol, so the gap
+    # between a clean and a risky candidate is unchanged by this removal
+    # (a bearish crossover still costs 5.0 more than no crossover).
     if r.macd_signal == "bearish_crossover":
         discount += 5.0
     if r.bb_position is not None and r.bb_position > 0.95:

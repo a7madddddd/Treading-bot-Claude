@@ -129,11 +129,28 @@ class TestScorers(unittest.TestCase):
         s2 = _score_news(r2, DEFAULT_CONFIG)
         self.assertGreater(s1, s2)
 
-    def test_risk_discount_on_risks(self):
-        r = _good_research(perplexity_risks=["a","b","c"],
-                           macd_signal="bearish_crossover")
-        d = _risk_discount(r, DEFAULT_CONFIG)
-        self.assertGreater(d, 5)
+    def test_the_number_of_risk_BULLETS_costs_nothing(self):
+        """D-0083. The research prompt asks for exactly 3 bullets and
+        caps the list at 3, so a per-bullet charge was paid identically
+        by every candidate in every cycle (-9.0 measured live on
+        2026-10-06) and could never separate a safe symbol from a risky
+        one. Counting bullets is not measuring risk."""
+        none_ = _good_research(perplexity_risks=[])
+        three = _good_research(perplexity_risks=["a", "b", "c"])
+        self.assertEqual(_risk_discount(none_, DEFAULT_CONFIG),
+                         _risk_discount(three, DEFAULT_CONFIG))
+
+    def test_a_bearish_crossover_still_costs_exactly_five_more(self):
+        """The rules that DISCRIMINATE are untouched by D-0083: the gap
+        between a clean and a risky candidate must be the same 5.0 it
+        was before the bullet-count rule was removed."""
+        clean = _good_research(perplexity_risks=["a", "b", "c"])
+        risky = _good_research(perplexity_risks=["a", "b", "c"],
+                               macd_signal="bearish_crossover")
+        self.assertAlmostEqual(
+            _risk_discount(risky, DEFAULT_CONFIG)
+            - _risk_discount(clean, DEFAULT_CONFIG),
+            5.0)
 
 
 # --------------------------------------------------------------------

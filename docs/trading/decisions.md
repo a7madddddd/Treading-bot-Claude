@@ -6361,3 +6361,120 @@ limit, and it will not by itself produce a single proposal. Today's
 five cycles are already unrecoverable — only their totals exist. The
 first cycle that runs with this in place is the first one whose cause
 is answerable from data.
+
+
+---
+
+## D-0083 — The per-risk-bullet discount is removed. Nothing else.
+**Date:** 2026-10-06
+**Status:** APPROVED by the Controller (this session), implemented in the
+same session
+**Scope:** ONE rule inside the evaluator's risk discount. The acceptance
+bar, every weight, every pipeline stage, the ladder, the floor,
+trailing, sizing and every risk limit are UNCHANGED.
+
+### Scope correction, recorded on purpose
+
+An earlier draft of this entry also lowered `Engine._MIN_SCORE` from
+60.0 to a derived 50.0. **The Controller had not approved that.** He
+approved removing the constant discount only, and said the political
+shortfall will be addressed by restoring the political points in a
+separate enhancement — not by lowering the bar. The bar change was
+reverted before anything was pushed, and the open question is now
+tracked as P-082.
+
+The mistake was mine: I presented the two changes as one question and
+read a single "yes" as approval for both. Two changes to trading
+behavior need two answers.
+
+### What changed
+
+`src/engine/trade_evaluator.py` — removed from `_risk_discount`:
+
+```python
+if r.perplexity_risks:
+    discount += min(10.0, 3.0 * len(r.perplexity_risks))
+```
+
+The three rules that remain are untouched: bearish MACD crossover
++5.0, price above the 0.95 Bollinger position +3.0, realized volatility
+above 60% annualized up to +5.0.
+
+Also corrected the module docstring's weight list, which claimed
+20/25/15/10 while the config carries 20/16/15/13/10/9/7.
+
+### Why — measured, not argued
+
+The research prompt in `src/engine/deep_research.py:437` asks for
+exactly 3 risk bullets and `_bullets()` caps the list at 3, so the
+deleted rule charged `3 × 3.0 = 9.0` to EVERY candidate in EVERY cycle.
+The prompt ends with *"If nothing material, say so"* — so a "no material
+risk" answer still arrived as a bullet and was still charged 3.0.
+
+Measured on the live run of 2026-10-06, slot 15:30, from
+`cycle_symbol_scores`:
+
+```
+MUFG  risk -9.0
+TX    risk -9.0
+SMH   risk -9.0
+```
+
+Exactly -9.0 — not -12.0 or -14.0 — so none of the three discriminating
+rules fired for any of them and the entire discount was bullet-count.
+
+A charge every candidate pays identically cannot separate a safe symbol
+from a risky one. It only moved the whole distribution 9 points down
+under a fixed bar. The gap that matters is preserved and is now pinned
+by a test: a bearish crossover still costs exactly 5.0 more than no
+crossover, before and after.
+
+It was also never a numbered decision: no `D-NNNN` in this log covers
+it. It arrived as a module constant with the evaluator, so removing it
+restores the intended behavior rather than overriding an approval.
+
+### Effect on real data — stated plainly, including what it does NOT do
+
+Replayed against the recorded components of slot 15:30, with the bar
+still at 60:
+
+```
+symbol   recorded   after D-0083   verdict at bar 60
+MUFG       43.25        52.25       no
+TX         41.79        50.79       no
+SMH        36.20        45.20       no
+```
+
+**This change alone produces no proposal on 2026-10-06.** Every
+candidate gains exactly 9 points and the ranking is unchanged, so a
+symbol must now reach 51 instead of 60 on the other components. On a
+day whose best was 43.25, that is not enough.
+
+What it does fix is real but narrower: the score now means what it
+claims, and a symbol scoring 51+ on its own merits is no longer pushed
+under the bar by a charge it shares with everything else.
+
+### Tests
+
+Full suite: **1751 passed, 54 subtests.** No regressions.
+
+- `test_risk_discount_on_risks` replaced by
+  `test_the_number_of_risk_BULLETS_costs_nothing` and
+  `test_a_bearish_crossover_still_costs_exactly_five_more`. The old test
+  asserted `discount > 5` for 3 bullets plus a crossover, which can only
+  hold while bullets are charged.
+- Four tests carried hardcoded scores or a hardcoded "required 60"
+  string. They now express scores RELATIVE to `Engine._MIN_SCORE`. This
+  was needed while the bar was briefly 50, and it was kept after the
+  revert on purpose: the suite now passes at either bar, so whatever the
+  Controller decides in P-082 cannot silently break a test or, worse,
+  leave one green while it no longer tests its own intent.
+  `test_political_signal_actually_boosts_score` was exactly that case:
+  its 50.0 base would have cleared a 50 bar with no political signal at
+  all.
+
+### Monitoring
+
+`cycle_symbol_scores` rows written before today carry -9.0 in
+`s_risk_discount`; later rows carry 0.0 unless a real rule fires. Any
+day-over-day comparison must account for this date.

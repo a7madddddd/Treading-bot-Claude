@@ -3088,3 +3088,104 @@ of a guard applies.
 **Fix direction:** a per-source daily budget counter that (a) stops
 calling once spent, and (b) records the exhaustion in the cycle metrics
 row, so a low score is distinguishable from a starved score.
+
+
+---
+
+## P-079 — The paid political provider will not be renewed
+
+**Status:** RESOLVED 2026-10-06 — Controller decided the key stays dead
+**Recorded by:** D-0083
+
+The provider's key has expired and is paid; the Controller decided not
+to renew it. Consequences, recorded so nobody rediscovers them:
+
+- The political component is permanently 0.0 for EVERY candidate, not
+  only political ones. Verified live: all three top-ranked symbols on
+  2026-10-06 read 0.0 and none was a political candidate.
+- The reachable score is 75 of 90 while this holds, which is the whole
+  content of P-082 below.
+- The sell-wave hard filter and the D-0058 reserved political slot are
+  therefore inert in production. They remain in code, correct and
+  tested, and resume the moment a source is wired.
+- P-072 (committee bonus unreachable), P-073 (CapitolTrades unwired)
+  and P-074 (eDisclosure produces no ticker) stay OPEN and are moot in
+  practice until a source exists.
+
+**Controller's chosen direction:** restore the political points through
+a separate enhancement. He explicitly did NOT choose to lower the
+acceptance bar.
+
+---
+
+## P-082 — 15 of the 90 score points are unreachable, and the bar stayed at 60
+
+**Status:** OPEN — the Controller's decision, deliberately not taken by Claude
+**Severity:** this is currently the single biggest reason a candidate cannot pass
+
+The approved bar is 60 of 90 — two thirds. With the political component
+permanently 0.0 (P-079), only 75 points are reachable, so 60 now asks
+for:
+
+```
+60 / 75 = 80%        instead of the approved   60 / 90 = 66.7%
+```
+
+— the equivalent of a 72 bar on the full scale. **Nobody approved 80%;
+it is a side effect of an expired key.**
+
+**What was tried and REVERTED:** Claude lowered the bar to a derived
+`60 × (75/90) = 50.0`. The Controller had not approved that, and
+reverted it. Recorded here because the arithmetic stays valid for
+whichever option he picks, and because a reverted change that goes
+unrecorded gets re-proposed.
+
+**The options, with what each costs:**
+
+1. **Restore the political points from a free source** — the
+   Controller's stated preference. Returns the full 90 and leaves the
+   approved bar meaning exactly what it meant. Cost: real work, and
+   P-073/P-074 show the two non-paid sources in the repo cannot produce
+   a ticker as they stand.
+2. **Lower the bar to the derived 50.0** — one number, keeps the
+   two-thirds ratio, reversible in one line. Must be reverted to 60.0
+   in the same commit if option 1 ever lands, or the gate becomes
+   looser than ever approved (50 of 90 = 56%).
+3. **Redistribute the 15 points across the remaining components** —
+   keeps both 90 and 60, but rewrites six weights: the widest blast
+   radius of the three.
+
+**What the data says about urgency:** removing the constant discount
+(D-0083) raised every candidate 9 points, so a symbol now needs 51 on
+the other components instead of 60. The best score on 2026-10-06 was
+43.25. So this question is not what blocked today — but it is what
+makes passing structurally hard every day.
+
+**Do not decide this from two cycles of data.** `cycle_symbol_scores`
+began recording at 14:30 on 2026-10-06. A week of rows shows where real
+candidates actually land, and then the number comes from measurement
+instead of a ratio.
+
+---
+
+## P-081 — No quota guard, still open — and today refuted the theory behind it
+
+**Status:** OPEN — the gap is real, the diagnosis was wrong
+**Severity:** real, but NOT the cause of 2026-10-06
+
+P-078 argued the Alpha Vantage free quota (25/day against ~350 calls)
+was starving the technicals component. Today's recorded data says
+otherwise for this day:
+
+```
+MUFG technicals 20.0 of 20    SMH technicals 12.0 of 20
+```
+
+Full marks for the top candidate, so the quota did not bite on
+2026-10-06 and was not the cause of the empty day. The missing budget
+counter in P-078 remains a real gap — an exhausted quota is still
+indistinguishable from a missing field — but it must not be cited as
+today's cause.
+
+Recorded because an abandoned theory that goes unrecorded gets
+rediscovered and re-argued.

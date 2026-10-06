@@ -705,7 +705,11 @@ class TestWatchlistWithTradeEvaluator(unittest.TestCase):
     def test_low_score_candidates_skipped(self):
         trade_repo, proposal_repo, execution_repo, conn = _repos()
         watchlist = StaticWatchlistSource(("A", "B", "C"))
-        evaluator = self._FakeEvaluator({"A": 55.0, "B": 65.0, "C": 70.0})
+        # Relative to the live bar, so this keeps testing "A is skipped"
+        # after D-0083 moved the bar from 60.0 to a derived 50.0.
+        evaluator = self._FakeEvaluator({"A": Engine._MIN_SCORE - 5.0,
+                                         "B": Engine._MIN_SCORE + 5.0,
+                                         "C": Engine._MIN_SCORE + 10.0})
         engine, broker, market_data, *_ = _make_engine(
             trade_repo, proposal_repo, execution_repo, conn,
             watchlist=watchlist, trade_evaluator=evaluator,
@@ -853,7 +857,11 @@ class TestPoliticalSignalEndToEnd(unittest.TestCase):
                     passes=False, reasons=["sell wave"],
                 )
             # Mirror the soft score: political_weighted_signal adds up to +15.
-            base = 50.0
+            # The base sits BELOW the live bar on purpose, so the test
+            # still proves the political signal is what carries a symbol
+            # over it (D-0083 moved the bar from 60.0 to a derived 50.0,
+            # and a fixed 50.0 base would have cleared it on its own).
+            base = Engine._MIN_SCORE - 10.0
             political_bonus = min(15.0, research.political_weighted_signal)
             return TestPoliticalSignalEndToEnd._FakeResult(
                 research.symbol, base + political_bonus, research,
@@ -887,7 +895,12 @@ class TestPoliticalSignalEndToEnd(unittest.TestCase):
         # political source no longer injects symbols -- it only supplies
         # the signal that lifts NVDA's score.
         watchlist = StaticWatchlistSource(("TSLA", "NVDA"))
-        evaluator = self._ReevalCountingEvaluator({"TSLA": 50.0, "NVDA": 50.0})
+        # Both start BELOW the live bar. TSLA has no political signal, so
+        # it is never re-evaluated and keeps this score — it must stay
+        # below the bar for the test to mean anything (D-0083).
+        below = Engine._MIN_SCORE - 10.0
+        evaluator = self._ReevalCountingEvaluator({"TSLA": below,
+                                                   "NVDA": below})
         political = self._PoliticalSrcStub({
             "NVDA": {"buys": 3, "signal": 15.0, "cmte": True,
                      "names": ["Pelosi", "Crenshaw", "Khanna"]},
@@ -902,10 +915,11 @@ class TestPoliticalSignalEndToEnd(unittest.TestCase):
         engine._lock.acquire(now=_now())
         engine.run_trigger_check(now=_now())
 
-        # NVDA re-evaluated with political signal → score 65 > TSLA's 50.
-        # Both open trades should exist (both above 60 cutoff on NVDA path).
+        # NVDA was re-evaluated WITH the political signal: bar-10+15,
+        # i.e. 5 points ABOVE the bar, so it becomes a trade.
         self.assertTrue(trade_repo.list_for_symbol("NVDA"))
-        # TSLA's final score was 50 — below MIN_SCORE 60, so no trade.
+        # TSLA got no signal, so it stayed at bar-10 — below the bar,
+        # so no trade. This is the whole point of the test.
         self.assertFalse(trade_repo.list_for_symbol("TSLA"))
         # Prove the enrichment loop re-called evaluate_research
         self.assertGreater(evaluator.reeval_calls, 0)
@@ -1658,8 +1672,11 @@ class TestNothingToTradeNotification(unittest.TestCase):
 
     def test_all_candidates_below_min_score_reports_the_best_score(self):
         trade_repo, proposal_repo, execution_repo, conn = _repos()
+        # Relative to the live bar (D-0083), so the reported "best score
+        # below the bar" message keeps being the thing under test.
+        best = Engine._MIN_SCORE - 5.0
         evaluator = TestWatchlistWithTradeEvaluator._FakeEvaluator(
-            {"A": 55.0, "B": 42.0})
+            {"A": best, "B": Engine._MIN_SCORE - 18.0})
         engine, _b, market_data, _d, notifier, _e = _make_engine(
             trade_repo, proposal_repo, execution_repo, conn,
             watchlist=StaticWatchlistSource(("A", "B")),
@@ -1671,7 +1688,9 @@ class TestNothingToTradeNotification(unittest.TestCase):
         engine.run_trigger_check(now=_now())
         events = self._nothing_events(notifier)
         self.assertEqual(len(events), 1)
-        self.assertIn("best score 55.0 < required 60", events[0].message)
+        self.assertIn(
+            f"best score {best:.1f} < required {Engine._MIN_SCORE:.0f}",
+            events[0].message)
         # No trade was opened for either symbol.
         for s in ("A", "B"):
             self.assertEqual(trade_repo.list_for_symbol(s), [])

@@ -1363,6 +1363,26 @@ class Engine:
     #   MIN_SCORE        — a candidate must score >= this to become a proposal
     _TOP_N_PER_CYCLE = 3
     _MIN_SCORE = 60.0
+    """UNCHANGED, and deliberately so. The Controller approved 60 of the
+    90 weighted points -- exactly two thirds -- and has NOT approved
+    moving it. P-082 records the open question below; this constant does
+    not move until he decides it.
+
+    The measured context, recorded here because it changes what 60
+    currently COSTS without changing the number: the political component
+    is 15 of the 90 points and its paid data provider's key has expired
+    and will not be renewed, so that component is 0.0 for every
+    candidate -- political or not. Verified on the live run of
+    2026-10-06: the political column read 0.0 for all three top-ranked
+    symbols, none of which was a political candidate.
+
+    With only 75 points reachable, a 60 bar asks for 60/75 = 80% rather
+    than the approved 66.7% -- the equivalent of a 72 bar on the full
+    scale. That is a side effect of an expired key, not a decision.
+
+    The Controller's chosen remedy is to restore the political points
+    through a separate enhancement, NOT to lower this bar. See P-082.
+    """
 
     POSITION_DRIFT_INTERVAL_SECONDS = 600.0
     """D-0073: how often the broker's share counts are compared with

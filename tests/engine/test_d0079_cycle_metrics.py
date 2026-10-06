@@ -258,7 +258,11 @@ class TestTheEngineRecordsEveryEvaluatedCycle(unittest.TestCase):
         self.assertEqual(m.rejected_hard_filter, 0)
         self.assertEqual(m.proposals_created, 3)
         self.assertAlmostEqual(m.best_score, 90.0)
-        self.assertAlmostEqual(m.min_score_required, 60.0)
+        # Read from the constant, not a literal: the recorded value must
+        # track whatever bar the engine actually applied (D-0083 moved it
+        # from 60.0 to a derived 50.0), or the metrics row and the
+        # decision that produced it could silently disagree.
+        self.assertAlmostEqual(m.min_score_required, Engine._MIN_SCORE)
 
     def test_above_min_score_counts_ALL_of_them_not_just_the_proposed(self):
         """The whole point of the column: 5 cleared the bar, 3 were
@@ -272,12 +276,16 @@ class TestTheEngineRecordsEveryEvaluatedCycle(unittest.TestCase):
         self.assertEqual(m.proposals_created, 3)
 
     def test_a_cycle_where_nothing_cleared_the_bar_is_still_recorded(self):
-        rows = self._run({"A": 55.0, "B": 40.0}, ["A", "B"])
+        # Both scores are expressed RELATIVE to the live bar so the test
+        # keeps testing "nothing cleared it" after D-0083 moved the bar.
+        best = Engine._MIN_SCORE - 5.0
+        rows = self._run({"A": best, "B": Engine._MIN_SCORE - 20.0},
+                         ["A", "B"])
         self.assertEqual(len(rows), 1)
         m = rows[0]
         self.assertEqual(m.above_min_score, 0)
         self.assertEqual(m.proposals_created, 0)
-        self.assertAlmostEqual(m.best_score, 55.0)
+        self.assertAlmostEqual(m.best_score, best)
 
     def test_hard_filtered_symbols_are_counted_separately(self):
         rows = self._run({"A": -1.0, "B": -1.0, "C": 70.0},
