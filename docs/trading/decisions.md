@@ -5666,3 +5666,187 @@ withdrawn:
 3. If approved: the bootstrap rule (maximum until 20 dates), the window
    length, and the zero-day behaviour.
 4. And explicit approval to **push**, separately from approval to build.
+
+## D-0079 — The two trade COUNTS are derived from the approved fractions
+
+**Date:** 2026-10-06
+**Decided by:** Controller
+**Status:** APPROVED — implemented, tested, NOT YET PUSHED at the time
+of writing (the Controller approved building and testing; the push is a
+separate approval he has not yet given)
+**Supersedes:** D-0047's two count values ONLY. D-0047's three
+fractions, its check order, its fail-closed snapshot rule and every
+other part of it are unchanged.
+**Related:** D-0077 (reverted by D-0078) tried to make these counts
+respond to data quality. This is a different and simpler change: the
+counts are derived from the Controller's own approved percentages, with
+no history, no baseline and no comparison to any previous day.
+
+### The contradiction this removes
+
+Two Controller-approved numbers disagreed:
+
+| | |
+|---|---|
+| one complete trade (D-0051) | 5% of equity |
+| `max_concurrent_trades` (D-0047) | 5 |
+| so the most the system could ever hold | 5 × 5% = **25%** of equity |
+| `max_gross_exposure_fraction` (D-0047) | **60%** |
+| unreachable approved risk budget | **35 percentage points** |
+
+The engine stopped adding positions at a quarter of the Controller's
+equity while his approved ceiling was 60%. That was not a deliberate
+margin — a count and a percentage were approved independently and never
+reconciled. Measured day-by-day: at 3 new trades a day the old cap of 5
+was reached on **day 2** and then blocked every day after until a
+position closed.
+
+### The decision
+
+```
+max_concurrent_trades = floor(max_gross_exposure_fraction / trade_budget_fraction)
+                      = floor(0.60 / 0.05) = 12
+max_daily_new_trades  = floor(daily_new_trade_fraction * max_concurrent_trades)
+                      = floor(0.25 * 12) = 3
+```
+
+- `trade_budget_fraction = 0.05` — D-0051's approved budget.
+- `daily_new_trade_fraction = 0.25` — **new**, Controller-approved
+  today. 25% of the chair count.
+
+**The daily pace does not change. It was 3 and it is 3.** Only its
+source changed. The concurrent cap changes from 5 to 12.
+
+### Why the pace is a fraction of the CHAIRS and not of equity
+
+The Controller asked for both readings. A fraction of the chairs keeps
+"days to fill the shelf" invariant when the exposure ceiling moves:
+
+| gross ceiling | chairs | per day | days to fill |
+|---|---|---|---|
+| 80% | 16 | 4 | 4 |
+| 60% | 12 | 3 | 4 |
+| 40% | 8 | 2 | 4 |
+
+A fraction of total equity would have given a fixed 5 a day at every
+ceiling, so a decision to be *more* careful (40% gross) would have
+filled the shelf in 1.6 days instead of 4. Measured, not argued.
+
+### Decimal, not float — this is not a stylistic choice
+
+```
+0.60 / 0.05     == 11.999999999999998
+math.floor(...) == 11        <- one whole position lost, silently
+Decimal exact   == 12
+```
+
+Neither 0.60 nor 0.05 is representable in binary floating point. The
+failure has no exception and no wrong-looking code; the only symptom
+would be a twelfth proposal refused for no comprehensible reason. Both
+derivations therefore run through `risk.models._floor_ratio` and
+`_floor_product`, which compute in `Decimal`. A test asserts the float
+answer is 11 so that nobody can "simplify" it back.
+
+### The clamp, and the invariant it breaks on purpose
+
+Both derived counts are clamped to a minimum of 1. Without it, a gross
+ceiling smaller than one trade's budget (e.g. 3% gross, 5% budget)
+floors to 0 and `PortfolioRiskLimits` could not be constructed at all —
+the engine would crash at startup rather than trade carefully.
+
+A 30,000-combination sweep of the three fractions confirmed: no
+exceptions, both counts always ≥ 1, and the daily pace never exceeds
+the chair count. It also found the one invariant the clamp breaks —
+`chairs × budget > gross` in 7,350 of those combinations, every one of
+them a ceiling too small for a single trade. **That is not a reachable
+unsafe path:** the gross-exposure check is independent and still
+refuses the trade, which is now a test
+(`test_the_clamped_case_is_still_refused_by_gross_exposure`).
+
+### Item 6 — recording what each cycle saw (migration 0008)
+
+The engine proposes at most 3 symbols per cycle from those scoring
+≥ 60. Nobody knows whether that ceiling has ever bound, because the
+number of symbols above the bar was never recorded. The Controller asked
+for it so the question is settled from data.
+
+New table `cycle_metrics`, one row per evaluation cycle:
+`cycle_at`, `effective_date`, `candidates_evaluated`,
+`rejected_hard_filter`, **`above_min_score`**, `min_score_required`,
+`best_score`, `proposals_created`.
+
+Three deliberate properties:
+
+1. **`above_min_score` counts ALL symbols over the bar, not the
+   proposed ones.** 5 cleared 60 and 3 were proposed records as 5 and 3.
+   Recording 3 would make the data unable to answer the question.
+2. **A cycle where nothing cleared the bar IS recorded.** That is the
+   data point. Cycles that never evaluated anything (market closed, no
+   snapshot, every symbol already held, macro blackout) are NOT
+   recorded — a zero row there would read as "nothing was good enough"
+   when in fact nothing was scored.
+3. **Nothing reads these rows.** No code branches on them. The recorder
+   swallows every exception: a lost metrics row costs one data point, a
+   raised exception could cost an unprotected position.
+
+`APPROVED_SCHEMA_VERSION` 7 → 8.
+
+### Deployment constraint — operational, not a bug
+
+Verified by simulation: once the database is at version 8, any process
+still running version-7 code **refuses to start**:
+
+```
+database schema is at version 8, which is newer than this code's
+approved version 7 -- refusing to proceed
+```
+
+Three processes open `paper_session.sqlite` —
+`run_paper_session.py`, `run_universe_selection.py` and
+`run_research_cycle.py`. After pulling, **all** of them must be on the
+new code. Pulling and restarting only the engine would leave the 06:00
+universe timer unable to start.
+
+### Known divergence left open, NOT fixed here
+
+`src/backtesting/portfolio_models.py` carries its own
+`max_concurrent_trades = 5` / `max_daily_new_trades = 3`, independent of
+`PortfolioRiskLimits` by design. After this change a backtest models a
+system that no longer exists. Changing backtest behavior is a separate
+Controller decision; recorded as an open item rather than silently
+aligned.
+
+### Tests
+
+- `tests/risk/test_d0079_derived_limits.py` — **42 tests**: the
+  Controller's numbers, the float trap (both directions), following the
+  exposure ceiling, the clamps, explicit values still winning, the
+  guarded duplicate of 5%, the enforcer allowing the 6th and refusing
+  the 13th, and the fraction sweep invariants. Uses the real
+  `PortfolioSnapshot` and `PositionView` — never a stub, because under
+  D-0077 a stub missing `gross_exposure()` passed while production
+  raised `AttributeError`.
+- `tests/engine/test_d0079_cycle_metrics.py` — **20 tests**, including
+  the engine recording through a real `run_trigger_check`, that
+  `above_min_score` counts 5 when 3 are proposed, that an empty
+  watchlist records nothing, and that a raising recorder never prevents
+  a trade.
+- Updated: `tests/risk/test_models.py` (12 and 3, with the reasoning),
+  `tests/risk/test_enforcer.py` (asserts behaviour at the derived cap
+  instead of the literal 5, plus a new one-below-the-cap case),
+  `tests/persistence/test_db.py` (the two deliberate version pins).
+- **Full suite: 1694 passed, 54 subtests passed.** Run twice.
+- Migration exercised against a **copy of the live database**:
+  user_version 7 → 8, one new table, zero rows changed in any of the 11
+  pre-existing tables, nothing dropped, idempotent over three runs.
+
+### Not in this change
+
+The watchlist percentage (`top_n` → 10% of survivors) was withdrawn by
+the Controller pending the real `survivors_to_snapshot` figure from a
+06:00 run — the 560/56 numbers were arithmetic from the four percentile
+stages, never measured, and were presented as if measured. Selective
+research caching was withdrawn by Claude: the evaluator reads
+`current_price`, `rsi_14` and `day_volume`, which move intraday, so
+day-long caching is a trading-behavior change and not the efficiency
+fix it was first described as.

@@ -2340,3 +2340,111 @@ max_daily_new_trades   = 3     (D-0047, approved)
   universe itself narrowed for a reason other than risk sizing — for
   example to cut research cost per day — then scaling Top-N is right for
   that reason, and should be justified by it rather than by exposure.
+
+---
+
+## P-056 — D-0079 built and tested; the PUSH is not yet approved
+
+**Status:** OPEN — awaiting the Controller's push decision
+**Date:** 2026-10-06
+
+The Controller approved **building and testing** items 1, 2 and 6, and
+said explicitly that the push is decided after the report. The code is
+implemented and tested; **nothing has been pushed.**
+
+Done:
+- `max_concurrent_trades` 5 → **12**, derived `floor(0.60 / 0.05)`
+- `max_daily_new_trades` **3**, derived `floor(0.25 × 12)` — same value,
+  derived source
+- `cycle_metrics` table (migration 0008), recording `above_min_score`
+- 62 new tests; full suite **1694 passed**; migration verified against a
+  copy of the live database
+
+What the Controller decides: push or hold.
+
+## P-057 — Backtest limits now diverge from live
+
+**Status:** OPEN
+**Found:** 2026-10-06 while testing D-0079
+
+`src/backtesting/portfolio_models.py` carries its own
+`max_concurrent_trades = 5` and `max_daily_new_trades = 3`, independent
+of `PortfolioRiskLimits` by design. With D-0079 live at 12/3, a backtest
+models a system that no longer exists.
+
+Not changed as part of D-0079 — altering backtest behavior is its own
+decision, and the Controller may want to vary these deliberately for
+experiments. **Decision needed:** align the backtester with the derived
+live limits, or keep it independent and document that backtests must
+set them explicitly.
+
+## P-058 — Alpha Vantage free tier is exceeded today, with 10 symbols
+
+**Status:** OPEN — pre-existing defect, not introduced by any change
+**Found:** 2026-10-06
+
+`engine/research_hub.collect()` fetches up to 6 sources per watchlist
+symbol on every one of the 7 daily cycles, with no caching of any kind
+(only SPY's 30-day return is cached, across symbols within one call).
+
+```
+10 symbols × 7 cycles = 70 requests/day to EACH source
+Alpha Vantage free tier =  25 requests/day
+```
+
+So Alpha Vantage is being exhausted every trading day already, and its
+contribution to the soft score is silently absent for most of the day.
+Finnhub (800/day) and Polygon (5/min) are within limits at 10 symbols.
+
+The obvious fix — cache the answers for a day — is **not** a pure
+efficiency change: the evaluator reads `current_price`, `rsi_14` and
+`day_volume`, which move intraday. Day-long caching would score symbols
+on stale technicals, which is a trading-behavior change. A correct fix
+is selective per-field caching, which needs the fields each of the six
+sources supplies to be read one by one first. Not yet done.
+
+## P-059 — The watchlist percentage, waiting on a measured number
+
+**Status:** OPEN — deferred by the Controller, 2026-10-06
+**Blocks on:** one real 06:00 ET universe run
+
+Making `top_n` a percentage of the surviving pool instead of a fixed 10
+was agreed in principle and then withdrawn, because the pool size it
+would multiply was never measured. The figures used in the discussion
+(560 survivors, so 56 symbols) were arithmetic over the four percentile
+stages — 30% × 80% × 40% × 50% = 4.8% — and the real number is lower,
+because the per-symbol gates (data completeness ≥ 90%, the 2–4% ATR
+band, the 0.15% spread cap) also cut and cannot be modelled without
+feature data.
+
+**What is needed before deciding:** `survivors_to_snapshot` from the
+`[data-quality]` block of a real run. Then the percentage multiplies a
+measured number.
+
+Note the interaction with P-058: a larger watchlist multiplies the
+research requests per source per day, so P-058 is a prerequisite.
+
+## P-060 — Three config percentages are declared but never used
+
+**Status:** OPEN — documentation is actively misleading
+**Found:** 2026-10-06 while reading the pipeline stage by stage
+
+```
+min_market_cap_percentile  = 0.40   no stage reads it
+max_gap_fraction           = 0.05   no stage reads it
+max_pairwise_correlation   = 0.70   stage G documents it, does not apply it
+```
+
+All three are declared in `UniverseSelectionConfig`, validated in its
+`__post_init__`, and described in its docstring under the stage that
+appears to use them. None is read by any filter.
+
+The practical consequence: **there is no market-cap floor in universe
+selection at all**, while the configuration states there is one. The
+correlation rule IS enforced, but in the engine's
+`PortfolioFilter` (cap 0.70), not in the pipeline — so that protection
+exists, in a different place than the config suggests.
+
+**Decision needed:** activate them (which tightens candidate selection
+and is therefore a trading-behavior change needing approval), or fix
+the misleading documentation to state plainly that they are inert.
