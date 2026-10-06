@@ -2343,9 +2343,12 @@ max_daily_new_trades   = 3     (D-0047, approved)
 
 ---
 
-## P-056 — D-0079 built and tested; the PUSH is not yet approved
+## P-056 — D-0079 built, tested and pushed
 
-**Status:** OPEN — awaiting the Controller's push decision
+**Status:** RESOLVED 2026-10-06 — Controller approved the push; merged
+and pushed as `686dea8`, verified from a fresh clone of origin
+(`APPROVED_SCHEMA_VERSION = 8`, concurrent 12, daily 3,
+`cycle_metrics` present). Final suite **1707 passed, 54 subtests**.
 **Date:** 2026-10-06
 
 The Controller approved **building and testing** items 1, 2 and 6, and
@@ -2527,3 +2530,115 @@ and report instead? Claude's recommendation is the latter — a scoring
 system that failed is not evidence that every candidate is worth
 proposing — but it changes approved behaviour and is the Controller's
 call.
+
+---
+
+# Correction, 2026-10-06 — three decisions the Controller made were not recorded
+
+The Controller asked: *"Wait, I think we decide this three points. Did
+we?"* He was right. Three points he decided in conversation were
+presented back to him as though still open, or were never written down
+at all. Recording them now as what they are: **decided, not yet
+built.**
+
+This is the failure `.claude/rules/05-change-tracking.md` exists to
+prevent — a decision that lives only in a transcript is operationally
+invisible, and the transcript does not survive context compaction.
+
+## P-063 — Cache the research answers (DECIDED, not built)
+
+**Status:** APPROVED by the Controller 2026-10-06 — implementation
+deferred by Claude, pending a field-level design
+**His words:** *"And yes, I think we should to save the result from API
+calls for the research app."*
+
+He approved it. Claude then withdrew it from the build and the open
+board recorded only the symptom (P-058) without recording that the fix
+had been approved.
+
+Why it was not built with D-0079, which stands: the evaluator reads
+`current_price`, `rsi_14` and `day_volume`, and those move intraday.
+Caching a whole `SymbolResearch` for a day would score symbols on
+stale technicals — a trading-behaviour change, not the efficiency fix
+it was first described as.
+
+What it needs: read what each of the six sources in
+`engine/research_hub.collect()` actually supplies, field by field, then
+cache only the slow-moving fields (fundamentals, market cap, sector)
+and never the price-derived ones. That design pass has not been done.
+
+**Numbers that make it worth doing:** 10 symbols × 7 cycles = 70
+requests/day per source against an Alpha Vantage free limit of 25. Six
+of every seven calls are for data that does not change within a day.
+
+## P-064 — Risk check BEFORE the proposal is sent (DECIDED, not built)
+
+**Status:** APPROVED by the Controller 2026-10-06 — not built, and it
+was missing from the board entirely
+**His words:** *"Also the submission risk violated should be before my
+approval."*
+
+Today the D-0047 check runs at submission, i.e. AFTER he approves. On a
+day already at the cap he receives a proposal, approves it, and only
+then gets:
+
+```
+submission_risk_violated
+```
+
+He approved an action that was refusable before it was ever sent.
+
+Claude's recommendation, recorded for when this is built: **add** a
+pre-send check and **keep** the existing submission check unchanged —
+two belts, not a moved one. Moving a working safety gate is a larger
+risk than duplicating it, and the submission-time check is the one that
+sees the live snapshot at the moment the order would actually go out.
+
+Note the interaction with D-0079: at 12 chairs instead of 5 there are
+more proposals in flight, so this costs him more approvals-that-cannot-
+execute than it did before.
+
+## P-065 — Reduce the two caps on a degraded data day (DECIDED, not built)
+
+**Status:** AGREED IN PRINCIPLE by the Controller 2026-10-06 — the
+threshold is not yet measurable
+**His words:** *"And also we need to decrease the floors when we have a
+bad day."* Clarified by him, unambiguously: *"the max concrete trades
+and the max daily new trades, not the protective floor."*
+
+So this is about the two D-0079 caps, never the −10% protective Floor.
+That distinction is recorded because getting it wrong would widen risk
+on the worst possible day.
+
+The measure, and the reason this is now possible without the D-0077
+baseline that was reverted: completeness is computable **inside a
+single run**, with no history and no comparison to any previous day:
+
+```
+completeness = enriched_with_features / identity_resolved
+```
+
+Both counts are already recorded in the `[data-quality]` block.
+
+What is still missing is the band — where "degraded" starts. A single
+point (anything below 100%) is exactly the D-0077 mistake: it punished
+43% of perfectly healthy days. A band needs to be set below the normal
+day-to-day variation, and that variation has not been measured yet.
+
+**Blocks on:** roughly 20 recorded runs of the completeness ratio.
+
+---
+
+**Open items, restated honestly as of 2026-10-06:**
+
+| item | state |
+|---|---|
+| P-057 backtest limits diverge | needs a decision |
+| P-058 Alpha Vantage exceeded | symptom of P-063 |
+| P-059 watchlist percentage | deferred by the Controller, awaits a measured survivor count |
+| P-060 three inert config percentages | needs a decision |
+| P-061 migration splitter | needs a decision |
+| P-062 ungated evaluator fallback | needs a decision |
+| **P-063 research caching** | **decided — awaiting a field-level design** |
+| **P-064 pre-send risk check** | **decided — not built** |
+| **P-065 degraded-day cap reduction** | **decided — awaiting ~20 days of measurement** |
