@@ -1505,6 +1505,25 @@ class Engine:
             return
         from engine.cycle_metrics import CycleMetrics
         from engine.snapshot_watchlist import _current_effective_date_et
+
+        if ranked is None:
+            # The evaluator-failure fallback: trades were opened without
+            # any symbol being scored. The three score columns are NULL
+            # rather than 0, because 0 would read as "scored, nothing
+            # was good enough" while trades were in fact opened.
+            self._cycle_metrics_recorder(CycleMetrics(
+                cycle_at=now,
+                effective_date=_current_effective_date_et(now),
+                candidates_evaluated=candidates_evaluated,
+                rejected_hard_filter=None,
+                above_min_score=None,
+                min_score_required=self._MIN_SCORE,
+                best_score=None,
+                proposals_created=accepted_count,
+                scored=False,
+            ))
+            return
+
         passing = [r for r in ranked if r.passes_hard_filter]
         self._cycle_metrics_recorder(CycleMetrics(
             cycle_at=now,
@@ -1516,6 +1535,7 @@ class Engine:
             min_score_required=self._MIN_SCORE,
             best_score=max((r.soft_score for r in passing), default=None),
             proposals_created=accepted_count,
+            scored=True,
         ))
 
     def _check_watchlist(self, *, now: datetime) -> None:
@@ -1653,6 +1673,9 @@ class Engine:
             )
             for symbol in candidates:
                 self._start_new_trade(symbol, now=now)
+            self._record_cycle(now=now, ranked=None,
+                               accepted_count=len(candidates),
+                               candidates_evaluated=len(candidates))
             return
 
         # D-0050 Phase 16: macro-event blackout window.

@@ -19,8 +19,16 @@ CREATE TABLE cycle_metrics (
     cycle_at              TEXT    NOT NULL,
     effective_date        TEXT    NOT NULL,
     candidates_evaluated  INTEGER NOT NULL,
-    rejected_hard_filter  INTEGER NOT NULL,
-    above_min_score       INTEGER NOT NULL,
+    -- NULLABLE ON PURPOSE. NULL means the candidates were never
+    -- SCORED, which is a different fact from "scored and none passed".
+    -- The evaluator-failure fallback in Engine._check_watchlist creates
+    -- a trade for every candidate without scoring any of them, and
+    -- writing 0 there would read as "nothing was good enough" while trades were
+    -- in fact opened, and would silently under-report proposals in any
+    -- per-day total. Query with `WHERE above_min_score IS NOT NULL` to
+    -- get only cycles that actually scored.
+    rejected_hard_filter  INTEGER,
+    above_min_score       INTEGER,
     min_score_required    REAL    NOT NULL,
     best_score            REAL,
     proposals_created     INTEGER NOT NULL,

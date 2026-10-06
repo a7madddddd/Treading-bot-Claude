@@ -5835,10 +5835,42 @@ aligned.
   `tests/risk/test_enforcer.py` (asserts behaviour at the derived cap
   instead of the literal 5, plus a new one-below-the-cap case),
   `tests/persistence/test_db.py` (the two deliberate version pins).
-- **Full suite: 1694 passed, 54 subtests passed.** Run twice.
+- **Full suite: 1702 passed, 54 subtests passed.** Run three times.
 - Migration exercised against a **copy of the live database**:
   user_version 7 → 8, one new table, zero rows changed in any of the 11
   pre-existing tables, nothing dropped, idempotent over three runs.
+
+### Two defects found AFTER the first green run, by probing untested paths
+
+Both were found by deliberately exercising paths the tests did not
+reach, not by reading the code.
+
+**1. A semicolon inside a SQL comment truncated the migration.**
+`_apply_migration` splits on `";"` with no awareness of comments. The
+0008 comment read "...without scoring any of them; writing 0 there..."
+and bootstrap failed with `sqlite3.OperationalError: incomplete input`
+-- the CREATE TABLE had been cut in half. Fixed by rewording the
+comment. The splitter itself is pre-existing and is now recorded as
+P-061 with a guard test that fires on the broken file and passes on the
+fixed one.
+
+**2. The evaluator-failure fallback created trades and recorded
+nothing.** If `TradeEvaluator.rank()` raises, the engine opens a trade
+for every candidate and returns. That exit wrote no `cycle_metrics`
+row, so a cycle that created proposals was invisible in the table and
+any per-day proposal total computed from it would have been wrong.
+
+Fixed by recording the cycle with `scored = 0` and NULL for
+`rejected_hard_filter`, `above_min_score` and `best_score`. Writing 0
+would have been the wrong fix: it reads as "scored, nothing was good
+enough" while trades were in fact opened. The two columns were made
+nullable for this -- a safe edit because the migration had never been
+applied anywhere but a throwaway copy.
+
+That probe also surfaced P-062: the fallback proposes every candidate
+with no score gate at all, and D-0079 widens that path from 5 symbols
+to 12. Pre-existing behaviour, recorded for the Controller's decision,
+not changed here.
 
 ### Not in this change
 

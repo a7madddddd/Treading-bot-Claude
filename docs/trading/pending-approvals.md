@@ -2448,3 +2448,79 @@ exists, in a different place than the config suggests.
 **Decision needed:** activate them (which tightens candidate selection
 and is therefore a trading-behavior change needing approval), or fix
 the misleading documentation to state plainly that they are inert.
+
+## P-061 — `_apply_migration` splits SQL on ';' with no awareness of comments
+
+**Status:** OPEN — pre-existing; a latent trap for every future migration
+**Found:** 2026-10-06, by hitting it
+
+`src/persistence/db.py::_apply_migration` does:
+
+```python
+statements = [s.strip() for s in migration_sql.split(";") if s.strip()]
+```
+
+A single `;` inside a `--` comment therefore cuts the statement around
+it in half. Writing migration 0008 hit this directly: the comment read
+`"...without scoring any of them; writing 0 there..."` and bootstrap
+failed with `sqlite3.OperationalError: incomplete input`. The CREATE
+TABLE had been truncated mid-definition.
+
+Two existing migrations already contain the pattern and are unharmed —
+`0001_initial.sql:97` and `0005_research.sql:3` — because in both the
+resulting fragment is comments only, and SQLite executes a comment-only
+string as a no-op. They are latent, not broken.
+
+The same split would also truncate a statement containing a `;` inside
+a string literal.
+
+Guarded for now by
+`tests/engine/test_d0079_cycle_metrics.py::TestTheMigrationSplitterTrap`,
+which checks every migration fragment that carries real SQL is a
+complete statement (`sqlite3.complete_statement`) while allowing the two
+harmless comment-only cases. Verified as a negative control: it fires on
+the broken 0008 and passes on the fixed one.
+
+**Decision needed:** leave the splitter and rely on the guard test, or
+replace the naive split with a comment- and literal-aware one. The
+splitter deliberately avoids `executescript()` because that issues an
+implicit commit and would break the single-transaction-per-migration
+discipline, so a fix must preserve that.
+
+## P-062 — Evaluator failure opens a trade for EVERY candidate, ungated
+
+**Status:** OPEN — pre-existing behaviour, surfaced while testing D-0079
+**Found:** 2026-10-06
+
+In `Engine._check_watchlist`, if `TradeEvaluator.rank()` raises, the
+fallback is:
+
+```python
+for symbol in candidates:
+    self._start_new_trade(symbol, now=now)
+```
+
+Every watchlist symbol becomes a trade, with **no score gate, no
+`_MIN_SCORE` check, no portfolio sector/correlation filter and no
+Top-N cap**. The comment states the intent — "Evaluator must never
+block the trigger loop; fall through to the un-ranked flow so no
+opportunity is missed" — and a CRITICAL notification is sent, so it is
+not silent. The D-0047 risk limits still bind at submission, and each
+trade still needs Controller approval.
+
+But with D-0079 raising the concurrent cap from 5 to 12, this path can
+now put up to 12 unscored symbols in front of the Controller in one
+cycle instead of 5. The blast radius grew even though the path itself
+did not change.
+
+D-0079 does record it honestly: the cycle is written to
+`cycle_metrics` with `scored = 0` and NULL score columns, so these
+cycles are distinguishable in the data and excluded from
+`WHERE above_min_score IS NOT NULL`.
+
+**Decision needed:** is "propose everything unscored" still the right
+fallback at 12 chairs, or should an evaluator failure propose nothing
+and report instead? Claude's recommendation is the latter — a scoring
+system that failed is not evidence that every candidate is worth
+proposing — but it changes approved behaviour and is the Controller's
+call.

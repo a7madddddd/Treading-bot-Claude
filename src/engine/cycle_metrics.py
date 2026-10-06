@@ -36,11 +36,17 @@ class CycleMetrics:
     cycle_at: datetime
     effective_date: date
     candidates_evaluated: int
-    rejected_hard_filter: int
-    above_min_score: int
+    rejected_hard_filter: Optional[int]
+    above_min_score: Optional[int]
     min_score_required: float
     best_score: Optional[float]
     proposals_created: int
+    scored: bool = True
+    """False when the candidates were never scored -- the
+    evaluator-failure fallback. Then `rejected_hard_filter`,
+    `above_min_score` and `best_score` are all None, and
+    `proposals_created` still carries the real number of trades the
+    fallback opened."""
 
 
 def record_cycle_metrics(conn: sqlite3.Connection, m: CycleMetrics) -> None:
@@ -57,8 +63,9 @@ def record_cycle_metrics(conn: sqlite3.Connection, m: CycleMetrics) -> None:
             m.cycle_at.isoformat(),
             m.effective_date.isoformat(),
             int(m.candidates_evaluated),
-            int(m.rejected_hard_filter),
-            int(m.above_min_score),
+            None if m.rejected_hard_filter is None
+            else int(m.rejected_hard_filter),
+            None if m.above_min_score is None else int(m.above_min_score),
             float(m.min_score_required),
             None if m.best_score is None else float(m.best_score),
             int(m.proposals_created),

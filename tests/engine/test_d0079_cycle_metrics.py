@@ -20,6 +20,7 @@ def _m(**kw):
         min_score_required=60.0,
         best_score=71.5,
         proposals_created=2,
+        scored=True,
     )
     base.update(kw)
     return CycleMetrics(**base)
@@ -256,3 +257,147 @@ class TestTheEngineRecordsEveryEvaluatedCycle(unittest.TestCase):
         engine.run_trigger_check(now=_now())   # must not raise
         self.assertTrue(trade_repo.list_for_symbol("A"),
                         "the trade must still have been created")
+
+
+class _Boom:
+    def rank(self, candidates):
+        raise RuntimeError("evaluator blew up")
+
+
+class TestTheEvaluatorFailureFallbackIsRecordedAsUNSCORED(unittest.TestCase):
+    """Found by probing after the first full green run.
+
+    Engine._check_watchlist has a fallback: if the evaluator raises, it
+    opens a trade for EVERY candidate with no score gate at all, then
+    returns. That path originally wrote no metrics row, so a cycle that
+    created trades was invisible in the table and any per-day proposal
+    total computed from it would be wrong.
+    """
+
+    def _run(self):
+        from tests.engine.test_engine import (
+            StaticWatchlistSource, _make_engine, _now, _repos,
+        )
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        rows = []
+        engine, broker, market_data, *_ = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            watchlist=StaticWatchlistSource(("A", "B")),
+            trade_evaluator=_Boom(),
+        )
+        engine._cycle_metrics_recorder = rows.append
+        for s in ("A", "B"):
+            market_data.set_price(s, 100.0)
+        engine._lock.acquire(now=_now())
+        engine.run_trigger_check(now=_now())
+        return rows, trade_repo
+
+    def test_the_cycle_is_recorded(self):
+        rows, _ = self._run()
+        self.assertEqual(len(rows), 1)
+
+    def test_the_score_columns_are_None_not_zero(self):
+        """Zero would read as 'scored, nothing was good enough' while
+        trades were in fact opened."""
+        m = self._run()[0][0]
+        self.assertIsNone(m.above_min_score)
+        self.assertIsNone(m.rejected_hard_filter)
+        self.assertIsNone(m.best_score)
+        self.assertFalse(m.scored)
+
+    def test_proposals_created_carries_the_real_count(self):
+        rows, trade_repo = self._run()
+        self.assertEqual(rows[0].proposals_created, 2)
+        self.assertTrue(trade_repo.list_for_symbol("A"))
+        self.assertTrue(trade_repo.list_for_symbol("B"))
+
+    def test_a_scored_cycle_still_reports_scored_true(self):
+        rows = TestTheEngineRecordsEveryEvaluatedCycle._run(
+            TestTheEngineRecordsEveryEvaluatedCycle(),
+            {"A": 70.0}, ["A"])
+        self.assertTrue(rows[0].scored)
+
+    def test_nulls_round_trip_through_sqlite(self):
+        conn = sqlite3.connect(":memory:")
+        bootstrap_schema(conn)
+        record_cycle_metrics(conn, _m(rejected_hard_filter=None,
+                                      above_min_score=None,
+                                      best_score=None, scored=False))
+        r = conn.execute("SELECT rejected_hard_filter, above_min_score, "
+                         "best_score FROM cycle_metrics").fetchone()
+        self.assertEqual(r, (None, None, None))
+
+    def test_the_controllers_query_excludes_unscored_cycles(self):
+        """The query that answers his actual question must not be
+        polluted by rows that were never scored."""
+        conn = sqlite3.connect(":memory:")
+        bootstrap_schema(conn)
+        record_cycle_metrics(conn, _m(above_min_score=7))
+        record_cycle_metrics(conn, _m(
+            cycle_at=datetime(2026, 10, 6, 14, 30, tzinfo=timezone.utc),
+            rejected_hard_filter=None, above_min_score=None,
+            best_score=None, scored=False))
+        rows = conn.execute(
+            "SELECT above_min_score FROM cycle_metrics "
+            "WHERE above_min_score IS NOT NULL").fetchall()
+        self.assertEqual(rows, [(7,)])
+
+
+class TestTheMigrationSplitterTrap(unittest.TestCase):
+    """_apply_migration splits on ';' with no awareness of comments or
+    string literals, so ONE semicolon inside a SQL comment silently
+    cuts a CREATE TABLE in half.
+
+    That is exactly what happened while writing 0008: the comment read
+    "...without scoring any of them; writing 0 there..." and bootstrap
+    failed with `sqlite3.OperationalError: incomplete input`. The
+    splitter is pre-existing (see P-061); this test stops THIS file
+    from reintroducing the fault, and any new migration from doing so.
+    """
+
+    @staticmethod
+    def _non_comment(fragment):
+        return "\n".join(
+            line for line in fragment.splitlines()
+            if line.strip() and not line.strip().startswith("--")
+        ).strip()
+
+    def test_the_naive_split_never_truncates_a_real_statement(self):
+        """The guard, written to catch the real fault rather than a
+        proxy for it.
+
+        A ';' inside a comment is only harmful when the cut lands
+        INSIDE a statement. Two existing migrations
+        (0001_initial.sql:97, 0005_research.sql:3) have one in a
+        comment and are fine, because their fragment is comments only
+        and SQLite executes a comment-only string as a no-op -- this
+        test confirms that distinction instead of banning the
+        character. What it does catch is a fragment carrying real SQL
+        that is no longer a complete statement, which is exactly how
+        0008 first failed:
+            sqlite3.OperationalError: incomplete input
+        """
+        import pathlib
+        offenders = []
+        for f in sorted(pathlib.Path("src/persistence/migrations")
+                        .glob("*.sql")):
+            sql = f.read_text(encoding="utf-8")
+            for i, frag in enumerate(
+                    [x.strip() for x in sql.split(";") if x.strip()]):
+                if not self._non_comment(frag):
+                    continue          # comment-only: a harmless no-op
+                if not sqlite3.complete_statement(frag + ";"):
+                    offenders.append(f"{f.name} fragment {i}")
+        self.assertEqual(
+            offenders, [],
+            "_apply_migration splits on ';' with no awareness of "
+            "comments or string literals, so these fragments are "
+            f"truncated SQL: {offenders}")
+
+    def test_0008_splits_into_exactly_two_statements(self):
+        sql = open("src/persistence/migrations/0008_cycle_metrics.sql",
+                   encoding="utf-8").read()
+        frags = [s.strip() for s in sql.split(";") if s.strip()]
+        self.assertEqual(len(frags), 2)
+        self.assertIn("CREATE TABLE cycle_metrics", frags[0])
+        self.assertIn("CREATE INDEX", frags[1])
