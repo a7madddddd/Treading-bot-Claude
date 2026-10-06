@@ -637,6 +637,10 @@ def main() -> int:
         # the rest of the state uses, so it rides the daily DB backup
         # to git. make_recorder never raises -- see its docstring.
         cycle_metrics_recorder=make_cycle_metrics_recorder(conn),
+        # D-0080 (P-064): the SAME enforcer ExecutionService holds, so
+        # the pre-send and submission-time checks can never use
+        # different limits or a different snapshot source.
+        risk_enforcer=risk_enforcer,
     )
 
     # Preflight Telegram summary (before engine.start(), so still safe).

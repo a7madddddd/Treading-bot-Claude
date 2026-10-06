@@ -5946,3 +5946,145 @@ research caching was withdrawn by Claude: the evaluator reads
 `current_price`, `rsi_14` and `day_volume`, which move intraday, so
 day-long caching is a trading-behavior change and not the efficiency
 fix it was first described as.
+
+## D-0080 — The portfolio caps are checked BEFORE a proposal is sent, as well as after
+
+**Date:** 2026-10-06
+**Decided by:** Controller
+**Status:** APPROVED — implemented and tested
+**Closes:** P-064
+**Related:** D-0047 (the limits and the submission-time check, both
+unchanged), D-0079 (raised the concurrent cap 5 → 12, which makes this
+matter more)
+
+### The problem, in the Controller's words
+
+*"The submission risk violated should be before my approval."*
+
+The D-0047 check runs at submission — **after** he approves. On a day
+already at the cap he receives a proposal, approves it, and only then
+gets:
+
+```
+submission_risk_violated
+```
+
+He approved an action that was refusable before it was ever sent to
+him. D-0079 makes this more frequent, not less: at 12 chairs instead of
+5 there are more proposals in flight.
+
+He approved **both** checks explicitly: *"You can check before send and
+check after send. No problem."*
+
+### Two layers
+
+**Layer 1 — once per cycle, before anything is scored.**
+`Engine._caps_already_exhausted()`, called straight after the
+market-open gate. If `open_trades >= max_concurrent_trades` or
+`new_trades_today >= max_daily_new_trades`, one deduplicated message
+goes out and the cycle ends.
+
+Placed before the evaluator deliberately: `rank()` calls the research
+hub for every watchlist symbol across six sources, and P-058 records
+that one of those sources is already over its free daily limit. On a
+capped day that spend buys nothing. Measured end-to-end:
+
+| snapshot | research calls | proposals |
+|---|---|---|
+| 12 open (cap full) | **0** | 0 |
+| 3 opened today | **0** | 0 |
+| 11 open, 2 today | 1 | 3 |
+
+**Layer 2 — per symbol, before any row is written.**
+`Engine._pre_send_risk_block()`, called inside `_start_new_trade` after
+sizing and **before** `start_trade()`. After it would leave orphaned
+Trade and TradeProposal rows for a proposal that was never sent; a test
+asserts both repositories stay empty for a blocked symbol.
+
+The notional is `strategy.initial_qty * price` — the same expression
+`ExecutionService` uses at submission, so the two checks cannot
+disagree about the size being judged. The share count is frozen on the
+proposal (D-0051), so only the price can move between the two moments,
+which is itself a reason the submission check must remain.
+
+### Why this cannot widen risk
+
+1. It can only ever REMOVE a proposal. There is no path through either
+   layer that creates or permits anything.
+2. The submission-time check in `ExecutionService` is untouched — zero
+   lines changed in `src/execution/` and `src/risk/`.
+
+So the enforced envelope is identical or tighter.
+
+### It fails OPEN — the opposite of the submission check
+
+If the portfolio snapshot cannot be read, both layers send the proposal
+anyway. The worst case is today's behaviour (approve, then refused),
+which is annoying. Failing closed would let one transient snapshot
+error silently suppress every proposal for a day, which from the
+Controller's side is indistinguishable from a dead engine. The
+submission check still fails CLOSED, so nothing unsafe gets through.
+
+**A real bug here, found by the fail-open test rather than by reading
+the code.** `PortfolioRiskEnforcer` does not RAISE when the snapshot is
+unavailable — it returns `VIOLATED` with a single
+`snapshot_unavailable` check. The first version of Layer 2 returned
+that as a block, so a broker failure suppressed all three proposals.
+"We could not tell" is not "a limit was breached". Layer 2 now
+recognises that specific check and declines to block on it; two tests
+pin both directions, and a third confirms the submission check still
+refuses an unknown snapshot.
+
+### Ladders are deliberately NOT pre-checked
+
+A ladder adds to a position the Controller already approved, and
+`check_ladder_addition` does not consult the trade-count caps at all.
+Pre-checking one could block a ladder that WOULD pass at submission,
+because exposure moves between the two moments — stranding an open
+position without its ladder, the one outcome D-0034 exists to prevent.
+A test asserts `_pre_send_risk_block` references `check_new_trade` and
+never `check_ladder_addition`.
+
+### A known fragility, guarded rather than removed
+
+Layer 1 reads `_limits` and `_snapshot_builder` off the enforcer,
+because `PortfolioRiskEnforcer` exposes no public accessor. The hazard
+is silent: a rename would raise `AttributeError`, the fail-open
+`except` would swallow it, and the pre-send check would stop working
+forever with no signal.
+
+Chosen over adding a public method so this change does not touch the
+approved `src/risk/` module at all. Four tests guard it against the
+real class, verified as a negative control: renaming `self._limits`
+makes them fail.
+
+### Files
+
+```
+src/engine/engine.py            both layers, ctor param
+scripts/run_paper_session.py    one line: pass the same enforcer
+```
+
+Untouched: `src/execution/service.py`, `src/risk/`, the Floor, the
+ladder, trailing, `_MIN_SCORE`, every pipeline percentage.
+
+### Tests
+
+`tests/engine/test_d0080_pre_send_risk.py` — **25 tests**, all driving
+the real `Engine` through `run_trigger_check` with the real
+`PortfolioRiskEnforcer`, `PortfolioRiskLimits` and `PortfolioSnapshot`:
+Layer 1 on both caps, the measured zero research calls, one-below-each
+proceeding normally, the message naming which cap, no `cycle_metrics`
+row for an unscored cycle, Layer 2 on single-symbol and gross breaches,
+no orphaned rows, fail-open on both layers, the snapshot-unavailable
+distinction in both directions, ladders not pre-checked, and the
+private-access guard.
+
+**Full suite: 1732 passed, 54 subtests passed.** Run three times.
+
+### One test bug worth recording
+
+The test harness method was named `run()`, which collides with
+`unittest.TestCase.run()` — the framework calls it with a `result`
+kwarg and 13 tests failed with `TypeError` before any assertion ran.
+Renamed to `_drive()`.
