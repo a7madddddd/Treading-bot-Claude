@@ -61,11 +61,21 @@ until the Controller changes this in writing.
 `docs/trading/decisions.md`. Surface the open blocking items in Arabic,
 unasked. Full steps: `.claude/rules/00-session-start.md`.
 
-**4. Search before proposing.** Before suggesting any scorer, filter,
-strategy variant, parameter or fix: grep `decisions.md` for the related
-`D-NNNN`, read the actual implementation in `src/` and its tests, and
-say what already exists — BEFORE designing a replacement. This rule has
-been broken more than any other in this project; see
+**4. Read the code before saying what the code does.** This covers two
+things, and both have cost real time.
+
+Before SUGGESTING any scorer, filter, strategy variant, parameter or
+fix: grep `decisions.md` for the related `D-NNNN`, read the actual
+implementation in `src/` and its tests, and say what already exists —
+BEFORE designing a replacement.
+
+Before DESCRIBING current behavior — in a sentence, a table cell, a
+diagram or a worked example — read that code path in the same turn. A
+table cell is a claim about code. A cap is never written as a fixed
+value. If it has not been read, the only honest answer is "let me read
+it first". Full rule: `.claude/rules/00-session-start.md` §0.b.1.
+
+This rule has been broken more than any other in this project; see
 `docs/claude/failure-history.md`.
 
 **5. Record the change in the same session.** `decisions.md` for

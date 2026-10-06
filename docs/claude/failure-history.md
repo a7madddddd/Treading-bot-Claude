@@ -125,3 +125,35 @@ an entire session with nothing reporting it (P-035).
 
 Nothing in the written record would have told a fresh session any of
 this. The three files named in rule 5 exist so that it would.
+
+## 2026-10-06 — Described the system's behavior without reading the code, and cost the Controller ten minutes
+
+**What happened.** The Controller asked what changes between a
+5,000-symbol market and a 14,000-symbol one. Claude answered with a
+table whose last column read `trades/day: 3 | 3 | 3 | 3`, presented as
+the system's behavior. The Controller then spent ten minutes reasoning
+that a fixed 3 was illogical and that the count should respond to market
+size, and asked for Claude's opinion on fixing it.
+
+**The truth, already in the code.** `src/engine/engine.py::_check_watchlist`
+filters to `soft_score >= self._MIN_SCORE` and then slices `[:top_n]`.
+`top_n` is a CEILING. A day where nothing clears the score bar produces
+zero proposals and a "nothing to trade" notification; one symbol
+produces one; two produce two. The behavior the Controller was asking
+for on the downside had been implemented and approved long before.
+
+**What the table should have said.** `up to 3`.
+
+**Why it mattered.** Not the wrong cell. The Controller designed a
+solution to a solved problem because Claude's description of the current
+system was asserted from memory rather than read from the code. Claude
+only verified the real behavior after being told something was missing.
+
+**The Controller's words:** *"the instruction of this project is to read
+the all related code and logic for any part you want to update but you
+didn't do that before anything."*
+
+**Rule added:** `.claude/rules/00-session-start.md` §0.b.1 — never
+describe, tabulate or diagram system behavior without reading that code
+path in the same turn; a table cell is a claim about code; a cap is
+never written as a fixed value.
