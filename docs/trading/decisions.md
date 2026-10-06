@@ -5666,3 +5666,283 @@ withdrawn:
 3. If approved: the bootstrap rule (maximum until 20 dates), the window
    length, and the zero-day behaviour.
 4. And explicit approval to **push**, separately from approval to build.
+
+## D-0079 — The two trade COUNTS are derived from the approved fractions
+
+**Date:** 2026-10-06
+**Decided by:** Controller
+**Status:** APPROVED — implemented, tested, NOT YET PUSHED at the time
+of writing (the Controller approved building and testing; the push is a
+separate approval he has not yet given)
+**Supersedes:** D-0047's two count values ONLY. D-0047's three
+fractions, its check order, its fail-closed snapshot rule and every
+other part of it are unchanged.
+**Related:** D-0077 (reverted by D-0078) tried to make these counts
+respond to data quality. This is a different and simpler change: the
+counts are derived from the Controller's own approved percentages, with
+no history, no baseline and no comparison to any previous day.
+
+### The contradiction this removes
+
+Two Controller-approved numbers disagreed:
+
+| | |
+|---|---|
+| one complete trade (D-0051) | 5% of equity |
+| `max_concurrent_trades` (D-0047) | 5 |
+| so the most the system could ever hold | 5 × 5% = **25%** of equity |
+| `max_gross_exposure_fraction` (D-0047) | **60%** |
+| unreachable approved risk budget | **35 percentage points** |
+
+The engine stopped adding positions at a quarter of the Controller's
+equity while his approved ceiling was 60%. That was not a deliberate
+margin — a count and a percentage were approved independently and never
+reconciled. Measured day-by-day: at 3 new trades a day the old cap of 5
+was reached on **day 2** and then blocked every day after until a
+position closed.
+
+### The decision
+
+```
+max_concurrent_trades = floor(max_gross_exposure_fraction / trade_budget_fraction)
+                      = floor(0.60 / 0.05) = 12
+max_daily_new_trades  = floor(daily_new_trade_fraction * max_concurrent_trades)
+                      = floor(0.25 * 12) = 3
+```
+
+- `trade_budget_fraction = 0.05` — D-0051's approved budget.
+- `daily_new_trade_fraction = 0.25` — **new**, Controller-approved
+  today. 25% of the chair count.
+
+**The daily pace does not change. It was 3 and it is 3.** Only its
+source changed. The concurrent cap changes from 5 to 12.
+
+### Why the pace is a fraction of the CHAIRS and not of equity
+
+The Controller asked for both readings. A fraction of the chairs keeps
+"days to fill the shelf" invariant when the exposure ceiling moves:
+
+| gross ceiling | chairs | per day | days to fill |
+|---|---|---|---|
+| 80% | 16 | 4 | 4 |
+| 60% | 12 | 3 | 4 |
+| 40% | 8 | 2 | 4 |
+
+A fraction of total equity would have given a fixed 5 a day at every
+ceiling, so a decision to be *more* careful (40% gross) would have
+filled the shelf in 1.6 days instead of 4. Measured, not argued.
+
+### Decimal, not float — this is not a stylistic choice
+
+```
+0.60 / 0.05     == 11.999999999999998
+math.floor(...) == 11        <- one whole position lost, silently
+Decimal exact   == 12
+```
+
+Neither 0.60 nor 0.05 is representable in binary floating point. The
+failure has no exception and no wrong-looking code; the only symptom
+would be a twelfth proposal refused for no comprehensible reason. Both
+derivations therefore run through `risk.models._floor_ratio` and
+`_floor_product`, which compute in `Decimal`. A test asserts the float
+answer is 11 so that nobody can "simplify" it back.
+
+### The clamp, and the invariant it breaks on purpose
+
+Both derived counts are clamped to a minimum of 1. Without it, a gross
+ceiling smaller than one trade's budget (e.g. 3% gross, 5% budget)
+floors to 0 and `PortfolioRiskLimits` could not be constructed at all —
+the engine would crash at startup rather than trade carefully.
+
+A 30,000-combination sweep of the three fractions confirmed: no
+exceptions, both counts always ≥ 1, and the daily pace never exceeds
+the chair count. It also found the one invariant the clamp breaks —
+`chairs × budget > gross` in 7,350 of those combinations, every one of
+them a ceiling too small for a single trade. **That is not a reachable
+unsafe path:** the gross-exposure check is independent and still
+refuses the trade, which is now a test
+(`test_the_clamped_case_is_still_refused_by_gross_exposure`).
+
+### Item 6 — recording what each cycle saw (migration 0008)
+
+The engine proposes at most 3 symbols per cycle from those scoring
+≥ 60. Nobody knows whether that ceiling has ever bound, because the
+number of symbols above the bar was never recorded. The Controller asked
+for it so the question is settled from data.
+
+New table `cycle_metrics`, **one row per SCHEDULED check** (not per
+firing — see defect 3 below): `effective_date`, `scheduled_slot`,
+`cycle_at`, `candidates_evaluated`, `rejected_hard_filter`,
+**`above_min_score`**, `min_score_required`, `best_score`,
+`proposals_created`, `scored`. Primary key
+`(effective_date, scheduled_slot)`.
+
+Three deliberate properties:
+
+1. **`above_min_score` counts ALL symbols over the bar, not the
+   proposed ones.** 5 cleared 60 and 3 were proposed records as 5 and 3.
+   Recording 3 would make the data unable to answer the question.
+2. **A cycle where nothing cleared the bar IS recorded.** That is the
+   data point. Cycles that never evaluated anything (market closed, no
+   snapshot, every symbol already held, macro blackout) are NOT
+   recorded — a zero row there would read as "nothing was good enough"
+   when in fact nothing was scored.
+3. **Nothing reads these rows.** No code branches on them. The recorder
+   swallows every exception: a lost metrics row costs one data point, a
+   raised exception could cost an unprotected position.
+
+`APPROVED_SCHEMA_VERSION` 7 → 8.
+
+### Deployment constraint — operational, not a bug
+
+Verified by simulation: once the database is at version 8, any process
+still running version-7 code **refuses to start**:
+
+```
+database schema is at version 8, which is newer than this code's
+approved version 7 -- refusing to proceed
+```
+
+Three processes open `paper_session.sqlite` —
+`run_paper_session.py`, `run_universe_selection.py` and
+`run_research_cycle.py`. After pulling, **all** of them must be on the
+new code. Pulling and restarting only the engine would leave the 06:00
+universe timer unable to start.
+
+### Known divergence left open, NOT fixed here
+
+`src/backtesting/portfolio_models.py` carries its own
+`max_concurrent_trades = 5` / `max_daily_new_trades = 3`, independent of
+`PortfolioRiskLimits` by design. After this change a backtest models a
+system that no longer exists. Changing backtest behavior is a separate
+Controller decision; recorded as an open item rather than silently
+aligned.
+
+### Tests
+
+- `tests/risk/test_d0079_derived_limits.py` — **42 tests**: the
+  Controller's numbers, the float trap (both directions), following the
+  exposure ceiling, the clamps, explicit values still winning, the
+  guarded duplicate of 5%, the enforcer allowing the 6th and refusing
+  the 13th, and the fraction sweep invariants. Uses the real
+  `PortfolioSnapshot` and `PositionView` — never a stub, because under
+  D-0077 a stub missing `gross_exposure()` passed while production
+  raised `AttributeError`.
+- `tests/engine/test_d0079_cycle_metrics.py` — **20 tests**, including
+  the engine recording through a real `run_trigger_check`, that
+  `above_min_score` counts 5 when 3 are proposed, that an empty
+  watchlist records nothing, and that a raising recorder never prevents
+  a trade.
+- Updated: `tests/risk/test_models.py` (12 and 3, with the reasoning),
+  `tests/risk/test_enforcer.py` (asserts behaviour at the derived cap
+  instead of the literal 5, plus a new one-below-the-cap case),
+  `tests/persistence/test_db.py` (the two deliberate version pins).
+- **Full suite: 1707 passed, 54 subtests passed.** Run three times.
+- Migration exercised against a **copy of the live database**:
+  user_version 7 → 8, one new table, zero rows changed in any of the 11
+  pre-existing tables, nothing dropped, idempotent over three runs.
+
+### Two defects found AFTER the first green run, by probing untested paths
+
+Both were found by deliberately exercising paths the tests did not
+reach, not by reading the code.
+
+**1. A semicolon inside a SQL comment truncated the migration.**
+`_apply_migration` splits on `";"` with no awareness of comments. The
+0008 comment read "...without scoring any of them; writing 0 there..."
+and bootstrap failed with `sqlite3.OperationalError: incomplete input`
+-- the CREATE TABLE had been cut in half. Fixed by rewording the
+comment. The splitter itself is pre-existing and is now recorded as
+P-061 with a guard test that fires on the broken file and passes on the
+fixed one.
+
+**2. The evaluator-failure fallback created trades and recorded
+nothing.** If `TradeEvaluator.rank()` raises, the engine opens a trade
+for every candidate and returns. That exit wrote no `cycle_metrics`
+row, so a cycle that created proposals was invisible in the table and
+any per-day proposal total computed from it would have been wrong.
+
+Fixed by recording the cycle with `scored = 0` and NULL for
+`rejected_hard_filter`, `above_min_score` and `best_score`. Writing 0
+would have been the wrong fix: it reads as "scored, nothing was good
+enough" while trades were in fact opened. The two columns were made
+nullable for this -- a safe edit because the migration had never been
+applied anywhere but a throwaway copy.
+
+That probe also surfaced P-062: the fallback proposes every candidate
+with no score gate at all, and D-0079 widens that path from 5 symbols
+to 12. Pre-existing behaviour, recorded for the Controller's decision,
+not changed here.
+
+### Three more defects found when the Controller asked to re-check
+
+He approved the push and in the same message said to re-check the
+`metrics rows: 0` finding because he thought it would cause another
+bug. It had caused three.
+
+**3. ONE SCHEDULED CHECK WAS STORING SEVEN ROWS.** The engine loop
+ticks every 30s and `is_d0021_check_time()` accepts a ±90s window, so
+one scheduled check calls `run_trigger_check` **seven times** —
+measured by replaying the real cadence, not assumed. The key was
+`(cycle_at, effective_date)` and `cycle_at` differs on every firing, so
+a day stored **49 rows for 7 real checks**. Every count and average the
+Controller computed would have been inflated 7×, and because prices
+move within 90 seconds the duplicates carry slightly different scores,
+so they would have looked like genuinely distinct cycles.
+
+Fixed by keying on `(effective_date, scheduled_slot)`, where
+`scheduled_slot` is the D-0021 wall-clock time the firing belongs to
+("09:30".."15:30" ET). `INSERT OR REPLACE` then collapses the seven
+firings into one row, last write winning — the freshest view of that
+check. Verified by replaying a full trading day: **49 firings → 7
+rows**, one per slot.
+
+**4. `scored` WAS NEVER WRITTEN TO THE DATABASE.** It existed only as
+a dataclass field. The table had no such column and the INSERT did not
+list it — while the paragraph above and P-062 both stated that the
+cycle is "written with `scored = 0`". That was false in the record
+before it was false in the code.
+
+Fixed by adding the column AND a `CHECK` constraint, because `scored`
+and the NULL score columns encode the same fact and must never be
+allowed to disagree:
+
+```sql
+CHECK ( (scored = 1 AND above_min_score IS NOT NULL
+                    AND rejected_hard_filter IS NOT NULL)
+     OR (scored = 0 AND above_min_score IS NULL
+                    AND rejected_hard_filter IS NULL
+                    AND best_score IS NULL) )
+```
+
+The database now refuses an inconsistent row; two tests assert it
+raises `IntegrityError` in both directions.
+
+**5. `record_cycle_metrics` CALLED `conn.commit()`.** Harmless today —
+the connection is `isolation_level=None` (autocommit) — but it is a
+loaded gun: the moment this is ever called from inside a
+`transaction()` block, a metrics write would commit the caller's
+half-finished trade state. Removed.
+
+The test for this was written WRONG first: it grepped the module source
+for `"conn.commit()"` and failed by matching the phrase in its own
+docstring — the identical mistake as the D-0077 shadow test, which
+passed while the behaviour was wrong. Replaced with a behavioural test
+that opens a transaction, inserts a caller row, records metrics, rolls
+back, and asserts the caller's row did NOT survive. Verified as a
+negative control: reintroducing `conn.commit()` makes it fail.
+
+Also dropped: the separate `idx_cycle_metrics_date`. The primary key
+already indexes `effective_date` as its leading column, so it was
+redundant.
+
+### Not in this change
+
+The watchlist percentage (`top_n` → 10% of survivors) was withdrawn by
+the Controller pending the real `survivors_to_snapshot` figure from a
+06:00 run — the 560/56 numbers were arithmetic from the four percentile
+stages, never measured, and were presented as if measured. Selective
+research caching was withdrawn by Claude: the evaluator reads
+`current_price`, `rsi_14` and `day_volume`, which move intraday, so
+day-long caching is a trading-behavior change and not the efficiency
+fix it was first described as.

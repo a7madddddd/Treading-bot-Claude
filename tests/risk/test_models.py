@@ -11,9 +11,15 @@ class TestPortfolioRiskLimits(unittest.TestCase):
         L = PortfolioRiskLimits()
         self.assertAlmostEqual(L.max_gross_exposure_fraction, 0.60)
         self.assertAlmostEqual(L.max_single_symbol_fraction, 0.10)
-        self.assertEqual(L.max_concurrent_trades, 5)
-        self.assertEqual(L.max_daily_new_trades, 3)
         self.assertAlmostEqual(L.daily_loss_kill_switch_fraction, 0.03)
+        # D-0079 (2026-10-06): the two COUNTS are no longer literals.
+        # concurrent = floor(0.60 / 0.05) = 12 -- D-0047's 5 could only
+        # ever reach 25% of equity against its own 60% ceiling.
+        # daily = floor(0.25 * 12) = 3 -- unchanged in value, derived
+        # in source. Full reasoning and the float trap behind the
+        # Decimal arithmetic: tests/risk/test_d0079_derived_limits.py
+        self.assertEqual(L.max_concurrent_trades, 12)
+        self.assertEqual(L.max_daily_new_trades, 3)
 
     def test_fraction_bounds(self):
         with self.assertRaises(ValueError):

@@ -52,12 +52,24 @@ class TestNewTrade(unittest.TestCase):
         self.assertIn("TSLA", r.first_violation_reason())
 
     def test_concurrent_trades_cap_engages(self):
-        # 5 open trades already -> 6th refused
+        # D-0079: the cap is DERIVED (floor(0.60/0.05) = 12), so this
+        # asserts the behaviour -- refused AT the cap, allowed one
+        # below it -- instead of re-hardcoding the number the change
+        # was made to stop hardcoding. test_d0079_derived_limits.py is
+        # where the value 12 itself is pinned.
+        cap = LIMITS.max_concurrent_trades
         r = evaluate_new_trade(symbol="AMD", proposed_notional=100.0,
-                               snapshot=_snapshot(open_trades=5),
+                               snapshot=_snapshot(open_trades=cap),
                                limits=LIMITS)
         self.assertEqual(r.verdict, RiskVerdict.VIOLATED)
         self.assertIn("open trades", r.first_violation_reason())
+
+    def test_one_below_the_concurrent_cap_is_allowed(self):
+        cap = LIMITS.max_concurrent_trades
+        r = evaluate_new_trade(symbol="AMD", proposed_notional=100.0,
+                               snapshot=_snapshot(open_trades=cap - 1),
+                               limits=LIMITS)
+        self.assertEqual(r.verdict, RiskVerdict.ALLOWED, r.checks)
 
     def test_new_trades_today_cap_engages(self):
         r = evaluate_new_trade(symbol="AMD", proposed_notional=100.0,

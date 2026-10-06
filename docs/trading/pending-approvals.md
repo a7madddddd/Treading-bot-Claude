@@ -2340,3 +2340,190 @@ max_daily_new_trades   = 3     (D-0047, approved)
   universe itself narrowed for a reason other than risk sizing — for
   example to cut research cost per day — then scaling Top-N is right for
   that reason, and should be justified by it rather than by exposure.
+
+---
+
+## P-056 — D-0079 built and tested; the PUSH is not yet approved
+
+**Status:** OPEN — awaiting the Controller's push decision
+**Date:** 2026-10-06
+
+The Controller approved **building and testing** items 1, 2 and 6, and
+said explicitly that the push is decided after the report. The code is
+implemented and tested; **nothing has been pushed.**
+
+Done:
+- `max_concurrent_trades` 5 → **12**, derived `floor(0.60 / 0.05)`
+- `max_daily_new_trades` **3**, derived `floor(0.25 × 12)` — same value,
+  derived source
+- `cycle_metrics` table (migration 0008), recording `above_min_score`
+- 62 new tests; full suite **1694 passed**; migration verified against a
+  copy of the live database
+
+What the Controller decides: push or hold.
+
+## P-057 — Backtest limits now diverge from live
+
+**Status:** OPEN
+**Found:** 2026-10-06 while testing D-0079
+
+`src/backtesting/portfolio_models.py` carries its own
+`max_concurrent_trades = 5` and `max_daily_new_trades = 3`, independent
+of `PortfolioRiskLimits` by design. With D-0079 live at 12/3, a backtest
+models a system that no longer exists.
+
+Not changed as part of D-0079 — altering backtest behavior is its own
+decision, and the Controller may want to vary these deliberately for
+experiments. **Decision needed:** align the backtester with the derived
+live limits, or keep it independent and document that backtests must
+set them explicitly.
+
+## P-058 — Alpha Vantage free tier is exceeded today, with 10 symbols
+
+**Status:** OPEN — pre-existing defect, not introduced by any change
+**Found:** 2026-10-06
+
+`engine/research_hub.collect()` fetches up to 6 sources per watchlist
+symbol on every one of the 7 daily cycles, with no caching of any kind
+(only SPY's 30-day return is cached, across symbols within one call).
+
+```
+10 symbols × 7 cycles = 70 requests/day to EACH source
+Alpha Vantage free tier =  25 requests/day
+```
+
+So Alpha Vantage is being exhausted every trading day already, and its
+contribution to the soft score is silently absent for most of the day.
+Finnhub (800/day) and Polygon (5/min) are within limits at 10 symbols.
+
+The obvious fix — cache the answers for a day — is **not** a pure
+efficiency change: the evaluator reads `current_price`, `rsi_14` and
+`day_volume`, which move intraday. Day-long caching would score symbols
+on stale technicals, which is a trading-behavior change. A correct fix
+is selective per-field caching, which needs the fields each of the six
+sources supplies to be read one by one first. Not yet done.
+
+## P-059 — The watchlist percentage, waiting on a measured number
+
+**Status:** OPEN — deferred by the Controller, 2026-10-06
+**Blocks on:** one real 06:00 ET universe run
+
+Making `top_n` a percentage of the surviving pool instead of a fixed 10
+was agreed in principle and then withdrawn, because the pool size it
+would multiply was never measured. The figures used in the discussion
+(560 survivors, so 56 symbols) were arithmetic over the four percentile
+stages — 30% × 80% × 40% × 50% = 4.8% — and the real number is lower,
+because the per-symbol gates (data completeness ≥ 90%, the 2–4% ATR
+band, the 0.15% spread cap) also cut and cannot be modelled without
+feature data.
+
+**What is needed before deciding:** `survivors_to_snapshot` from the
+`[data-quality]` block of a real run. Then the percentage multiplies a
+measured number.
+
+Note the interaction with P-058: a larger watchlist multiplies the
+research requests per source per day, so P-058 is a prerequisite.
+
+## P-060 — Three config percentages are declared but never used
+
+**Status:** OPEN — documentation is actively misleading
+**Found:** 2026-10-06 while reading the pipeline stage by stage
+
+```
+min_market_cap_percentile  = 0.40   no stage reads it
+max_gap_fraction           = 0.05   no stage reads it
+max_pairwise_correlation   = 0.70   stage G documents it, does not apply it
+```
+
+All three are declared in `UniverseSelectionConfig`, validated in its
+`__post_init__`, and described in its docstring under the stage that
+appears to use them. None is read by any filter.
+
+The practical consequence: **there is no market-cap floor in universe
+selection at all**, while the configuration states there is one. The
+correlation rule IS enforced, but in the engine's
+`PortfolioFilter` (cap 0.70), not in the pipeline — so that protection
+exists, in a different place than the config suggests.
+
+**Decision needed:** activate them (which tightens candidate selection
+and is therefore a trading-behavior change needing approval), or fix
+the misleading documentation to state plainly that they are inert.
+
+## P-061 — `_apply_migration` splits SQL on ';' with no awareness of comments
+
+**Status:** OPEN — pre-existing; a latent trap for every future migration
+**Found:** 2026-10-06, by hitting it
+
+`src/persistence/db.py::_apply_migration` does:
+
+```python
+statements = [s.strip() for s in migration_sql.split(";") if s.strip()]
+```
+
+A single `;` inside a `--` comment therefore cuts the statement around
+it in half. Writing migration 0008 hit this directly: the comment read
+`"...without scoring any of them; writing 0 there..."` and bootstrap
+failed with `sqlite3.OperationalError: incomplete input`. The CREATE
+TABLE had been truncated mid-definition.
+
+Two existing migrations already contain the pattern and are unharmed —
+`0001_initial.sql:97` and `0005_research.sql:3` — because in both the
+resulting fragment is comments only, and SQLite executes a comment-only
+string as a no-op. They are latent, not broken.
+
+The same split would also truncate a statement containing a `;` inside
+a string literal.
+
+Guarded for now by
+`tests/engine/test_d0079_cycle_metrics.py::TestTheMigrationSplitterTrap`,
+which checks every migration fragment that carries real SQL is a
+complete statement (`sqlite3.complete_statement`) while allowing the two
+harmless comment-only cases. Verified as a negative control: it fires on
+the broken 0008 and passes on the fixed one.
+
+**Decision needed:** leave the splitter and rely on the guard test, or
+replace the naive split with a comment- and literal-aware one. The
+splitter deliberately avoids `executescript()` because that issues an
+implicit commit and would break the single-transaction-per-migration
+discipline, so a fix must preserve that.
+
+## P-062 — Evaluator failure opens a trade for EVERY candidate, ungated
+
+**Status:** OPEN — pre-existing behaviour, surfaced while testing D-0079
+**Found:** 2026-10-06
+
+In `Engine._check_watchlist`, if `TradeEvaluator.rank()` raises, the
+fallback is:
+
+```python
+for symbol in candidates:
+    self._start_new_trade(symbol, now=now)
+```
+
+Every watchlist symbol becomes a trade, with **no score gate, no
+`_MIN_SCORE` check, no portfolio sector/correlation filter and no
+Top-N cap**. The comment states the intent — "Evaluator must never
+block the trigger loop; fall through to the un-ranked flow so no
+opportunity is missed" — and a CRITICAL notification is sent, so it is
+not silent. The D-0047 risk limits still bind at submission, and each
+trade still needs Controller approval.
+
+But with D-0079 raising the concurrent cap from 5 to 12, this path can
+now put up to 12 unscored symbols in front of the Controller in one
+cycle instead of 5. The blast radius grew even though the path itself
+did not change.
+
+D-0079 records it honestly: the cycle is written to `cycle_metrics`
+with `scored = 0` and NULL score columns, so these cycles are
+distinguishable in the data and excluded from
+`WHERE above_min_score IS NOT NULL`. (That claim was false when first
+written — `scored` was a dataclass field that no column stored. The
+column, and a `CHECK` constraint that stops it disagreeing with the
+NULLs, were added when the Controller asked for a re-check.)
+
+**Decision needed:** is "propose everything unscored" still the right
+fallback at 12 chairs, or should an evaluator failure propose nothing
+and report instead? Claude's recommendation is the latter — a scoring
+system that failed is not evidence that every candidate is worth
+proposing — but it changes approved behaviour and is the Controller's
+call.

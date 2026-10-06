@@ -476,6 +476,9 @@ def main() -> int:
 
     # D-0047 portfolio risk enforcer: wired for real paper sessions.
     from risk.enforcer import PortfolioRiskEnforcer
+    from engine.cycle_metrics import (
+        make_recorder as make_cycle_metrics_recorder,
+    )
     from risk.models import PortfolioRiskLimits
     from risk.portfolio_snapshot import LivePortfolioSnapshotBuilder
     snapshot_builder = LivePortfolioSnapshotBuilder(
@@ -483,8 +486,18 @@ def main() -> int:
         broker_secret_key=secret, sqlite_conn=conn,
         retry_policy=retry_policy,
     )
+    # D-0079: the two COUNTS are derived from the approved fractions
+    # inside PortfolioRiskLimits -- no argument needed here, and any
+    # future call site gets the derivation for free. Printed because a
+    # derived limit the operator cannot see is a limit nobody checks.
+    _limits = PortfolioRiskLimits()
+    print(f"[limits] gross {_limits.max_gross_exposure_fraction:.0%} / "
+          f"trade {_limits.trade_budget_fraction:.0%} -> concurrent "
+          f"{_limits.max_concurrent_trades}; "
+          f"{_limits.daily_new_trade_fraction:.0%} of those -> "
+          f"{_limits.max_daily_new_trades} new per day", flush=True)
     risk_enforcer = PortfolioRiskEnforcer(
-        limits=PortfolioRiskLimits(),  # D-0047 defaults
+        limits=_limits,
         snapshot_builder=snapshot_builder,
     )
     execution_service = ExecutionService(execution_repo, proposal_repo,
@@ -620,6 +633,10 @@ def main() -> int:
         # client, endpoint or credential -- only a comparison, every
         # ten minutes, that reports and never corrects.
         position_snapshot_builder=snapshot_builder,
+        # D-0079: one row per evaluation cycle, on the SAME connection
+        # the rest of the state uses, so it rides the daily DB backup
+        # to git. make_recorder never raises -- see its docstring.
+        cycle_metrics_recorder=make_cycle_metrics_recorder(conn),
     )
 
     # Preflight Telegram summary (before engine.start(), so still safe).

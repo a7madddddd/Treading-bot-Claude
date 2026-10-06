@@ -299,7 +299,12 @@ class Engine:
         position_snapshot_builder=None,
         macro_calendar=None,
         political_universe_source=None,
+        cycle_metrics_recorder=None,
     ) -> None:
+        # D-0079: optional, and None in every existing test. Records one
+        # row per evaluation cycle for the Controller to query later; no
+        # production code reads it back and nothing branches on it.
+        self._cycle_metrics_recorder = cycle_metrics_recorder
         self._trade_repo = trade_repo
         self._proposal_repo = proposal_repo
         self._execution_repo = execution_repo
@@ -1482,6 +1487,57 @@ class Engine:
             return False
         return True
 
+    def _record_cycle(self, *, now: datetime, ranked, accepted_count: int,
+                      candidates_evaluated: int) -> None:
+        """D-0079: one row per evaluation cycle. Called on BOTH exits of
+        _check_watchlist that actually evaluated candidates -- the
+        nothing-accepted exit and the proposals-created exit -- because
+        a cycle where nothing cleared the bar is exactly the data point
+        the Controller is collecting.
+
+        NOT called on the exits that never evaluated anything (market
+        closed, no snapshot, every symbol already held, macro blackout):
+        those would write zero rows that read as "nothing was good
+        enough today" when in fact nothing was ever scored. A metrics
+        table that cannot distinguish the two is worse than no table.
+        """
+        if self._cycle_metrics_recorder is None:
+            return
+        from engine.cycle_metrics import CycleMetrics
+        from engine.snapshot_watchlist import _current_effective_date_et
+
+        if ranked is None:
+            # The evaluator-failure fallback: trades were opened without
+            # any symbol being scored. The three score columns are NULL
+            # rather than 0, because 0 would read as "scored, nothing
+            # was good enough" while trades were in fact opened.
+            self._cycle_metrics_recorder(CycleMetrics(
+                cycle_at=now,
+                effective_date=_current_effective_date_et(now),
+                candidates_evaluated=candidates_evaluated,
+                rejected_hard_filter=None,
+                above_min_score=None,
+                min_score_required=self._MIN_SCORE,
+                best_score=None,
+                proposals_created=accepted_count,
+                scored=False,
+            ))
+            return
+
+        passing = [r for r in ranked if r.passes_hard_filter]
+        self._cycle_metrics_recorder(CycleMetrics(
+            cycle_at=now,
+            effective_date=_current_effective_date_et(now),
+            candidates_evaluated=candidates_evaluated,
+            rejected_hard_filter=len(ranked) - len(passing),
+            above_min_score=sum(1 for r in passing
+                                if r.soft_score >= self._MIN_SCORE),
+            min_score_required=self._MIN_SCORE,
+            best_score=max((r.soft_score for r in passing), default=None),
+            proposals_created=accepted_count,
+            scored=True,
+        ))
+
     def _check_watchlist(self, *, now: datetime) -> None:
         """Watchlist-driven Trade creation.
 
@@ -1617,6 +1673,9 @@ class Engine:
             )
             for symbol in candidates:
                 self._start_new_trade(symbol, now=now)
+            self._record_cycle(now=now, ranked=None,
+                               accepted_count=len(candidates),
+                               candidates_evaluated=len(candidates))
             return
 
         # D-0050 Phase 16: macro-event blackout window.
@@ -1675,7 +1734,13 @@ class Engine:
                 f"the hard filter, and {best_txt}.",
                 now=now,
             )
+            self._record_cycle(now=now, ranked=ranked, accepted_count=0,
+                               candidates_evaluated=n_cand)
             return
+
+        self._record_cycle(now=now, ranked=ranked,
+                           accepted_count=len(accepted),
+                           candidates_evaluated=len(candidates))
 
         for r in accepted:
             self._start_new_trade(
