@@ -1494,6 +1494,41 @@ class Engine:
             return False
         return True
 
+    @staticmethod
+    def _symbol_scores(ranked) -> tuple:
+        """D-0082: turn the evaluator's results into one SymbolScore per
+        symbol, for the per-symbol table.
+
+        Never raises. `research` is None in several real paths (a
+        hard-filtered result built before research was attached, and
+        every existing engine test's fake evaluator), so every field
+        read off it is guarded -- a missing research record must cost
+        the detail, never the cycle.
+        """
+        from engine.cycle_metrics import SymbolScore
+        out = []
+        for i, r in enumerate(ranked, start=1):
+            res = getattr(r, "research", None)
+            out.append(SymbolScore(
+                symbol=getattr(r, "symbol", "?"),
+                rank_in_cycle=i,
+                soft_score=float(getattr(r, "soft_score", 0.0) or 0.0),
+                passed_hard_filter=bool(getattr(r, "passes_hard_filter",
+                                                False)),
+                hard_filter_reasons=tuple(
+                    getattr(r, "hard_filter_reasons", None) or ()),
+                components=dict(getattr(r, "score_breakdown", None) or {}),
+                sources_succeeded=tuple(
+                    getattr(res, "sources_succeeded", None) or ()),
+                sources_failed=tuple(
+                    getattr(res, "sources_failed", None) or ()),
+                current_price=getattr(res, "current_price", None),
+                rsi_14=getattr(res, "rsi_14", None),
+                day_volume=getattr(res, "day_volume", None),
+                pe_ratio=getattr(res, "pe_ratio", None),
+            ))
+        return tuple(out)
+
     def _record_cycle(self, *, now: datetime, ranked, accepted_count: int,
                       candidates_evaluated: int) -> None:
         """D-0079: one row per evaluation cycle. Called on BOTH exits of
@@ -1533,6 +1568,7 @@ class Engine:
 
         passing = [r for r in ranked if r.passes_hard_filter]
         self._cycle_metrics_recorder(CycleMetrics(
+            symbols=self._symbol_scores(ranked),
             cycle_at=now,
             effective_date=_current_effective_date_et(now),
             candidates_evaluated=candidates_evaluated,

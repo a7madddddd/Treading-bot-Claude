@@ -6208,3 +6208,156 @@ been classified as degraded and the Controller's limits cut — on a day
 when every part of the pipeline worked and a full snapshot was
 published. **The revert was correct, and this is the first number that
 demonstrates it.** 19 more days are needed before a band can be set.
+
+## D-0082 — Record the per-symbol score breakdown of every cycle
+
+**Date:** 2026-10-06
+**Decided by:** Controller — *"record the symbol and score breakdown per cycle"*
+**Status:** APPROVED — implemented and tested, **NOT pushed**
+**Extends:** D-0079 item 6 (`cycle_metrics`), which this does not change
+
+### Why — stated as a failure, because that is what it was
+
+Five cycles on 2026-10-06 each evaluated ten symbols and produced zero
+proposals:
+
+```
+slot    eval  hardfilt  above60    best   gap to 60
+09:30     10       0        0     54.29      5.71
+10:30     10       0        0     45.75     14.25
+11:30     10       3        0     41.14     18.86
+12:30     10       0        0     43.25     16.75
+13:30     10       0        0     43.25     16.75
+```
+
+50 evaluations, nothing at or above 60, no error anywhere in the log.
+
+**The cause could not be established from this.** `cycle_metrics`
+stores the cycle TOTAL, so three things were unrecorded and
+unrecoverable:
+
+1. **Which symbol scored highest.** 54.29 could be MUFG (a stock, which
+   can earn every component) or an ETF (which structurally cannot earn
+   fundamentals or political). Those are opposite diagnoses and the
+   data could not tell them apart.
+2. **Which components earned anything.** A total of 43.25 says nothing
+   about whether 20 points were lost to missing RSI or to bad
+   technicals.
+3. **Whether a 0.0 meant "no data" or "scored zero".**
+   `trade_evaluator._score_fundamentals` documents its own ambiguity —
+   *"0..weight_fundamentals. 0 if no data."* — and every scorer behaves
+   the same way. The caller cannot distinguish the two, and neither
+   could the table.
+
+Those three unknowns are why one day of diagnosis produced **eight
+retracted conclusions** (survivor count off by 22×, a cycle declared
+dead that finished 28 seconds later, a provider blamed that answers in
+0.2 s, and more). Each was a guess filling a gap in the record. This
+table removes the gaps.
+
+### Also recorded, with no inference attached
+
+12:30 and 13:30 produced **bit-identical** best scores:
+
+```
+12:30  43.25292486989453
+13:30  43.25292486989453
+       difference 0.00000000000000
+```
+
+and 10:30 differs from them by exactly 2.5:
+
+```
+10:30  45.75292486989453  -  43.25292486989453  =  2.50000000000000
+```
+
+Same 14-digit tail, one discrete step. A score built on price, RSI and
+momentum should move across an hour of open market. **No cause is
+claimed here** — establishing one needs the per-component history this
+table starts collecting.
+
+### The decision
+
+New table `cycle_symbol_scores` (migration 0009, schema 8 → 9), **one
+row per symbol per scheduled check** — not just the top one, because
+"why did nothing reach 60" is answered by the distribution: a day whose
+best is 54 with the rest at 50 is a different problem from a day whose
+best is 54 with the rest at 0.
+
+Stored per symbol: `rank_in_cycle`, `soft_score`,
+`passed_hard_filter`, `hard_filter_reasons`, the eight component
+values, `sources_succeeded`, `sources_failed`, and the raw inputs
+`current_price`, `rsi_14`, `day_volume`, `pe_ratio`.
+
+**A missing component is NULL, never 0.0.** A hard-filtered symbol gets
+an empty breakdown from the evaluator; writing 0.0 would claim it was
+scored and earned nothing. This is the same distinction D-0079 had to
+make for `scored`, for the same reason.
+
+**The source lists are what make a 0.0 readable.** With them, "0 points
+and alpha_vantage failed" and "0 points and every source answered" are
+different rows instead of the same row.
+
+Keyed `(effective_date, scheduled_slot, symbol)`, so the seven firings
+of one scheduled check collapse to one row per symbol, last write
+winning — the same reasoning as `cycle_metrics`.
+
+### Safety
+
+Identical to D-0079: nothing reads these rows, no production code
+branches on them, and the recorder swallows every exception —
+`Engine._symbol_scores` reads every field through `getattr` with a
+default because `research` is None on real paths, so a missing research
+record costs the detail and never the cycle.
+
+### The same mistake, twice in one day
+
+Writing migration 0009 hit P-061 again: a `;` inside a SQL comment
+("Read by nothing; no production code branches on it") truncated the
+`CREATE TABLE`, exactly as it did in 0008 this morning. The guard test
+written after the first occurrence caught the second immediately.
+Recorded because it is evidence the guard earns its place, and that the
+splitter itself (P-061) should be fixed rather than guarded.
+
+### Files
+
+```
+src/persistence/migrations/0009_cycle_symbol_scores.sql   new
+src/persistence/db.py                 APPROVED_SCHEMA_VERSION 8 -> 9
+src/engine/cycle_metrics.py           SymbolScore + record_symbol_scores
+src/engine/engine.py                  Engine._symbol_scores
+tests/engine/test_d0082_symbol_scores.py                  new, 18 tests
+```
+
+Untouched: `src/execution/`, `src/risk/`, `src/d0026/`, the Floor, the
+ladder, trailing, `_MIN_SCORE`, every pipeline percentage, and
+`cycle_metrics` itself.
+
+### Tests
+
+**18 new**, driving the real Engine through `run_trigger_check`:
+ranked order and rank numbering, every component round-tripping, a
+missing component staying NULL across all seven columns, the source
+lists, the raw inputs with None preserved, the seven firings collapsing
+per symbol, the unscored path writing no symbol rows, both tables
+written by one recorder, a missing table not breaking the recorder, a
+hard-filtered symbol keeping its reason and its raw inputs while
+carrying no components, and `research=None` costing the detail but not
+the cycle.
+
+Two bugs in the tests themselves, caught by running them: a stray
+kwarg in a helper, and `symbols` passed both positionally and by
+keyword.
+
+**Full suite: 1750 passed, 54 subtests.** Run three times. Migration
+verified against a copy of the live database: v7 → v9, two new tables,
+zero rows changed across all 11 pre-existing tables, idempotent over
+three bootstraps.
+
+### What this does NOT do
+
+It records. It does not change a score, a threshold, a filter or a
+limit, and it will not by itself produce a single proposal. Today's
+five cycles are already unrecoverable — only their totals exist. The
+first cycle that runs with this in place is the first one whose cause
+is answerable from data.
