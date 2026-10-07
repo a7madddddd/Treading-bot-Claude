@@ -72,3 +72,58 @@ class INotificationService(ABC):
     @abstractmethod
     def send(self, event: NotificationEvent) -> NotificationResult:
         raise NotImplementedError
+
+
+class LoggingNotificationService(INotificationService):
+    """Writes every notification to the session log, then delegates.
+
+    D-0085. Until now a notification existed ONLY in Telegram. Nothing
+    reached disk, with two consequences that both bit on 2026-10-07:
+
+      - an outage could not be analysed after the fact. Investigating
+        that morning's HTTP 429 alerts meant asking the Controller to
+        paste the messages back, because `grep 429 logs/engine.log`
+        returned nothing -- not because the 429s had not happened, but
+        because no notification is ever written there.
+      - if Telegram is unreachable, a CRITICAL event is lost outright
+        and nobody ever learns it occurred. `send()` is contractually
+        forbidden from raising, so the failure is silent by design.
+
+    The line is written BEFORE delegating, so a crash inside the
+    transport still leaves the trace. Writing never raises: a logging
+    failure must not become a trading input any more than a delivery
+    failure may (execution.md, CLAUDE.md §6).
+
+    This is a decorator, not an edit to the Telegram service, so it
+    composes with any provider and with the existing retry wrapper --
+    the same shape as `common.http_retry.with_retry`.
+    """
+
+    def __init__(self, inner: "INotificationService", *, write=None) -> None:
+        self._inner = inner
+        if write is not None:
+            self._write = write
+        else:
+            def _default(line: str) -> None:
+                print(line, flush=True)
+            self._write = _default
+
+    def send(self, event: NotificationEvent) -> NotificationResult:
+        try:
+            self._write(self.format(event))
+        except Exception:  # noqa: BLE001 - never let logging break delivery
+            pass
+        return self._inner.send(event)
+
+    @staticmethod
+    def format(event: NotificationEvent) -> str:
+        """One event, one line. Newlines inside the message become ' | '
+        so a multi-line alert stays greppable."""
+        stamp = event.effective_timestamp().isoformat()
+        body = " | ".join(
+            part.strip() for part in str(event.message).splitlines()
+            if part.strip()
+        )
+        symbol = f" symbol={event.symbol}" if event.symbol else ""
+        return (f"[notify] {stamp} {event.level.value} "
+                f"event={event.event}{symbol} :: {body}")

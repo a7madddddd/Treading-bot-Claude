@@ -157,3 +157,40 @@ didn't do that before anything."*
 describe, tabulate or diagram system behavior without reading that code
 path in the same turn; a table cell is a claim about code; a cap is
 never written as a fixed value.
+
+---
+
+## 2026-10-07 — Warning about a guard that already existed
+
+**What happened.** Investigating the morning's HTTP 429 alerts, Claude
+told the Controller that the universe refresh could run during market
+hours after a reboot and blind the protective Floor for an hour, and
+proposed building a market-hours guard as the top priority.
+
+The Controller replied that he thought the code already did something
+about this, could not remember what, and asked Claude to verify.
+
+It did. `scripts/run_universe_selection.py` already asks the broker
+whether the market is open, refuses to run if it is, fails closed if it
+cannot tell, and names P-032 in its refusal text. The guard had been
+there all along.
+
+**The cost.** The Controller was asked to weigh a safety risk that did
+not exist, and to approve work that was already done. He is the one who
+stopped it, not Claude.
+
+**The rule it broke.** CLAUDE.md §4 and
+`.claude/rules/00-session-start.md` §0.b.1: read the code path before
+describing what the system does. Claude had read the enricher and the
+timer unit, and inferred the gap from their absence rather than opening
+the runner that actually schedules the work.
+
+**What makes it worse than an ordinary slip.** It was not a wrong
+number in a table. It was an alarm — and an alarm invents urgency. The
+Controller reorganised the session's priorities around it, and told
+Claude to drop the work that was actually in progress.
+
+**The specific lesson.** Before raising a risk, search for the guard,
+not only for the hazard. "I did not see protection" is not "there is no
+protection" — and a safety claim carries the heavier burden of proof,
+not the lighter one.

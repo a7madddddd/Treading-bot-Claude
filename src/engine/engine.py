@@ -237,6 +237,31 @@ def _format_proposal_message(
     return f"{prefix}{symbol} — {action.value} awaiting Controller approval."
 
 
+_HTTP_STATUS_RE = __import__("re").compile(r"HTTP (\d{3})")
+
+
+def _incident_cause(event: str, message: str) -> str:
+    """The key that decides whether two failing symbols are ONE incident.
+
+    D-0085. Grouping by time alone would hide a real second failure
+    inside an open one, so the key is the CAUSE: an HTTP status when the
+    message carries one, otherwise the event name. Four symbols refused
+    with 429 in the same minutes are one incident; a symbol that is
+    simultaneously 404 (delisted, say) is a separate incident and gets
+    its own alert.
+
+    Deliberately coarse: every 429 is one incident whichever symbol or
+    endpoint produced it, because the Controller's action is the same
+    for all of them -- wait, or investigate the shared quota. A key any
+    finer would recreate the flood this removes.
+    """
+
+    match = _HTTP_STATUS_RE.search(message or "")
+    if match:
+        return f"http_{match.group(1)}"
+    return event or "unknown"
+
+
 def _format_political_tag(signal) -> str:
     """D-0058: the distinct tag on a politically-backed proposal.
 
@@ -331,6 +356,15 @@ class Engine:
         # symbols already escalated, so the escalation is sent once.
         self._outage_misses: Dict[str, int] = {}
         self._outage_escalated: Set[str] = set()
+        # D-0085: open incidents, keyed by CAUSE. Four symbols refused
+        # with the same HTTP 429 in the same seven minutes is one event,
+        # not four, and it cost the Controller nine messages on
+        # 2026-10-07. Keyed by cause rather than by time so a different
+        # failure never hides behind an open one.
+        self._incident_symbols: Dict[str, Set[str]] = {}
+        self._incident_started: Dict[str, datetime] = {}
+        self._incident_seen: Dict[str, Set[str]] = {}
+        self._symbol_incident: Dict[str, str] = {}
         # Controller-approved 2026-10-01: optional callback invoked at
         # the END of each tick to persist the live DB (and ONLY the DB
         # file) to the remote git branch, so a cloud-container reclaim
@@ -2631,6 +2665,14 @@ class Engine:
         self._clear_outage(symbol)
         return price
 
+    @staticmethod
+    def _now_for_incident() -> datetime:
+        """Wall clock, used ONLY to time-stamp and measure an incident
+        for the Controller's message. Deliberately not the injected
+        trading `now`: an incident is an operational fact about the real
+        world, and no trading decision reads it."""
+        return datetime.now(timezone.utc)
+
     def _notify_outage(
         self, *, symbol: str, event: str, message: str,
     ) -> None:
@@ -2688,14 +2730,30 @@ class Engine:
         if symbol in self._outages:
             return
         self._outages.add(symbol)
+
+        # D-0085: group by CAUSE. The first symbol to hit a given cause
+        # opens the incident and is announced; every later symbol with
+        # the SAME cause joins it silently, because it is the same
+        # event and a second message adds no fact the Controller can
+        # act on. A DIFFERENT cause opens its own incident and is
+        # announced normally, so nothing hides behind an open one.
+        cause = _incident_cause(event, message)
+        self._symbol_incident[symbol] = cause
+        if cause in self._incident_symbols:
+            self._incident_symbols[cause].add(symbol)
+            self._incident_seen[cause].add(symbol)
+            return
+        self._incident_symbols[cause] = {symbol}
+        self._incident_seen[cause] = {symbol}
+        self._incident_started[cause] = self._now_for_incident()
         self._notify(
             level=NotificationLevel.CRITICAL,
             event=event,
             message=(
                 message
-                + "\n\nFurther identical alerts for this symbol are "
-                  "suppressed until prices return; one all-clear will "
-                  "follow."
+                + "\n\nFurther symbols hitting this same cause are "
+                  "grouped into this one incident; a single all-clear "
+                  "will follow with the full list."
             ),
             symbol=symbol,
         )
@@ -2710,12 +2768,48 @@ class Engine:
             return
         self._outages.discard(symbol)
         del was_escalated
+
+        # D-0085: the all-clear belongs to the INCIDENT, not the symbol.
+        # It fires once, when the last affected symbol recovers, and
+        # carries the facts the per-symbol version could not: how many
+        # symbols were hit, which, and for how long.
+        cause = self._symbol_incident.pop(symbol, None)
+        if cause is None or cause not in self._incident_symbols:
+            # An outage opened before this change, or state was reset
+            # mid-incident. Fall back to the old per-symbol all-clear
+            # rather than going silent -- silence is the one outcome a
+            # recovery message must never have.
+            self._notify(
+                level=NotificationLevel.IMPORTANT,
+                event="market_data_recovered",
+                message=(
+                    f"Market data for {symbol} is available again. "
+                    f"Protective checks are being evaluated normally."
+                ),
+                symbol=symbol,
+            )
+            return
+
+        self._incident_symbols[cause].discard(symbol)
+        if self._incident_symbols[cause]:
+            return          # others are still down; one message at the end
+
+        affected = sorted(self._incident_seen.pop(cause, {symbol}))
+        started = self._incident_started.pop(cause, None)
+        del self._incident_symbols[cause]
+        duration = ""
+        if started is not None:
+            minutes = max(
+                1, int((self._now_for_incident() - started).total_seconds() // 60))
+            duration = f" It lasted about {minutes} minute(s)."
         self._notify(
             level=NotificationLevel.IMPORTANT,
             event="market_data_recovered",
             message=(
-                f"Market data for {symbol} is available again. "
-                f"Protective checks are being evaluated normally."
+                f"Market data is available again and protective checks "
+                f"are being evaluated normally.\n"
+                f"Affected ({len(affected)}): {', '.join(affected)}."
+                f"{duration}"
             ),
             symbol=symbol,
         )

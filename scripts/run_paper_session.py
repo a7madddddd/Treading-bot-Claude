@@ -467,8 +467,15 @@ def main() -> int:
         key_id=key_id, secret_key=secret, timeout_seconds=10.0,
         retry_policy=retry_policy,
     )
-    notifier = TelegramNotificationService(
-        bot_token=bot_token, chat_id=chat_id,
+    # D-0085: every notification is written to the session log before it
+    # is delivered. Until now an alert existed only in Telegram, so an
+    # outage could not be analysed afterwards (grepping the log for the
+    # 2026-10-07 rate-limit alerts returned nothing, because no
+    # notification is ever written there), and a Telegram outage would
+    # lose a CRITICAL event outright.
+    from notifications.service import LoggingNotificationService
+    notifier = LoggingNotificationService(
+        TelegramNotificationService(bot_token=bot_token, chat_id=chat_id)
     )
     decision_source = TelegramDecisionSource.from_env()
 
