@@ -57,6 +57,7 @@ invents any selection logic of its own.
 
 from __future__ import annotations
 
+import threading
 import time as _time_module
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -467,18 +468,141 @@ class Engine:
             maximum_position=sizing.maximum_position,
         )
 
-    def _enrich(self, symbol: str, base_message: str) -> str:
-        """Fail-open wrapper that appends an enrichment blurb to a
-        proposal message, or returns the message unchanged on any
-        failure or when no enricher is configured."""
+    ENRICHMENT_TIMEOUT_SECONDS = 45.0
+    """P-091. A cap on how long the research report may take.
+
+    There was no cap. On 2026-10-07 the report for a single symbol took
+    9m52s, and because the proposal row is saved before the report is
+    assembled, every one of those seconds came out of the Controller's
+    60-minute decision window -- he was handed 50 minutes and told 60.
+
+    45 seconds is a bootstrap value, not a measurement: there is no
+    recorded distribution of report latency yet, so it is set to the
+    conservative side -- long enough that a healthy multi-source report
+    finishes, short enough that a hung call costs under a minute of the
+    hour. P-093 records the measurement that will replace it.
+
+    Exceeding it is not an error. The proposal is sent WITHOUT the
+    research block, which is exactly what already happened on any
+    enrichment failure."""
+
+    def _prefetch_enrichment(self, symbol: str) -> Optional[str]:
+        """Fetches the research blurb BEFORE the proposal row exists
+        (P-091), under ENRICHMENT_TIMEOUT_SECONDS.
+
+        Returns the blurb, or None when there is no enricher, the fetch
+        failed, or it ran past the cap. None means "send the proposal
+        with no research block" -- never "do not send the proposal".
+
+        The work runs on a daemon thread so a hung HTTP call cannot pin
+        the engine loop: when the join times out the thread is
+        abandoned, not killed, and its late result is discarded. A
+        daemon thread does not block interpreter exit, so an abandoned
+        fetch cannot delay shutdown either.
+
+        Why not signal.alarm: the engine already runs the Telegram
+        long-poll on a background thread, and signal-based timeouts are
+        only deliverable on the main thread. A thread join works from
+        any caller.
+
+        CONSTRAINT on any future enricher: `enrich()` now runs OFF the
+        main thread, so it must not touch the engine's SQLite
+        connection -- sqlite3 connections are bound to the thread that
+        opened them, and the breach would be SILENT: the
+        ProgrammingError is swallowed as an enrichment failure and the
+        proposal simply goes out with no research block. Every enricher
+        wired today is built from HTTP clients only
+        (scripts/run_paper_session.py, _build_composite_enricher), which
+        is why this is safe as it stands. An enricher that needs stored
+        data must be given its own connection.
+        """
+        if self._proposal_enricher is None:
+            return None
+
+        box: dict = {}
+
+        def _work() -> None:
+            try:
+                box["blurb"] = self._proposal_enricher.enrich(symbol)
+            except Exception:  # noqa: BLE001 -- never block a proposal
+                box["failed"] = True
+
+        worker = threading.Thread(
+            target=_work, name=f"enrich-{symbol}", daemon=True,
+        )
+        worker.start()
+        worker.join(timeout=self.ENRICHMENT_TIMEOUT_SECONDS)
+        if worker.is_alive():
+            self._notify(
+                level=NotificationLevel.OPTIONAL,
+                event="enrichment_timeout",
+                message=(
+                    f"The research report for {symbol} passed "
+                    f"{self.ENRICHMENT_TIMEOUT_SECONDS:.0f}s and was "
+                    f"dropped. The proposal is being sent without it so "
+                    f"your decision window is not spent waiting. "
+                    f"Nothing about the price, the ladder or the floor "
+                    f"is affected."
+                ),
+                symbol=symbol,
+            )
+            return None
+        return box.get("blurb")
+
+    def _enrich(
+        self, symbol: str, base_message: str,
+        *, blurb: Optional[str] = None, prefetched: bool = False,
+    ) -> str:
+        """Appends an enrichment blurb to a proposal message, or returns
+        the message unchanged on any failure or when no enricher is
+        configured.
+
+        `prefetched=True` means _prefetch_enrichment has already run for
+        this symbol and `blurb` is its result -- including None, when it
+        failed or timed out. In that case NOTHING is fetched here.
+
+        That distinction is the whole timeout. The first version of this
+        method keyed on `blurb is None` alone, so a prefetch that timed
+        out fell through to the inline fetch below and re-ran the very
+        call the timeout had just abandoned -- on the main thread, with
+        no cap, blocking the engine loop for its full duration. The
+        timeout was decorative. A test with a deliberately hanging
+        enricher caught it before this shipped.
+
+        The inline fetch remains for the recovery and ladder callers,
+        which re-send a proposal whose clock has already started, so
+        there is nothing left to protect.
+        """
+        if prefetched:
+            if blurb is None:
+                return base_message
+            try:
+                from engine.proposal_enricher import append_enrichment
+                return append_enrichment(base_message, blurb)
+            except Exception:  # noqa: BLE001 -- never block a proposal
+                return base_message
         if self._proposal_enricher is None:
             return base_message
         try:
             from engine.proposal_enricher import append_enrichment
-            blurb = self._proposal_enricher.enrich(symbol)
-            return append_enrichment(base_message, blurb)
+            blurb_now = self._proposal_enricher.enrich(symbol)
+            return append_enrichment(base_message, blurb_now)
         except Exception:  # noqa: BLE001 -- never block a proposal
             return base_message
+
+    def _mark_proposal_notified(self, proposal_id: str, *, now: datetime) -> None:
+        """Records when the Controller could first have seen a proposal
+        (P-091). The TTL sweep measures from this.
+
+        Shielded: a failure here must never undo a proposal that has
+        already been delivered. The cost of a failed write is the OLD
+        behavior -- the sweep falls back to proposal_created_at -- never
+        a lost or duplicated proposal.
+        """
+        try:
+            self._proposal_repo.mark_notified(proposal_id, notified_at=now)
+        except Exception:  # noqa: BLE001 -- bookkeeping, never fatal
+            pass
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -856,7 +980,19 @@ class Engine:
             for proposal in self._proposal_repo.list_for_trade(trade.trade_id):
                 if proposal.approval_state is not ApprovalState.PENDING:
                     continue
-                age_seconds = (now - proposal.proposal_created_at).total_seconds()
+                # P-091: measure from the moment he could SEE it, not
+                # from the moment the row was written. The two differ by
+                # however long the research report took -- 9m52s and
+                # 9m47s on 2026-10-07 -- and that difference was being
+                # taken out of his hour without being disclosed.
+                #
+                # notified_at is NULL for every row written before
+                # migration 0010 and for any proposal whose delivery
+                # failed, and both fall back to proposal_created_at,
+                # which is exactly the old behavior. So nothing that
+                # used to expire stops expiring.
+                clock_start = proposal.notified_at or proposal.proposal_created_at
+                age_seconds = (now - clock_start).total_seconds()
                 if age_seconds < self.PROPOSAL_TTL_SECONDS:
                     continue
                 self._expire_one_proposal(proposal, age_seconds=age_seconds, now=now)
@@ -2226,6 +2362,20 @@ class Engine:
             )
             return
 
+        # P-091: the research report is fetched HERE, before
+        # start_trade() persists the row that starts the 60-minute
+        # approval clock. It used to run between the save and the send,
+        # so its latency -- measured at 9m52s on 2026-10-07 -- was
+        # charged to the Controller's decision window. It needs only the
+        # symbol, so moving it earlier changes no input it sees.
+        #
+        # The cost of the move: these calls are now spent before the
+        # proposal exists, so a symbol that start_trade or the sizing
+        # path later declines has already paid for its report. That is
+        # the accepted trade: a wasted research call costs API quota, a
+        # late proposal costs the Controller his window.
+        enrichment = self._prefetch_enrichment(symbol)
+
         trade_id = f"{symbol}-{uuid.uuid4().hex[:8]}"
         proposal_id = f"{trade_id}-initial_entry-{uuid.uuid4().hex[:8]}"
         _trade_record, proposal = self._trade_proposal_service.start_trade(
@@ -2240,9 +2390,9 @@ class Engine:
         message = self._enrich(symbol, _format_proposal_message(
             proposal,
             price_context=self._safe_price_context(symbol),
-        ))
+        ), blurb=enrichment, prefetched=True)
         message += _format_political_tag(political_signal)
-        self._notify(
+        delivered = self._notify(
             level=NotificationLevel.IMPORTANT,
             event=("political_proposal_awaiting_approval"
                    if political_signal is not None
@@ -2254,6 +2404,12 @@ class Engine:
                 ("❌ Reject", f"reject:{proposal.proposal_id}"),
             ),
         )
+        # P-091: the clock starts when he could SEE it. A delivery that
+        # failed is deliberately NOT marked -- he never saw that one, so
+        # it keeps the old proposal_created_at clock rather than being
+        # handed a window it never had.
+        if delivered:
+            self._mark_proposal_notified(proposal.proposal_id, now=now)
         self._notified.add(("pending_approval", proposal.proposal_id))
 
     def _safe_price_context(self, symbol: str) -> Optional[dict]:
@@ -2409,7 +2565,7 @@ class Engine:
         except LadderAlreadyFilledError:
             return
 
-        self._notify(
+        delivered = self._notify(
             level=NotificationLevel.IMPORTANT,
             event="proposal_awaiting_approval",
             message=self._enrich(proposal.symbol, _format_proposal_message(proposal)),
@@ -2419,6 +2575,8 @@ class Engine:
                 ("❌ Reject", f"reject:{proposal.proposal_id}"),
             ),
         )
+        if delivered:
+            self._mark_proposal_notified(proposal.proposal_id, now=now)
         self._notified.add(("pending_approval", proposal.proposal_id))
 
     def _abandon_initial_entry_after_refusal(

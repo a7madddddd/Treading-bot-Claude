@@ -68,8 +68,9 @@ def _conn():
 
 
 class TestTheSchema(unittest.TestCase):
-    def test_version_is_nine(self):
-        self.assertEqual(APPROVED_SCHEMA_VERSION, 9)
+    def test_version_is_ten(self):
+        # 10 added proposals.notified_at (P-091).
+        self.assertEqual(APPROVED_SCHEMA_VERSION, 10)
 
     def test_the_table_exists_with_every_component_column(self):
         cols = {r[1] for r in _conn().execute(

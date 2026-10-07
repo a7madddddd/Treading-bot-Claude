@@ -3561,8 +3561,10 @@ QSR, OTIS, MA, WFC, JPM, COST, ORCL.
 
 ## P-091 — the 60-minute approval clock starts ~10 minutes before the Controller sees the proposal
 
-**Status:** OPEN — diagnosed from code and measured twice on 2026-10-07
-**Severity:** the Controller silently loses a sixth of every decision window
+**Status:** RESOLVED 2026-10-07 by **D-0089** — all three approved
+changes implemented; option 4 (a 70-minute TTL) rejected by the
+Controller. 17 tests, 15 of which fail against the pre-change engine.
+**Severity:** the Controller silently lost a sixth of every decision window
 
 ### Measured, from the live log
 
@@ -3662,3 +3664,84 @@ the database.
 is cached, carried from a previous symbol, or fetched for the wrong
 date. Not yet investigated.
 
+
+---
+
+## P-093 — ENRICHMENT_TIMEOUT_SECONDS = 45 is a bootstrap, not a measurement
+
+**Status:** OPEN — the measurement that replaces it does not exist yet
+**Related:** D-0089
+
+The cap D-0089 put on the research report is 45 seconds. There is no
+recorded distribution of report latency, so the value was chosen on the
+conservative side rather than calculated — which the calculate-from-
+recorded-data rule allows only as a labelled bootstrap paired with the
+measurement that will replace it.
+
+**What is known:** one observation, 9m52s, and it was pathological.
+Nothing is recorded about the healthy case.
+
+**The measurement:** `enrichment_timeout` is now an emitted event, so
+its rate is greppable from the engine log. If it fires on proposals that
+were otherwise fine, 45s is too tight. If it never fires while reports
+still take minutes, the cap is not being reached and the real latency
+needs timing directly.
+
+**Next step:** after a week of live proposals, count
+`enrichment_timeout` events against total proposals sent, and set the
+cap from the observed distribution rather than from this guess.
+
+---
+
+## P-094 — a PENDING proposal is never expired by price movement
+
+**Status:** OPEN — Controller raised it 2026-10-07; investigated, NOT
+yet designed
+**Related:** D-0007, D-0089
+
+The Controller asked: "we are decide this proposal expired when it
+changed its price, also. So check that out."
+
+**FACT, from the code.** D-0007's ±0.5% band exists and is enforced, but
+only at SUBMISSION, inside `validate_for_submission`
+(`src/proposals/revalidation.py`). The PENDING sweep
+(`_expire_stale_proposals`) looks at nothing but age. So a proposal whose
+price has drifted far keeps live Approve/Reject buttons for the full
+hour, and an approval on it is refused at submission instead of the
+proposal having been retired when it went stale.
+
+**The refusal is safe** — nothing executes at a wrong price. What is
+wasted is the Controller's decision.
+
+**Why this needs numbers before it needs code.** PLXS traded 264.26 to
+268.03 on 2026-10-07, a range of 1.43%. The ±0.5% band on a 264.93
+proposal is 263.60 to 266.25 — a window narrower than the day's own
+range. Expiring PENDING proposals at ±0.5% would have killed this
+proposal within minutes of being sent, and with the old ten-minute
+report delay it would have been dead before he ever saw it. Applied
+naively, the rule produces zero usable proposals.
+
+**Three shapes, none chosen:**
+
+1. Expire on drift beyond a band WIDER than D-0007's — the submission
+   gate stays at ±0.5%, the pending gate is looser. The band must come
+   from measured intraday drift over the decision window, which is not
+   recorded yet.
+2. Re-price instead of expire: supersede the pending proposal with a
+   fresh one at the current price. This already happens once an hour via
+   the TTL; the question is whether it should happen on price movement
+   instead of on the clock.
+3. Leave it: the submission gate already prevents a bad fill, and
+   D-0089 removed the ten minutes that made staleness worst.
+
+**RECOMMENDATION: 2, driven by measurement, not 1.** Expiring tells the
+Controller "too late"; re-pricing hands him the same opportunity at a
+price he can actually act on. But the trigger band is exactly the kind
+of number that must not be guessed, and nothing in the system records
+how far a price drifts across a decision window yet. The honest first
+step is to record that drift for every proposal and decide once there is
+a distribution.
+
+**Blocking question for the Controller:** does he want the stale
+proposal RETIRED (option 1) or REPLACED at a fresh price (option 2)?
+The answer decides what gets measured.

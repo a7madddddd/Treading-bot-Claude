@@ -261,6 +261,20 @@ class TradeProposal:
     approval_state: ApprovalState = ApprovalState.PENDING
     approval_received_at: Optional[datetime] = None
     approval_expires_at: Optional[datetime] = None
+    notified_at: Optional[datetime] = None
+    """P-091: when this proposal's notification was handed to the
+    notification service -- i.e. the first moment the Controller could
+    have seen it.
+
+    The 60-minute TTL is measured from this when it is set, and from
+    `proposal_created_at` when it is None. The two differ by however
+    long the research report took to assemble: measured at 9m52s and
+    9m47s on 2026-10-07, which the Controller was silently paying out
+    of his own decision window.
+
+    Deliberately NOT `approval_expires_at`, which carries D-0007's
+    5-minute POST-approval submission window and must not be
+    overloaded."""
     decided_by: Optional[str] = None
     approved_action: Optional[TradeAction] = None
     """Which single Controller-gated action (docs/trading/execution.md
@@ -368,6 +382,20 @@ class TradeProposal:
             decided_by=decided_by,
             approved_action=action,
         )
+
+    def mark_notified(self, *, notified_at: datetime) -> "TradeProposal":
+        """Returns a NEW TradeProposal carrying `notified_at` -- never
+        mutates self (P-091).
+
+        Idempotent by first-write-wins: a proposal that already has a
+        `notified_at` is returned unchanged. A re-send (recovery pass,
+        a retried delivery) must never push the Controller's deadline
+        further out; the clock starts at the FIRST time he could have
+        seen it.
+        """
+        if self.notified_at is not None:
+            return self
+        return _replace(self, notified_at=notified_at)
 
     def expire(self, *, expired_at: datetime) -> "TradeProposal":
         """Returns a NEW TradeProposal transitioned to EXPIRED -- never

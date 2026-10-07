@@ -79,6 +79,9 @@ def _proposal_to_row(proposal: TradeProposal) -> Dict[str, Any]:
         "approval_state": proposal.approval_state.value,
         "approval_received_at": _dt(proposal.approval_received_at),
         "approval_expires_at": _dt(proposal.approval_expires_at),
+        # P-091: NULLABLE (migration 0010). See _row_to_proposal for
+        # how a pre-migration row loads.
+        "notified_at": _dt(proposal.notified_at),
         "decided_by": proposal.decided_by,
         "approved_action": proposal.approved_action.value if proposal.approved_action is not None else None,
         "expired_at": _dt(proposal.expired_at),
@@ -124,6 +127,14 @@ def _row_to_proposal(row: Mapping[str, Any]) -> TradeProposal:
         approval_state=ApprovalState(row["approval_state"]),
         approval_received_at=_parse_dt(row["approval_received_at"]),
         approval_expires_at=_parse_dt(row["approval_expires_at"]),
+        # P-091: same NULLABLE-column treatment as initial_quantity
+        # above -- sqlite3.Row has no .get(), so absence is checked
+        # through .keys() and a SQL NULL falls through to None.
+        notified_at=(
+            _parse_dt(row["notified_at"])
+            if "notified_at" in row.keys()
+            else None
+        ),
         decided_by=row["decided_by"],
         approved_action=TradeAction(row["approved_action"]) if row["approved_action"] is not None else None,
         expired_at=_parse_dt(row["expired_at"]),
@@ -253,6 +264,27 @@ class SqliteProposalRepository(ProposalRepository):
                 list(expired_row.values()) + [proposal_id],
             )
         return expired
+
+    def mark_notified(
+        self, proposal_id: str, *, notified_at: datetime,
+    ) -> Optional[TradeProposal]:
+        """P-091. Forgiving by contract -- see ProposalRepository."""
+        with transaction(self._conn) as conn:
+            row = conn.execute(
+                "SELECT * FROM proposals WHERE proposal_id = ?",
+                (proposal_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            existing = _row_to_proposal(dict(row))
+            updated = existing.mark_notified(notified_at=notified_at)
+            if updated is existing:
+                return existing          # already notified: no write
+            conn.execute(
+                "UPDATE proposals SET notified_at = ? WHERE proposal_id = ?",
+                (_dt(updated.notified_at), proposal_id),
+            )
+        return updated
 
     def get(self, proposal_id: str) -> Optional[TradeProposal]:
         row = self._conn.execute("SELECT * FROM proposals WHERE proposal_id = ?", (proposal_id,)).fetchone()

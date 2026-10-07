@@ -7113,3 +7113,91 @@ Full suite: **1833 passed, 119 subtests** (was 1822 / 113). Eleven new:
 five for the removed rule, six for the calibration, including the
 Controller's own example — 53 on the other components plus two
 political buyers must reach 60.
+
+## D-0089 — the approval clock starts when the Controller can see the proposal
+
+- **Date:** 2026-10-07
+- **Status:** APPROVED
+- **Approved by:** Controller ("I need you to finish the point number
+  one and two and three. Didn't make it seventy minutes.")
+- **Supersedes:** nothing. Refines the TTL introduced for PENDING
+  proposals; `PROPOSAL_TTL_SECONDS` itself is UNCHANGED at 3600.
+
+### The measurement that forced it
+
+From the live engine log, twice in one afternoon:
+
+```
+proposal 1   created 18:28:43.288   sent 18:38:35.693   gap 9m52s
+proposal 2   created 19:28:44.676   sent 19:38:31.054   gap 9m47s
+```
+
+`_check_watchlist` saved the proposal row, THEN assembled the research
+report, THEN sent the message, while the TTL was measured from
+`proposal_created_at`. So PLXS expired at 15:28:44 ET on a clock that
+had started at 14:28:43 ET, while the Controller first saw it at
+14:38:35 ET. He was given 50 minutes of a 60-minute window, and the
+price in front of him was ten minutes old.
+
+### Decision — three changes, no fourth
+
+1. **The research report is fetched BEFORE the proposal row is written.**
+   It needs only the symbol, so it sees no different input. Cost: a
+   symbol later declined by sizing or the portfolio check has already
+   paid for its report. Accepted — a wasted research call costs API
+   quota, a late proposal costs the Controller his window.
+2. **The fetch runs under `ENRICHMENT_TIMEOUT_SECONDS = 45.0`,** on a
+   daemon thread, joined with a timeout. On expiry the proposal is sent
+   WITHOUT the research block and an OPTIONAL `enrichment_timeout`
+   notice is emitted. Ten minutes for one symbol means an external call
+   is hanging with no cap; there was no cap.
+3. **The TTL measures from `notified_at`,** a new column (migration
+   0010), set when delivery succeeds. NULL — every pre-migration row,
+   and any proposal whose delivery failed — falls back to
+   `proposal_created_at`, which is the old behavior exactly.
+
+**Explicitly REJECTED: raising the TTL to 70 minutes.** The Controller
+rejected it directly. It hides the defect rather than removing it and
+leaves the stale-price effect untouched.
+
+### What did NOT change
+
+No threshold, no sizing, no ladder level, no floor, no trailing rule, no
+candidate selection, no scorer weight. `PROPOSAL_TTL_SECONDS` is still
+3600.0. D-0007's ±0.5% / 5-minute submission gate is untouched —
+`approval_expires_at` was deliberately NOT reused for this clock,
+because it already carries that gate's post-approval window and
+overloading it would have corrupted ladder submission.
+
+### Two defects the tests caught before this shipped
+
+- **The timeout was decorative.** `_enrich` keyed on `blurb is None`, so
+  a prefetch that TIMED OUT fell through to the inline fetch and re-ran
+  the abandoned call on the main thread with no cap. A test with a
+  deliberately hanging enricher caught it; `prefetched=True` now
+  distinguishes "prefetch returned nothing" from "no prefetch ran".
+  Suite runtime for that test fell from 10.7s to 0.65s once fixed,
+  which is the engine loop no longer being blocked.
+- **`enrich()` now runs off the main thread,** so an enricher touching
+  the engine's SQLite connection would fail SILENTLY — the
+  ProgrammingError is swallowed as an enrichment failure. Every
+  enricher wired today is HTTP-only
+  (`_build_composite_enricher`), verified by reading it. The constraint
+  is recorded in `_prefetch_enrichment`'s docstring so a future
+  DB-touching enricher is given its own connection.
+
+### Tests
+
+`tests/engine/test_p091_approval_clock.py` — 17 tests, of which 15 fail
+against the pre-change engine (verified by stashing `src/` and
+re-running). Full suite: 1850 passed, 119 subtests.
+
+### Files
+
+- `src/persistence/migrations/0010_proposal_notified_at.sql` (new)
+- `src/persistence/db.py` — `APPROVED_SCHEMA_VERSION` 9 -> 10
+- `src/proposals/models.py` — `notified_at`, `mark_notified()`
+- `src/proposals/repository.py`, `src/proposals/sqlite_repository.py`
+- `src/engine/engine.py` — `_prefetch_enrichment`,
+  `ENRICHMENT_TIMEOUT_SECONDS`, `_mark_proposal_notified`, `_enrich`
+  gains `prefetched`, the TTL sweep's `clock_start`

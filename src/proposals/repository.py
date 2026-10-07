@@ -239,6 +239,23 @@ class ProposalRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def mark_notified(
+        self, proposal_id: str, *, notified_at: datetime,
+    ) -> Optional[TradeProposal]:
+        """Records the moment this proposal's notification was sent
+        (P-091), which is where the approval TTL is measured from.
+
+        Deliberately FORGIVING, unlike record_decision/expire_pending: a
+        missing proposal returns None and an already-notified or
+        already-decided proposal is returned unchanged. This is a
+        bookkeeping write on the notification path, and the one thing it
+        must never do is raise there -- a proposal that reached the
+        Controller must not be undone because its timestamp could not be
+        stored. The cost of a failed write is the OLD behavior (the TTL
+        falls back to proposal_created_at), never a lost proposal."""
+        raise NotImplementedError
+
+    @abstractmethod
     def get(self, proposal_id: str) -> Optional[TradeProposal]:
         raise NotImplementedError
 
@@ -315,6 +332,16 @@ class InMemoryProposalRepository(ProposalRepository):
         expired = existing.expire(expired_at=expired_at)
         self._by_id[proposal_id] = expired
         return expired
+
+    def mark_notified(
+        self, proposal_id: str, *, notified_at: datetime,
+    ) -> Optional[TradeProposal]:
+        existing = self._by_id.get(proposal_id)
+        if existing is None:
+            return None
+        updated = existing.mark_notified(notified_at=notified_at)
+        self._by_id[proposal_id] = updated
+        return updated
 
     def get(self, proposal_id: str) -> Optional[TradeProposal]:
         return self._by_id.get(proposal_id)
