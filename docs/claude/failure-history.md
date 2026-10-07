@@ -194,3 +194,45 @@ Claude to drop the work that was actually in progress.
 not only for the hazard. "I did not see protection" is not "there is no
 protection" — and a safety claim carries the heavier burden of proof,
 not the lighter one.
+
+## 2026-10-07 — a manual launch command for a service systemd already owned
+
+**What happened.** The Controller asked for the engine restart command.
+Claude gave a long manual one: read the running process's `cmdline`,
+`kill -TERM` it, and relaunch with `setsid nohup`. It worked, and the
+engine ran.
+
+It was also wrong. The engine on that VM is `trading-engine.service`, an
+**enabled** systemd user unit with `Restart=always` and
+`RestartSec=310`. The manual process took the engine lock, and the
+legitimate service was then refused every five minutes for the next
+twenty, each refusal sending the Controller a "PREFLIGHT paper session
+ready" message that described a process which had already died.
+
+The Controller reported the symptom himself — two identical "ready"
+messages six minutes apart — and the investigation that followed cost
+most of an hour before the service was even looked at.
+
+**What Claude actually did wrong.** It read the process to copy its
+flags, and never asked the prior question: *who starts this process?*
+`systemctl --user list-units` and `systemctl --user cat` were one
+command away, and the two unit files Claude later read both referenced
+`trading-engine.service` by name in their own comments.
+
+**The lesson.** Before stopping or starting a long-running process on a
+host, establish what supervises it. A process with a supervisor has
+exactly one correct restart:
+
+```
+systemctl --user restart trading-engine.service
+```
+
+A manual relaunch of a supervised process does not replace the
+supervisor — it competes with it, and on this system the competition is
+invisible except as duplicate notifications.
+
+**The generalisation,** which is the same shape as the 2026-10-05
+universe-guard incident recorded above: Claude searched for how to do
+the thing and not for what already does it. "Search for the guard, not
+only for the hazard" there; "search for the supervisor, not only for the
+process" here.

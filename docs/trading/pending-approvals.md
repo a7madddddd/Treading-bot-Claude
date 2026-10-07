@@ -3843,3 +3843,54 @@ pending proposal is superseded. Nothing in the system records per-proposal
 price drift across a decision window yet, so that recording is the first
 implementation step, and the band is set from its distribution rather
 than chosen.
+
+---
+
+## P-095 — a refused engine start reports "ready" and then goes silent
+
+**Status:** OPEN — proposed, awaiting the Controller
+**Severity:** the Controller cannot tell a successful start from a
+failed one, and the message he gets says "ready"
+
+### What happens now
+
+`scripts/run_paper_session.py` sends the preflight notification BEFORE
+`engine.start()`:
+
+```
+1. preflight notification    -- "paper session ready"
+2. engine.start(now)         -- acquires the lock; RAISES if held
+3. "Engine live..." message  -- never reached if step 2 raised
+```
+
+So a start refused by `EngineLockHeldError` sends the Controller
+"PREFLIGHT paper session ready" and then nothing. The traceback goes to
+`logs/engine.log` only.
+
+### The real cost, measured on 2026-10-07
+
+`trading-engine.service` is `Restart=always` with `RestartSec=310`, so a
+refused start retries every five minutes and ten seconds. The Controller
+received repeated "ready" messages about six minutes apart — 310 seconds
+plus the start's own duration — with no indication that any of them had
+failed. It took an hour of investigation to establish that the engine
+was healthy and the messages were from a service being correctly
+refused.
+
+The dangerous case is the inverse: if the engine were genuinely dead and
+a start failed for some other reason, the Controller would receive the
+same "ready" message and conclude the system was running.
+
+### Proposed fix
+
+Wrap `engine.start()` so `EngineLockHeldError` sends a CRITICAL
+notification naming the pid and host that hold the lock and that
+holder's last heartbeat, then exits. No trading behavior is touched — it
+is a startup failure path that currently has no notification at all.
+
+Worth considering in the same change: move the preflight message to
+AFTER `engine.start()` succeeds, so "ready" can never describe a process
+that did not start.
+
+**Waiting on the Controller** because it is a code change outside the
+push-without-asking list, not because it is risky.

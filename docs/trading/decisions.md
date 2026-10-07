@@ -7316,3 +7316,62 @@ political signal.
 - `src/engine/deep_research.py` — `snapshot_is_previous_session`, the
   conditional heading, `_call_snapshot` reads `_fallback_source`
 - `tests/engine/test_engine.py` — the fixture correction above
+
+## D-0091 — one universe refresh a day, at 06:00 ET, from the systemd timer only
+
+- **Date:** 2026-10-07
+- **Status:** APPROVED and EXECUTED by the Controller on the VM
+- **Approved by:** Controller (he ran the removal himself)
+
+### What was found
+
+The VM had TWO universe refreshes, discovered while tracing repeated
+Telegram startup messages:
+
+```
+systemd user timer   universe-refresh.timer      10:00 GMT   = 06:00 ET
+crontab              run_universe_selection.py   13:00 UTC   = 09:00 ET  Mon-Fri
+```
+
+The cron copy ran **thirty minutes before the opening bell**, and
+P-032's guard did not stop it because the market is not open at 09:00
+ET. It enriched the whole universe — one bars request per symbol across
+roughly twelve thousand symbols — out of the SAME Alpaca account quota
+the engine needs for its scheduled checks.
+
+### Why it matters, with the day's own timeline
+
+```
+13:00 UTC  cron universe refresh starts consuming the shared quota
+13:28 UTC  the engine's first scheduled check fires (09:28:31 ET)
+```
+
+Nine HTTP 429 alerts reached the Controller that morning. P-085 had
+already traced them to "the universe refresh saturating the shared
+quota" — this entry names WHICH refresh: the cron copy, not the timer.
+The 06:00 ET timer finishes long before any check.
+
+### Decision
+
+The crontab line is removed. The systemd timer at 06:00 ET is the only
+universe refresh.
+
+```
+crontab -l | grep -v run_universe_selection | crontab -
+```
+
+Verified after: `crontab -l` returns empty.
+
+### The risk this creates, stated plainly
+
+With cron gone, a failed or disabled timer leaves NO refresh at all, and
+D-0026's no-universe rule then means no new trade that day. The timer
+reported a successful run today at 10:00 GMT, so it is alive. **The
+check that matters is a fresh `universe_snapshots` row tomorrow**, and
+it is the first thing to confirm.
+
+### The prediction to falsify
+
+If no 429 alerts arrive tomorrow morning, the diagnosis holds. If they
+arrive anyway, the cause is something else and the investigation
+reopens. Recorded as a prediction, not a conclusion.
