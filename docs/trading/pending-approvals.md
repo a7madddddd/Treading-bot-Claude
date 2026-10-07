@@ -3556,3 +3556,109 @@ nothing. It is NOT the old injection and must not be implemented as it.
 **Check once P-089 has its numbers:** are any of the politically-bought
 names in the snapshot? The current signal set is led by MSFT, AMAT, RSG,
 QSR, OTIS, MA, WFC, JPM, COST, ORCL.
+
+---
+
+## P-091 — the 60-minute approval clock starts ~10 minutes before the Controller sees the proposal
+
+**Status:** OPEN — diagnosed from code and measured twice on 2026-10-07
+**Severity:** the Controller silently loses a sixth of every decision window
+
+### Measured, from the live log
+
+```
+proposal 1   created 18:28:43.288   sent 18:38:35.693   gap 9m 52s
+proposal 2   created 19:28:44.676   sent 19:38:31.054   gap 9m 47s
+```
+
+### Why
+
+`src/engine/engine.py` (_check_watchlist, the new-proposal path) runs in
+this order:
+
+```
+1. start_trade(...)   -> the proposal row is saved, proposal_created_at = now
+2. self._enrich(...)  -> the research report is assembled
+3. self._notify(...)  -> the message is sent
+```
+
+The TTL is measured from `proposal_created_at`:
+
+```
+PROPOSAL_TTL_SECONDS = 3600.0
+age_seconds = (now - proposal.proposal_created_at).total_seconds()
+```
+
+So every second spent in step 2 is taken out of the Controller's hour.
+Measured: he gets about 50 minutes, not 60. On 2026-10-07 PLXS expired
+at 15:28:44 ET on a clock that had started at 14:28:43 ET, while the
+message had only reached him at 14:38:35 ET.
+
+A second effect: the price in the message is the price at step 1. By the
+time the Controller reads it, it is ten minutes stale, and the limit
+order he approves is priced off that older number.
+
+### Options, not yet decided
+
+1. Fetch the research for the symbol BEFORE `start_trade`, so the clock
+   starts after the slow work. The research call needs only the symbol,
+   so this is a reordering, not a behavior change. Costs research calls
+   on a symbol that a later check might still decline.
+2. Put a timeout on the research assembly. Ten minutes for one symbol
+   means an external call is hanging with no cap. This is worth doing
+   whichever option is chosen.
+3. Start the TTL at send time instead of creation time. Needs a new
+   column; `approval_expires_at` already exists and is unused (NULL on
+   every row inspected).
+4. Raise the TTL. Rejected as a fix: it hides the defect instead of
+   removing it, and leaves the stale-price effect untouched.
+
+**RECOMMENDATION: 2 together with 1.** The timeout removes the
+pathological case, the reordering removes the structural one. Neither
+changes any approved trading rule — no threshold, no sizing, no ladder
+level moves.
+
+**Waiting on the Controller.** This touches the approval workflow, so no
+code is written before he decides.
+
+---
+
+## P-092 — the "Live snapshot" block in the research report is stale
+
+**Status:** OPEN — found 2026-10-07 from two logged messages
+**Severity:** it misleads the human reader, not the engine
+
+Two proposal messages for PLXS, sixty minutes apart, carry a
+byte-identical live block:
+
+```
+18:38:35 UTC   Live snapshot: $272.63   Day range $271.73-$275.51   Volume 156K
+19:38:31 UTC   Live snapshot: $272.63   Day range $271.73-$275.51   Volume 156K
+```
+
+Worse, a single message carries two contradictory ranges for the same
+day:
+
+```
+Today       $264.26 - $268.03    <- the engine's own price context
+Day range:  $271.73 - $275.51    <- the research snapshot
+```
+
+The first agrees with the database (`current_price_at_proposal =
+264.925`); the second does not agree with anything.
+
+**What is NOT affected:** the traded price. `proposed_entry`,
+`floor_trigger` and the ladder levels all derive from the engine's own
+market-data path, which was correct on both proposals. No order was ever
+priced off the stale block.
+
+**What IS affected:** the Controller's own judgement. He reads the live
+snapshot to decide whether the proposed limit is sensible. On 2026-10-07
+it made a limit sitting AT the market look like one sitting 2.9% below
+it — and Claude repeated that wrong reading back to him before checking
+the database.
+
+**Next step:** find which source fills that block and whether the value
+is cached, carried from a previous symbol, or fetched for the wrong
+date. Not yet investigated.
+
