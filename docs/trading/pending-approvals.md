@@ -3625,10 +3625,12 @@ code is written before he decides.
 
 ---
 
-## P-092 — the "Live snapshot" block in the research report is stale
+## P-092 — the "Live snapshot" block is the PREVIOUS SESSION, and it reaches a hard filter
 
-**Status:** OPEN — found 2026-10-07 from two logged messages
-**Severity:** it misleads the human reader, not the engine
+**Status:** OPEN — root cause CONFIRMED from code 2026-10-07; the fix
+touches a hard filter, so it waits for the Controller
+**Severity:** a trading filter and a score component run on yesterday's
+data; the label on the Controller's own screen says "Live"
 
 Two proposal messages for PLXS, sixty minutes apart, carry a
 byte-identical live block:
@@ -3660,9 +3662,89 @@ it made a limit sitting AT the market look like one sitting 2.9% below
 it — and Claude repeated that wrong reading back to him before checking
 the database.
 
-**Next step:** find which source fills that block and whether the value
-is cached, carried from a previous symbol, or fetched for the wrong
-date. Not yet investigated.
+### Root cause — in our own code, not in the provider
+
+`src/marketdata/polygon_source.py`, `get_ticker_snapshot()`:
+
+```
+Primary:  /v2/snapshot/locale/us/markets/stocks/tickers/{symbol}   (paid tiers)
+Fallback: /v2/aggs/ticker/{symbol}/prev                            (free tier)
+```
+
+The free-tier fallback returns the PREVIOUS SESSION's OHLCV and
+deliberately reshapes it into a `day` block "so downstream parsing is
+unchanged". Both consumers then read `day.c/h/l/v` as if it were today.
+
+That accounts for every observation: a closed session's bar does not
+change, so it was byte-identical an hour apart; and its range
+(271.73-275.51, yesterday) contradicted the engine's own range for today
+(264.26-268.03) inside one message.
+
+The fallback is honest about what it cannot do -- it leaves `prevDay`
+empty on purpose so no false %-change is computed, and it stamps itself:
+
+```
+"_fallback_source": "aggs/prev"
+```
+
+**Neither consumer reads that marker.** That is the whole defect: the
+data says what it is and nobody asks.
+
+### Where it reaches trading — this is the part that is NOT cosmetic
+
+`research_hub` sets `out["current_price"] = day.c` and
+`out["day_volume"] = day.v`, and `SymbolResearch` is the evaluator's
+input. In `src/engine/trade_evaluator.py`:
+
+```
+line 118  if r.day_volume < cfg.min_day_volume (100_000):  HARD REJECT
+line 221  score += 1.0 if r.current_price > r.sma_50 else 0.3
+line 115  if r.current_price is None: "no live price"      HARD REJECT
+```
+
+So yesterday's volume decides a hard filter, and yesterday's close
+decides a score component. The rejection reason string "no live price"
+is also wrong in wording: nothing on this path is live.
+
+`day_change_pct` is NOT affected -- the empty `prevDay` leaves it None,
+which the evaluator skips. Confirmed from the live message: its Signals
+line carries no `Day` entry.
+
+### Did it change the PLXS outcome? No -- checked, not assumed
+
+```
+day_volume   156,000 (yesterday)  vs  100,000 floor   -> passed
+current_price 272.63 (yesterday)  vs  SMA50 254.9     -> above, +1.0
+today's real  264.93              vs  SMA50 254.9     -> also above
+```
+
+Same answers either way, this time. The mechanism is still wrong: a
+symbol thin yesterday and active today is rejected, and the reverse is
+admitted, both on a number that is not today's.
+
+### The proposed fix — awaiting approval
+
+1. `research_hub` reads `_fallback_source`. When it is set, the previous
+   session's values go into clearly named fields
+   (`prev_session_close`, `prev_session_volume`) and `current_price` /
+   `day_volume` stay None rather than carrying yesterday's numbers.
+2. The evaluator then sees `day_volume is None` and skips that filter
+   instead of applying it to the wrong day. `require_price` must be
+   reviewed in the same breath, because `current_price` becoming None
+   would start rejecting for "no live price" -- the engine has a fresh
+   price of its own and that is the one that should fill this field.
+3. `deep_research` renders the section as "Previous session" with its
+   date instead of "Live snapshot".
+
+**Why this waits:** step 2 changes a hard filter's behavior, which is
+candidate selection. Per the push policy that is Controller-approved
+territory, whatever the direction of the change.
+
+**The honest alternative worth his consideration:** feed
+`current_price` and `day_volume` from the engine's OWN market-data path,
+which was correct on both PLXS proposals, and let Polygon fill only what
+it can actually serve. That removes the stale input instead of
+tolerating it.
 
 
 ---
@@ -3742,6 +3824,13 @@ how far a price drifts across a decision window yet. The honest first
 step is to record that drift for every proposal and decide once there is
 a distribution.
 
-**Blocking question for the Controller:** does he want the stale
-proposal RETIRED (option 1) or REPLACED at a fresh price (option 2)?
-The answer decides what gets measured.
+**CONTROLLER DECISION, 2026-10-07: REPLACED at a fresh price**
+(option 2). "the proposal that excluded should be replaced with a new
+price."
+
+So the design is a re-pricing supersession, not an expiry. What still
+needs measuring is the TRIGGER: how far the price must move before the
+pending proposal is superseded. Nothing in the system records per-proposal
+price drift across a decision window yet, so that recording is the first
+implementation step, and the band is set from its distribution rather
+than chosen.
