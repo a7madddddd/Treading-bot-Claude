@@ -9,11 +9,15 @@ Two filters:
      calibrated for real bid/ask spreads. When the proxy is derived
      from another source (e.g., IEX-feed intraday range, which is
      typically 1-3% of vwap for large liquid names), the hard cap
-     would reject every real symbol. The relative percentile filter
-     below is still applied in both cases -- a symbol whose proxy is
-     wide compared to its peers is still rejected.
-  2. Percentile: keep top min_spread_tightness_percentile ranked by
-     1 / max(proxy, 1e-9) so tighter proxies win.
+     would reject every real symbol.
+  2. REMOVED by D-0088: a relative percentile that kept the tightest
+     min_spread_tightness_percentile of the pool. With no true quote it
+     ran on the intraday-range proxy, making it a VOLATILITY filter
+     pulling against Stage D's volatility band over the same number.
+     Measured 2026-10-07: the two left a joint window about six
+     hundredths of a point wide, and 26 of 12,597 symbols survived the
+     day. Liquidity -- what this rule was reaching for -- is Stage A's
+     job, measured directly as dollar volume.
 
 Candidates whose proxy is None (unknown) are rejected as
 FAILED_EXECUTION_QUALITY with "unknown spread" -- the fail-closed
@@ -80,18 +84,33 @@ class ExecutionQualityStage(StageEvaluator):
                 continue
             with_proxy.append(c)
 
-        survivors, rejected = top_percentile(
-            with_proxy,
-            key=lambda c: -c.features.execution_quality_proxy,  # smaller spread => larger key
-            top_fraction=self._config.min_spread_tightness_percentile,
-        )
-        for c in rejected:
-            rejections.append(UniverseSelectionRejection(
-                candidate=c, stage=self.stage,
-                category=RejectionReasonCategory.FAILED_EXECUTION_QUALITY,
-                detail=(
-                    f"below top {self._config.min_spread_tightness_percentile*100:.0f}% "
-                    "by spread tightness"
-                ),
-            ))
-        return StageResult(survivors=survivors, rejections=tuple(rejections))
+        # D-0088: the relative "keep the tightest N% by spread" rule is
+        # REMOVED. The absolute cap above stays, and starts working the
+        # day a true bid/ask quote is available.
+        #
+        # The rule was meant to filter execution cost. With no true
+        # quote it ran on the intraday-range proxy, which is a
+        # VOLATILITY measure -- and Stage D already filters volatility,
+        # in the opposite direction. The two fought over the same
+        # number, and the overlap is where the universe went.
+        #
+        # Measured on 2026-10-07 against 92 symbols that passed Stage A:
+        #
+        #   this stage's cut:   range <= 1.72%
+        #   Stage D's floor:    ATR  >= 2.00%
+        #   and ATR - range ran +0.10 to +0.34 for these names
+        #   => the joint window was range in [~1.66%, ~1.72%]
+        #
+        # Six hundredths of a percentage point wide, which is why 26 of
+        # 12,597 symbols survived the day's run. On eight large caps
+        # checked by name, not one passed both stages: MSFT, AMAT and
+        # NVDA cleared D and failed here; JPM, MA and COST cleared here
+        # and failed D.
+        #
+        # Nothing is left unguarded. Liquidity -- the thing this stage
+        # was reaching for -- is Stage A's job and it measures it
+        # directly, as dollar volume. Volatility is Stage D's job and it
+        # is derived from the approved ladder (D-0065). What is gone is
+        # a third, inverted volatility filter nobody decided to add.
+        return StageResult(survivors=tuple(with_proxy),
+                           rejections=tuple(rejections))

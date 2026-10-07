@@ -3429,3 +3429,78 @@ trade we can see is 41 days old against a 30-day window (P-083).
 Calibrating a scale on a signal that never fires is calibrating on
 nothing. **P-083 comes first**; this one follows once real signals
 appear in `cycle_symbol_scores`.
+
+---
+
+## P-089 — D-0088's effect is predicted from a sample, not measured
+
+**Status:** OPEN — resolves itself at the next universe run
+**Severity:** the direction is certain; the size is not
+
+D-0088 removed Stage C's relative tightness rule on evidence from a
+random sample of 384 symbols, 92 of which passed Stage A. The sample is
+enough to prove the MECHANISM — eight large caps checked by name, not
+one passed both Stage C and Stage D — but it is not the pipeline.
+
+The prediction is that survivors rise from 26 into the hundreds.
+
+**The real number arrives on its own**, at the 06:00 ET universe run,
+and needs no special work:
+
+```sql
+SELECT effective_trading_date, rejection_summary_json, data_quality_json
+FROM universe_snapshots ORDER BY effective_trading_date DESC LIMIT 2;
+```
+
+Compare `survivors_to_snapshot` and the per-stage rejection counts
+against 2026-10-07's: 7,509 + 2,717 at Stage A, 1,422 at Stage C, 923 at
+Stage D, 16 at Top-N, 10 survivors.
+
+**What to watch for, and what each would mean:**
+
+- Stage C now rejects only candidates with a MISSING proxy. If it still
+  rejects thousands, the removal did not take effect — check the deploy.
+- Stage D's rejection count should rise sharply, because far more
+  candidates now reach it. That is expected, not a regression.
+- If survivors jump past a few hundred, the Top-10 cut is doing real
+  selection for the first time, and the ranking weights (momentum 40,
+  quality 30, liquidity 30) start to matter in a way they never have.
+  Those weights have never been tested against a large pool and should
+  be reviewed once the new funnel is seen.
+
+---
+
+## P-090 — A universe slot reserved for a political candidate
+
+**Status:** OPEN — deferred by Claude with the Controller's agreement, pending P-089
+**Related:** D-0058, D-0086, D-0088
+
+The Controller asked for politically-backed symbols to enter the
+universe. Reading D-0058's reasoning in the code changed the plan and he
+agreed with the change.
+
+**Why the old injection must not come back:** it added symbols AFTER the
+pipeline, skipping tradability, liquidity, the spread cap, the ATR band,
+the sector cap — and D-0056's leveraged/inverse filter, which only sees
+symbols the broker provider fetched. A politician buying a 2x inverse
+fund would have walked straight past the DXD protection that filter
+exists for.
+
+**Why it was also unnecessary:** the pipeline already evaluates every
+tradable US equity. MSFT is assessed daily. It was never blocked from
+entering — it was dropped at Stage C, with a measured range of 2.02%
+against a 1.72% cut, despite clearing Stage D's ATR band at 2.12%.
+D-0088 removed that rule.
+
+**So the open question is narrower than it looked:** after D-0088, do
+politically-backed names reach the snapshot on their own? If they do,
+nothing more is needed — the D-0058 reserved slot in the proposal cycle
+already guarantees the best one reaches the Controller.
+
+If they still do not, the safe form is a reserved slot in **Stage H**,
+among candidates that have already passed every stage. That bypasses
+nothing. It is NOT the old injection and must not be implemented as it.
+
+**Check once P-089 has its numbers:** are any of the politically-bought
+names in the snapshot? The current signal set is led by MSFT, AMAT, RSG,
+QSR, OTIS, MA, WFC, JPM, COST, ORCL.

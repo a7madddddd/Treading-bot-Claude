@@ -6984,3 +6984,132 @@ Two existing tests changed, both asserting the contract this decision
 deliberately reverses, and both rewritten to assert the new intent
 rather than deleted: an empty watchlist now records an UNSCORED cycle,
 and Layer 1's early exit now records one too.
+
+---
+
+## D-0088 — The scissors is removed, and the political push is calibrated
+**Date:** 2026-10-07
+**Status:** APPROVED by the Controller (this session), implemented,
+tested and pushed in the same session.
+**Scope:** one rule removed from Stage C, and one divisor corrected in
+the political scorer. The acceptance bar stays 60, every weight is
+unchanged, and no ladder, floor, trailing, sizing or risk limit is
+touched.
+
+### Part 1 — Stage C's relative tightness rule is removed
+
+Stage C has two rules. The absolute cap (0.15% of price) applies only
+when the proxy is a TRUE bid/ask quote, and our free IEX feed never
+gives one, so it has never fired. The only rule in force was the
+relative one: keep the tightest 40% of the pool by the intraday-range
+proxy.
+
+**That proxy is a volatility measure.** Stage D also filters volatility
+— in the opposite direction, demanding ATR between 2% and 4%. The two
+were fighting over the same number.
+
+Measured on 2026-10-07 against a random sample of 384 symbols, 92 of
+which passed Stage A:
+
+```
+Stage C cut:        range <= 1.72%
+Stage D floor:      ATR  >= 2.00%
+ATR - range:        +0.10 to +0.34 for the names checked
+joint window:       range in roughly [1.66%, 1.72%]
+```
+
+Six hundredths of a percentage point wide. That is why **26 of 12,597**
+symbols survived the day's real run.
+
+Checked by name, eight large caps, **not one passed both stages**:
+
+```
+MSFT   range 2.02   atr 2.12    cleared D, failed C
+AMAT   range 3.02   atr 3.49    cleared D, failed C
+NVDA   range 1.83   atr 2.17    cleared D, failed C
+JPM    range 1.72   atr 1.95    cleared C, failed D
+MA     range 1.46   atr 1.49    cleared C, failed D
+COST   range 1.42   atr 1.43    cleared C, failed D
+WMT    range 1.72   atr 1.81    failed both
+ORCL   range 3.90   atr 4.66    failed both
+```
+
+**Nothing is left unguarded.** Liquidity — what the rule was reaching
+for — is Stage A's job, and it measures it directly as dollar volume.
+Volatility is Stage D's job, derived from the approved ladder (D-0065).
+What is gone is a third, inverted volatility filter nobody decided to
+add. The absolute cap is kept and starts working the day a real quote
+feed exists.
+
+`min_spread_tightness_percentile` is now read by nothing. It is kept in
+the config so stored configs still load and so the value that was in
+force is not erased, and is documented as unread — this project has
+enough silently-inert settings already.
+
+**Test coverage was the reason this survived so long.** The stage's
+existing tests used one or two candidates, and keeping "the top 40%" of
+a single candidate keeps it. The rule could never fail a test. Five new
+tests use enough candidates for a percentile to bite; four of them were
+confirmed to FAIL against the old code and pass against the new, so they
+test the change rather than the weather.
+
+### Part 2 — the political bonus is normalized against reality
+
+`_score_political` divided the composite signal by its theoretical
+maximum of 25. Reaching 25 needs five distinct whitelisted politicians
+buying the same ticker inside fourteen days. Over twelve years of real
+trades for this exact whitelist — 179 firings — that never happened:
+
+```
+two buyers     189 times   signal ~5.0    ->  3.18 of 15 points
+three buyers    15 times   signal ~10.8   ->  6.48 of 15 points
+four or more     0 times
+highest signal ever observed: 10.8
+```
+
+A nominal 15-point bonus was delivering a median of 3.18. Raising the
+weight would not have fixed that — it scales the same fraction.
+
+`POLITICAL_SIGNAL_CEILING = 11.0`, the observed ceiling rounded up:
+
+```
+two buyers   -> about  7 of 15      a symbol at 53 reaches the bar
+three buyers -> about 15 of 15      a symbol at 45 reaches the bar
+```
+
+This is the Controller's stated design, in his words: the bar stays 60
+for everyone, nobody is penalised, and a politically-backed symbol gets
+a push big enough to matter. Still clamped at the weight, so a widened
+whitelist cannot push the component past 15.
+
+### What this does NOT do
+
+**It does not let the political source inject symbols.** That remains
+removed by D-0058, and this decision deliberately leaves it removed. The
+Controller asked for injection; reading D-0058's own reasoning in the
+code changed the plan, and he agreed: the old injection added symbols
+AFTER the pipeline, skipping tradability, liquidity, the spread cap, the
+ATR band, the sector cap — and D-0056's leveraged/inverse filter, so a
+politician buying a 2x inverse fund would have walked straight past the
+DXD protection.
+
+It is also unnecessary. The pipeline already evaluates every tradable US
+equity, so MSFT is assessed every single day. It was not blocked from
+entering; it was dropped at Stage C — which Part 1 just removed. If a
+reserved universe slot is still wanted after this, it belongs in Stage
+H, among symbols that already passed everything, and it bypasses nothing.
+
+### Expected effect, and the honest caveat
+
+Survivors should rise from 26 into the hundreds, so "top 10" becomes a
+real choice instead of nearly the whole pool. **This is a prediction
+from a 92-symbol sample, not a measurement of the full pipeline.** The
+real number arrives with tomorrow's 06:00 universe run, and
+`universe_snapshots.rejection_summary_json` will show it stage by stage.
+
+### Tests
+
+Full suite: **1833 passed, 119 subtests** (was 1822 / 113). Eleven new:
+five for the removed rule, six for the calibration, including the
+Controller's own example — 53 on the other components plus two
+political buyers must reach 60.

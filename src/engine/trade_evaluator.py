@@ -303,13 +303,49 @@ def _score_trend(r: SymbolResearch, cfg: EvaluatorConfig) -> float:
 
 # ---- Political signal (D-0050 Phase B.26) ---------------------------
 
+POLITICAL_SIGNAL_CEILING = 11.0
+"""D-0088. The composite political signal is divided by THIS, not by its
+theoretical maximum of 25.
+
+25 requires five distinct whitelisted politicians buying the same ticker
+inside fourteen days. Measured over twelve years of real trades for this
+exact whitelist -- 179 firings -- that has never once happened:
+
+    two buyers     189 times   signal ~5.0    ->  3.18 of 15 points
+    three buyers    15 times   signal ~10.8   ->  6.48 of 15 points
+    four or more     0 times
+    highest signal ever observed: 10.8
+
+So a nominal 15-point bonus was delivering a median of 3.18. Dividing by
+a ceiling nobody reaches is the same mistake as marking an exam out of
+100 when the paper only contains 43 marks' worth of questions -- and
+raising the weight would not fix it, only scale the same fraction.
+
+11.0 is the observed ceiling rounded up, so the scale now spends its
+full range on what actually occurs:
+
+    two buyers   -> about  7 of 15      a symbol at 53 reaches the bar
+    three buyers -> about 15 of 15      a symbol at 45 reaches the bar
+
+That is the Controller's stated design: the acceptance bar stays 60 for
+everyone, nobody is penalised, and a politically-backed symbol gets a
+push large enough to matter.
+
+Still clamped at 1.0, so a sixth politician or a widened whitelist
+cannot push the component past its weight. If the whitelist grows, this
+constant is re-derived from the new distribution -- it is a measurement,
+not a preference, and P-088 records the data it came from.
+"""
+
+
 def _score_political(r: SymbolResearch, cfg: EvaluatorConfig) -> float:
-    """0..weight_political. Driven by the composite weighted_signal
-    the cluster builder produces (0..25) → mapped to 0..weight_political."""
+    """0..weight_political, from the cluster builder's composite signal
+    normalized against its MEASURED ceiling (see
+    POLITICAL_SIGNAL_CEILING) rather than its theoretical one."""
     sig = getattr(r, "political_weighted_signal", 0.0) or 0.0
     if sig <= 0:
         return 0.0
-    normalized = min(1.0, sig / 25.0)
+    normalized = min(1.0, sig / POLITICAL_SIGNAL_CEILING)
     return normalized * cfg.weight_political
 
 

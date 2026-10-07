@@ -167,3 +167,58 @@ class TestEmptyIsNotFailure(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestD0088ThePoliticalPushIsCalibrated(unittest.TestCase):
+    """D-0088. The political bonus was normalized against a theoretical
+    maximum of 25, which needs FIVE distinct whitelisted buyers of the
+    same ticker inside fourteen days. Over twelve years of real trades
+    for this whitelist -- 179 firings -- that never happened once. The
+    highest composite ever observed was 10.8, so a nominal 15-point
+    bonus delivered a median of 3.18.
+    """
+
+    def _points(self, signal):
+        from engine.trade_evaluator import _score_political
+        r = SymbolResearch(symbol="X", collected_at=datetime.utcnow())
+        r.political_weighted_signal = signal
+        return _score_political(r, DEFAULT_CONFIG)
+
+    def test_two_buyers_now_push_about_seven_points(self):
+        """Measured signal for two distinct buyers is ~5.0-5.3."""
+        self.assertAlmostEqual(self._points(5.3), 7.2, places=1)
+
+    def test_three_buyers_now_push_nearly_the_full_weight(self):
+        """Measured signal for three distinct buyers is ~10.6-10.8."""
+        self.assertGreater(self._points(10.8), 14.0)
+
+    def test_the_old_scale_delivered_a_fifth_of_that(self):
+        """What the numbers were before, so the change is visible in the
+        suite rather than only in the decision log."""
+        old_two = 5.3 / 25.0 * DEFAULT_CONFIG.weight_political
+        old_three = 10.8 / 25.0 * DEFAULT_CONFIG.weight_political
+        self.assertAlmostEqual(old_two, 3.18, places=2)
+        self.assertAlmostEqual(old_three, 6.48, places=2)
+        self.assertGreater(self._points(5.3), old_two * 2)
+
+    def test_the_push_actually_carries_a_symbol_over_the_bar(self):
+        """The Controller's own example: a symbol at 53 on the other six
+        components, with two political buyers, must reach 60."""
+        from engine.engine import Engine
+        self.assertGreaterEqual(53.0 + self._points(5.3), Engine._MIN_SCORE)
+
+    def test_no_signal_is_still_no_points(self):
+        for sig in (0.0, -1.0, None):
+            with self.subTest(sig=sig):
+                r = SymbolResearch(symbol="X", collected_at=datetime.utcnow())
+                r.political_weighted_signal = sig
+                from engine.trade_evaluator import _score_political
+                self.assertEqual(_score_political(r, DEFAULT_CONFIG), 0.0)
+
+    def test_it_can_never_exceed_its_weight(self):
+        """A widened whitelist could push the raw signal past the
+        measured ceiling; the clamp must hold."""
+        for sig in (11.0, 25.0, 1000.0):
+            with self.subTest(sig=sig):
+                self.assertLessEqual(self._points(sig),
+                                     DEFAULT_CONFIG.weight_political)

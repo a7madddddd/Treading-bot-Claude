@@ -87,8 +87,11 @@ class TestExecutionQualityStage(unittest.TestCase):
     def test_non_true_quote_bypasses_hard_cap(self):
         """Regression (B24): when execution_quality_proxy_is_true_quote
         is False (e.g. an IEX intraday-range proxy), the absolute
-        max_spread_fraction hard cap is skipped. The percentile
-        filter still applies."""
+        max_spread_fraction hard cap is skipped.
+
+        D-0088 removed the sentence that used to end this docstring --
+        "The percentile filter still applies" -- because that filter is
+        gone. See TestD0088 below for why."""
         c_wide = candidate("W", spread=0.02, spread_is_true_quote=False)
         result = ExecutionQualityStage(CFG).evaluate((c_wide,),
                                                      DATE, regime())
@@ -103,6 +106,79 @@ class TestExecutionQualityStage(unittest.TestCase):
                                                      DATE, regime())
         self.assertEqual(len(result.survivors), 0)
         self.assertEqual(len(result.rejections), 1)
+
+
+class TestD0088TheRelativeTightnessRuleIsGone(unittest.TestCase):
+    """D-0088. The "keep the tightest 40% by spread" rule is removed.
+
+    It was meant to filter execution COST, but with no true bid/ask
+    quote it ran on the intraday-range proxy, which measures
+    VOLATILITY -- and Stage D already filters volatility, in the
+    opposite direction. The two fought over the same number.
+
+    Measured on 2026-10-07 across 92 symbols that passed Stage A: this
+    stage's cut was range <= 1.72% while Stage D's floor was ATR >=
+    2.00%, and ATR - range ran +0.10 to +0.34 for the names checked.
+    The joint window was therefore about six hundredths of a point
+    wide, and 26 of 12,597 symbols survived the day. Of eight large
+    caps checked by name NOT ONE passed both stages: MSFT, AMAT and
+    NVDA cleared D and failed here; JPM, MA and COST cleared here and
+    failed D.
+
+    These tests use enough candidates for a percentile to actually
+    bite. The previous ones used one or two, where keeping "the top
+    40%" of a single candidate keeps it -- which is why removing the
+    rule broke nothing and why it needs covering now.
+    """
+
+    def _ten(self):
+        """Nine tight candidates and one four times wider."""
+        tight = [candidate(f"T{i}", spread=0.001 + i * 0.0001,
+                           spread_is_true_quote=False) for i in range(9)]
+        wide = candidate("WIDE", spread=0.004, spread_is_true_quote=False)
+        return tuple(tight + [wide])
+
+    def test_the_widest_of_ten_now_SURVIVES(self):
+        result = ExecutionQualityStage(CFG).evaluate(self._ten(), DATE,
+                                                     regime())
+        tickers = {c.raw.ticker for c in result.survivors}
+        self.assertIn("WIDE", tickers)
+        self.assertEqual(len(result.survivors), 10)
+
+    def test_nothing_is_rejected_for_relative_tightness(self):
+        result = ExecutionQualityStage(CFG).evaluate(self._ten(), DATE,
+                                                     regime())
+        self.assertEqual(result.rejections, ())
+
+    def test_a_MISSING_proxy_is_still_rejected(self):
+        """The data-quality half of this stage is untouched: we still
+        refuse a candidate we cannot measure at all."""
+        cands = self._ten() + (candidate("NODATA", spread=None),)
+        result = ExecutionQualityStage(CFG).evaluate(cands, DATE, regime())
+        tickers = {c.raw.ticker for c in result.survivors}
+        self.assertNotIn("NODATA", tickers)
+        self.assertEqual(len(result.rejections), 1)
+
+    def test_a_TRUE_quote_over_the_cap_is_still_rejected(self):
+        """The absolute cap is kept and starts working the day a real
+        bid/ask feed exists. Removing the relative rule must not have
+        weakened it."""
+        cands = self._ten() + (candidate("BADQUOTE", spread=0.02,
+                                         spread_is_true_quote=True),)
+        result = ExecutionQualityStage(CFG).evaluate(cands, DATE, regime())
+        tickers = {c.raw.ticker for c in result.survivors}
+        self.assertNotIn("BADQUOTE", tickers)
+
+    def test_the_MSFT_case_from_the_incident(self):
+        """MSFT's measured range was 2.02% against a 1.72% cut. Under
+        the old rule it was dropped here despite clearing Stage D's ATR
+        band at 2.12%."""
+        peers = [candidate(f"P{i}", spread=0.0150 + i * 0.0001,
+                           spread_is_true_quote=False) for i in range(20)]
+        msft = candidate("MSFT", spread=0.0202, spread_is_true_quote=False)
+        result = ExecutionQualityStage(CFG).evaluate(
+            tuple(peers + [msft]), DATE, regime())
+        self.assertIn("MSFT", {c.raw.ticker for c in result.survivors})
 
 
 class TestStrategyMechanicsFitStage(unittest.TestCase):

@@ -75,6 +75,12 @@ class UniverseSelectionConfig:
     # Stage C
     max_spread_fraction: float = 0.0015
     min_spread_tightness_percentile: float = 0.40
+    """D-0088: NO LONGER READ. The relative tightness rule it
+    configured was removed because, with no true bid/ask quote, it
+    ran on the intraday-range proxy and became a second volatility
+    filter fighting Stage D over the same number. The field is kept
+    so existing stored configs still load and so the number that was
+    in force is not erased from the record; nothing reads it."""
 
     # Stage D
     min_atr_fraction: float = 0.02
