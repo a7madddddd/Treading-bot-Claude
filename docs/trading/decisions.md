@@ -7375,3 +7375,54 @@ it is the first thing to confirm.
 If no 429 alerts arrive tomorrow morning, the diagnosis holds. If they
 arrive anyway, the cause is something else and the investigation
 reopens. Recorded as a prediction, not a conclusion.
+
+## D-0092 — D-0091 is REVERSED: the cron universe refresh is restored
+
+- **Date:** 2026-10-07
+- **Status:** APPROVED and EXECUTED by the Controller on the VM
+- **Supersedes:** D-0091
+- **Approved by:** Controller (he restored the line himself)
+
+D-0091 removed the 13:00 UTC crontab universe refresh as a duplicate of
+the 10:00 GMT systemd timer. The Controller restored it, verbatim, and
+`crontab -l` confirms it is back byte-for-byte.
+
+**The decision stands as his.** What follows is recorded because the
+underlying conflict was measured and has not gone away, not to reopen
+the decision.
+
+### What was actually lost, and what was not
+
+Claude proposed the removal; the Controller ran it. `crontab -l` had
+printed exactly ONE line before the removal, and the removal filtered on
+`run_universe_selection` alone, so nothing else could have been
+affected. The real schedule — `universe-refresh.timer`,
+`db-backup.timer`, `trading-engine.service` — lives in systemd user
+units and was never touched. Verified after: four timers listed,
+`db-backup` had run at 20:30 and `universe-refresh` at 10:00.
+
+### The conflict that remains
+
+```
+11,683 symbols at one bars request each
+~58 minutes at Alpaca's common 200/min
+cron starts 13:00 UTC = 09:00 ET  ->  runs until ~09:58 ET
+the engine's first scheduled check:   09:30 ET
+```
+
+So the cron run spans the opening bell AND the first check, out of the
+same account quota. That window is exactly where nine HTTP 429 alerts
+reached the Controller on the morning of 2026-10-07.
+
+### The option neither D-0091 nor this reversal considered
+
+The Controller's reason for wanting a second refresh is redundancy: if
+the 06:00 ET timer fails, the day still gets a universe. Removing it
+removed that safety net, which is why removal was the wrong answer.
+
+**Moving it removes the collision without removing the redundancy.** At
+11:00 UTC (07:00 ET) the same run finishes around 08:00 ET, ninety
+minutes before the first check, and still catches a failed 06:00 timer.
+
+Offered to the Controller as a single-field change to the existing line.
+Not applied: the schedule is his.
