@@ -3252,3 +3252,44 @@ a filing becomes public, not when the member traded 71 days earlier.
 
 Full measurements and the source comparison:
 `docs/trading/political-data-source-research-2026-10-06.md`
+
+---
+
+## P-086 — The shared broker quota is managed by arithmetic, not by a counter
+
+**Status:** OPEN — accepted limitation of D-0085, recorded so it is not rediscovered
+**Severity:** low today, and it grows silently with every new consumer
+
+D-0085 stops the universe refresh starving the engine by pacing the
+refresh at 150 requests/minute, leaving roughly 50/minute spare against
+a commonly documented 200/minute tier while the engine needs about
+10/minute with five open positions.
+
+**That margin is arithmetic on paper. Nothing enforces it.** The two
+processes do not share a counter, the engine's own usage is unthrottled,
+and the 200/minute figure is the documented tier rather than a number
+read back from the broker.
+
+Consequences, stated plainly:
+
+- A third consumer of the same account — another script, a second
+  engine, a manual tool — eats the margin without anything noticing.
+- More open positions raise the engine's rate. At 12 concurrent trades,
+  the derived maximum, the engine needs ~24/minute rather than ~10.
+  Still inside the margin, but the margin was not sized for growth.
+- If the broker's real limit is lower than documented, the pacing is
+  simply wrong and the symptom is the same 429s.
+
+**The proper fix, when it is worth the work:** one shared token budget
+that both processes draw from, with the engine holding priority — a
+Floor check must always win against an enrichment request. That is a
+real piece of infrastructure, not a constant, and today's margin does
+not justify it.
+
+**What would make it urgent:** 429s reappearing after D-0085 is
+deployed. With notifications now written to the log (D-0085), that is a
+`grep` rather than another morning of pasted messages:
+
+```
+grep "429" logs/engine.log
+```

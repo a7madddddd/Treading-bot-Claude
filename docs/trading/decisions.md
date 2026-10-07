@@ -6478,3 +6478,144 @@ Full suite: **1751 passed, 54 subtests.** No regressions.
 `cycle_symbol_scores` rows written before today carry -9.0 in
 `s_risk_discount`; later rows carry 0.0 unless a real rule fires. Any
 day-over-day comparison must account for this date.
+
+---
+
+## D-0085 — The universe refresh stops starving the engine, and one incident costs one message
+**Date:** 2026-10-07
+**Status:** APPROVED by the Controller (this session), implemented and
+tested in the same session. HELD, NOT PUSHED, pending his review.
+**Scope:** request pacing in the universe enricher, a logging decorator
+on the notification service, and incident grouping for market-data
+outage alerts. No weight, no threshold, no score, no pipeline stage, no
+ladder, floor, trailing, sizing or risk limit.
+
+### What happened on 2026-10-07
+
+The Controller received nine Telegram messages between 06:19 and 06:26
+ET: four CRITICAL `market_data_unavailable` alerts for QQQ, AMZN, GOOGL
+and TSLA, each with an `HTTP 429 too many requests`, and the matching
+all-clears. Each refusal is a protective Floor check that did not run.
+
+Cause, established from the VM rather than argued:
+
+```
+universe-refresh started    10:00:56 GMT = 06:00 ET
+still running at            10:44 GMT, at symbol 10,050 of ~11,683
+its own log carries         3 rate-limit hits
+engine alerts fell at       06:19-06:26 ET -- inside that window
+```
+
+The refresh issues one bars request per surviving symbol back to back —
+11,683 on the 2026-10-05 measurement — against a commonly documented
+200/min free tier. The engine asks for one price per open position every
+30 seconds for the Floor check. **Both use the same account quota.** The
+refresh fills it; the engine is refused.
+
+The engine already retries three times with 1s and 2s backoff. That
+handles a spike and cannot handle an hour of saturation. Retrying harder
+is the wrong lever.
+
+**What was NOT the cause, recorded because Claude claimed it and was
+wrong:** Claude proposed adding a guard to stop the refresh running
+during market hours, and warned that a reboot could blind the Floor
+mid-session. The Controller pushed back and said to verify. **The guard
+already exists** — `scripts/run_universe_selection.py` asks the broker
+whether the market is open, refuses if it is, and fails closed if it
+cannot tell, with P-032 named in the refusal text. The warning was built
+on memory instead of the code, which is exactly what CLAUDE.md §4
+forbids. Logged in `docs/claude/failure-history.md`.
+
+### Change 1 — pacing, `src/d0026/alpaca_enricher.py`
+
+`DEFAULT_REQUESTS_PER_MINUTE = 150.0`, enforced by a `_Pacer` that
+spaces calls by a minimum interval before each bars request.
+
+A minimum interval, not a token bucket, deliberately: a bucket permits
+a burst that empties it, and the burst is exactly what starves the
+engine for the seconds after. The clock and sleep are injectable, so the
+behaviour is tested without the suite ever sleeping.
+
+```
+150/min against ~200/min leaves ~50/min spare
+the engine needs ~10/min with five open positions  -> five-fold margin
+run time 11,683/150 = ~78 minutes, from 06:00 ET finishing ~07:18
+first D-0021 trigger 09:30 ET                      -> ~2h headroom
+```
+
+A test asserts the run still finishes before the open, because a run
+that overran 09:30 would leave the day with no snapshot, and no snapshot
+means no trading at all.
+
+### Change 2 — notifications reach disk, `src/notifications/service.py`
+
+`LoggingNotificationService` wraps any `INotificationService`, writes one
+greppable line, then delegates. Wired in `scripts/run_paper_session.py`.
+
+Until now a notification existed ONLY in Telegram. Investigating this
+morning's alerts meant asking the Controller to paste them back, because
+`grep 429 logs/engine.log` returned **0** — not because the 429s had not
+happened, but because no notification is ever written there. And since
+`send()` is contractually forbidden from raising, a Telegram outage
+loses a CRITICAL event silently.
+
+The line is written BEFORE delegating, so a transport that dies still
+leaves the trace, and a logging failure is swallowed so it can never
+block a delivery. Both pinned by tests.
+
+### Change 3 — one incident, one message, `src/engine/engine.py`
+
+Outage alerts were deduplicated per SYMBOL (P-041). Four symbols failing
+on the same cause in the same seven minutes was therefore four alerts
+and four all-clears.
+
+Now the first symbol to hit a cause opens an incident and is announced;
+later symbols with the SAME cause join silently; the all-clear fires
+once, when the last one recovers, naming every affected symbol and the
+duration.
+
+Keyed by CAUSE, not by time: an HTTP status when the message carries
+one, else the event name. A symbol failing 404 while a 429 incident is
+open gets its own alert — a different failure must never hide inside an
+open one, and a test pins it.
+
+```
+2026-10-07 replayed:   9 messages -> 2
+```
+
+**Unchanged on purpose:** the P-043 `protection_unevaluated` escalation
+stays PER SYMBOL and ungrouped. It is the message the Controller acts
+on, and grouping it would hide which position is exposed.
+
+**Unchanged on purpose:** alerts still fire when the market is closed.
+Claude first proposed silencing them, on the argument that no action is
+possible with the market shut. The Controller rejected that — he wants
+critical messages, just not nine of them — and he is right that the
+quieter design would have hidden a provider outage that began overnight.
+
+### Tests
+
+Full suite: **1774 passed, 66 subtests** (was 1751 / 54).
+
+- `tests/engine/test_d0085_quota_and_alerts.py`, 16 tests: pacing
+  (first call free, spacing, a slow caller never delayed, disabled by
+  None, nonsense rate refused, the margin and the deadline), the
+  incident key, and the logging decorator.
+- `tests/engine/test_p041_outage_alert_dedup.py`, 8 added: four symbols
+  one alert, one all-clear naming all four, the whole episode costing 2
+  messages not 9, silent joining, a different cause still alerting, a
+  recovery never silent even with lost incident state, and the
+  escalation staying per symbol.
+
+One existing test changed: `test_the_alert_says_repeats_are_suppressed`
+asserted the literal word "suppressed". The promise it exists to protect
+— that silence is expected and one all-clear will close it — is intact,
+so the test now checks that promise instead of one word, and was renamed
+to say so.
+
+### What this does NOT fix
+
+The engine's own usage is unthrottled too, and nothing enforces a global
+budget across both processes. The pacing leaves headroom by arithmetic,
+not by a shared counter. If a third consumer is ever added, the
+arithmetic has to be redone by hand. Recorded as P-086.

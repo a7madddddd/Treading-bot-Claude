@@ -49,6 +49,77 @@ _ATR_WINDOW = 14
 _MOMENTUM_LOOKBACK = 30
 _EXEC_QUALITY_WINDOW = 20
 
+DEFAULT_REQUESTS_PER_MINUTE = 150.0
+"""D-0085. Leaves headroom in the broker's rate limit for the LIVE
+ENGINE, which shares the same account quota.
+
+This job issues one bars request per surviving symbol -- 11,683 on the
+2026-10-05 measurement -- back to back. The engine meanwhile asks for
+one price per open position every 30 seconds to evaluate the protective
+Floor. On 2026-10-07 the two collided: between 06:19 and 06:26 ET, with
+this job running since 06:00, the engine was refused with HTTP 429 for
+QQQ, AMZN, GOOGL and TSLA in turn, and each refusal is a Floor check
+that did not happen. The job's own log carried 429s too, so the limit
+was genuinely saturated rather than briefly spiked.
+
+The engine already retries three times with 1s and 2s backoff, which
+handles a momentary spike and cannot handle an hour of saturation.
+Retrying harder is the wrong lever; not filling the bucket is the right
+one.
+
+150/min against a commonly documented 200/min free tier leaves ~50/min
+spare, while the engine needs about 10/min with five open positions --
+a five-fold margin, chosen so a slower day or an extra position does
+not eat it.
+
+Cost, and why it is affordable: the run stretches from roughly 58 to
+roughly 78 minutes. Started by its timer at 06:00 ET it finishes near
+07:18, and the first D-0021 trigger is 09:30 -- over two hours of
+headroom. The run is also already forbidden while the market is open
+(the guard in scripts/run_universe_selection.py), so this pacing
+protects the pre-open window, not the session.
+
+None is accepted and means "do not pace" -- for tests, and for a
+deliberate operator override.
+"""
+
+
+class _Pacer:
+    """Spaces calls so they do not exceed `requests_per_minute`.
+
+    Deliberately a minimum INTERVAL between calls rather than a token
+    bucket: a bucket permits a burst that empties it, and a burst is
+    exactly what starves the engine for the seconds that follow. The
+    clock and sleep are injectable so the behaviour is tested without
+    the suite ever sleeping.
+    """
+
+    def __init__(self, requests_per_minute, *, monotonic=None, sleep=None):
+        if requests_per_minute is not None and requests_per_minute <= 0:
+            raise AlpacaFeatureEnricherConfigError(
+                f"requests_per_minute must be positive or None; "
+                f"got {requests_per_minute!r}"
+            )
+        self._min_interval = (
+            None if requests_per_minute is None
+            else 60.0 / float(requests_per_minute)
+        )
+        import time as _time
+        self._monotonic = monotonic or _time.monotonic
+        self._sleep = sleep or _time.sleep
+        self._last: Optional[float] = None
+
+    def wait(self) -> None:
+        if self._min_interval is None:
+            return
+        now = self._monotonic()
+        if self._last is not None:
+            due = self._last + self._min_interval
+            if now < due:
+                self._sleep(due - now)
+                now = self._monotonic()
+        self._last = now
+
 
 class HttpResponse:
     __slots__ = ("status", "body")
@@ -90,6 +161,9 @@ class AlpacaFeatureEnricher:
         timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
         retry_policy=None,  # Optional common.http_retry.RetryPolicy
         sector_provider=None,  # Optional d0026.sector_provider.SectorProvider
+        requests_per_minute: Optional[float] = DEFAULT_REQUESTS_PER_MINUTE,
+        monotonic=None,     # injectable clock, for tests
+        sleep=None,         # injectable sleep, for tests
     ) -> None:
         if not key_id or not secret_key:
             raise AlpacaFeatureEnricherConfigError(
@@ -117,6 +191,8 @@ class AlpacaFeatureEnricher:
         # actually enforced in production. Without this wiring B30's
         # sector module was dormant in production (2026-09-30 Bug #2).
         self._sector_provider = sector_provider
+        self._pacer = _Pacer(requests_per_minute,
+                             monotonic=monotonic, sleep=sleep)
 
     def __call__(
         self,
@@ -185,6 +261,9 @@ class AlpacaFeatureEnricher:
         )
 
     def _fetch_bars(self, symbol: str, as_of_date: date) -> List[dict]:
+        # D-0085: pace BEFORE the request, so the live engine always has
+        # room in the shared account quota for its Floor checks.
+        self._pacer.wait()
         start = (as_of_date - timedelta(days=self._history_days)).isoformat()
         url = (
             f"{self._base}/v2/stocks/{symbol}/bars"

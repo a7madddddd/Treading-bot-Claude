@@ -89,10 +89,20 @@ class TestOutageAlertIsSentOnce(unittest.TestCase):
             self.engine.run_reconciliation_tick(now=_now())
         self.assertEqual(len(_outage_events(self.notifier)), 1)
 
-    def test_the_alert_says_repeats_are_suppressed(self):
+    def test_the_alert_PROMISES_no_repeats_and_an_all_clear(self):
+        """P-041's point is the promise, not its exact wording: the
+        Controller must be told that silence from here is expected and
+        that one all-clear will close it, or he cannot tell a quiet
+        channel from a dead one. D-0085 reworded this when grouping
+        moved from per-symbol to per-cause, so the test now checks the
+        two facts rather than one word."""
         self.engine.run_reconciliation_tick(now=_now())
-        self.assertIn("suppressed",
-                      _outage_events(self.notifier)[0].message)
+        message = _outage_events(self.notifier)[0].message
+        self.assertIn("all-clear", message)
+        self.assertTrue(
+            "grouped" in message or "suppressed" in message,
+            msg=f"the alert must say further alerts will not repeat: "
+                f"{message!r}")
 
     def test_the_price_source_is_still_polled_every_tick(self):
         # Suppressing the ALERT must not suppress the CHECK. The engine
@@ -262,3 +272,130 @@ class TestP043Escalation(unittest.TestCase):
 
     def test_threshold_is_five_minutes_at_the_30s_interval(self):
         self.assertEqual(Engine.OUTAGE_ESCALATION_MISSES * 30, 300)
+
+
+class _PerSymbolMarketData(FakeMarketDataSource):
+    """Fails only the symbols in `failing`, so an incident can be opened
+    and closed symbol by symbol -- which is how 2026-10-07 actually
+    unfolded: four symbols refused minutes apart, each recovering before
+    the next failed."""
+
+    def __init__(self, failing, status="429"):
+        super().__init__()
+        self.failing = set(failing)
+        self.status = status
+
+    def get_last_trade(self, symbol: str) -> float:
+        if symbol in self.failing:
+            raise MarketDataUnavailableError(
+                f"provider returned HTTP {self.status} for {symbol!r}")
+        return 100.0
+
+
+class TestOneIncidentCostsOneMessage(unittest.TestCase):
+    """D-0085. On 2026-10-07 four symbols hit the SAME rate limit in the
+    same seven minutes and the Controller received nine messages for
+    what was one event: the daily universe refresh saturating the shared
+    account quota."""
+
+    def _engine_with(self, symbols, md):
+        repos = _repos()
+        engine, _, _, _, notifier, _ = _make_engine(*repos, market_data=md)
+        for i, sym in enumerate(symbols):
+            _active_trade(repos[0], trade_id=f"T-{i}", symbol=sym)
+        engine.start(now=_now())
+        notifier.events.clear()
+        return engine, notifier
+
+    def test_four_symbols_one_cause_produce_ONE_alert(self):
+        md = _PerSymbolMarketData(["QQQ", "AMZN", "GOOGL", "TSLA"])
+        engine, notifier = self._engine_with(
+            ["QQQ", "AMZN", "GOOGL", "TSLA"], md)
+        engine.run_reconciliation_tick(now=_now())
+        self.assertEqual(len(_outage_events(notifier)), 1)
+
+    def test_and_ONE_all_clear_naming_every_affected_symbol(self):
+        md = _PerSymbolMarketData(["QQQ", "AMZN", "GOOGL", "TSLA"])
+        engine, notifier = self._engine_with(
+            ["QQQ", "AMZN", "GOOGL", "TSLA"], md)
+        engine.run_reconciliation_tick(now=_now())
+        md.failing.clear()
+        engine.run_reconciliation_tick(now=_now())
+
+        recoveries = _recovery_events(notifier)
+        self.assertEqual(len(recoveries), 1)
+        for sym in ("QQQ", "AMZN", "GOOGL", "TSLA"):
+            with self.subTest(sym=sym):
+                self.assertIn(sym, recoveries[0].message)
+        self.assertIn("Affected (4)", recoveries[0].message)
+
+    def test_the_whole_episode_costs_two_messages_not_nine(self):
+        md = _PerSymbolMarketData(["QQQ", "AMZN", "GOOGL", "TSLA"])
+        engine, notifier = self._engine_with(
+            ["QQQ", "AMZN", "GOOGL", "TSLA"], md)
+        for _ in range(14):      # seven minutes at the 30s tick
+            engine.run_reconciliation_tick(now=_now())
+        md.failing.clear()
+        engine.run_reconciliation_tick(now=_now())
+        total = len(_outage_events(notifier)) + len(_recovery_events(notifier))
+        self.assertEqual(total, 2)
+
+    def test_a_symbol_joining_an_OPEN_incident_adds_no_message(self):
+        md = _PerSymbolMarketData(["QQQ"])
+        engine, notifier = self._engine_with(["QQQ", "AMZN"], md)
+        engine.run_reconciliation_tick(now=_now())
+        self.assertEqual(len(_outage_events(notifier)), 1)
+        md.failing.add("AMZN")           # same cause, joins silently
+        engine.run_reconciliation_tick(now=_now())
+        self.assertEqual(len(_outage_events(notifier)), 1)
+
+    def test_a_DIFFERENT_cause_still_gets_its_own_alert(self):
+        """The failure mode grouping could introduce: a delisted symbol
+        going quiet inside an open rate-limit incident. It must not."""
+        repos = _repos()
+
+        class _TwoCauses(FakeMarketDataSource):
+            def get_last_trade(self, symbol: str) -> float:
+                if symbol == "QQQ":
+                    raise MarketDataUnavailableError(
+                        "provider returned HTTP 429 for 'QQQ'")
+                if symbol == "ZZZZ":
+                    raise MarketDataUnavailableError(
+                        "symbol 'ZZZZ' not found by data provider (HTTP 404)")
+                return 100.0
+
+        engine, _, _, _, notifier, _ = _make_engine(
+            *repos, market_data=_TwoCauses())
+        _active_trade(repos[0], trade_id="T-1", symbol="QQQ")
+        _active_trade(repos[0], trade_id="T-2", symbol="ZZZZ")
+        engine.start(now=_now())
+        notifier.events.clear()
+
+        engine.run_reconciliation_tick(now=_now())
+        self.assertEqual(len(_outage_events(notifier)), 2)
+
+    def test_a_recovery_is_NEVER_silent_even_with_lost_state(self):
+        """If incident state is missing -- an outage that opened before
+        this change, or a restart mid-incident -- the all-clear must
+        still be sent. Silence is the one outcome a recovery may never
+        have."""
+        md = _PerSymbolMarketData(["QQQ"])
+        engine, notifier = self._engine_with(["QQQ"], md)
+        engine.run_reconciliation_tick(now=_now())
+        engine._symbol_incident.clear()
+        engine._incident_symbols.clear()
+        md.failing.clear()
+        engine.run_reconciliation_tick(now=_now())
+        self.assertEqual(len(_recovery_events(notifier)), 1)
+
+    def test_the_per_symbol_UNPROTECTED_escalation_is_NOT_grouped(self):
+        """The message the Controller actually acts on stays per symbol
+        and ungrouped -- grouping it would hide which position is
+        exposed."""
+        md = _PerSymbolMarketData(["QQQ", "AMZN"])
+        engine, notifier = self._engine_with(["QQQ", "AMZN"], md)
+        for _ in range(engine.OUTAGE_ESCALATION_MISSES + 1):
+            engine.run_reconciliation_tick(now=_now())
+        escalations = [e for e in notifier.events
+                       if e.event == "protection_unevaluated"]
+        self.assertEqual({e.symbol for e in escalations}, {"QQQ", "AMZN"})
