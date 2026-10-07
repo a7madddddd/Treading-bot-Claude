@@ -150,6 +150,19 @@ def from_capitol_trades(scrapers_by_politician) -> List[PoliticalTrade]:
     return out
 
 
+def from_congress_dataset(dataset_source) -> List[PoliticalTrade]:
+    """D-0086. The dataset source already emits `PoliticalTrade` with
+    OUR canonical whitelist names, so there is nothing to normalize
+    here -- the name join is its whole job and it owns it."""
+    if dataset_source is None:
+        return []
+    try:
+        rows = dataset_source.fetch()
+    except Exception:  # noqa: BLE001
+        return []
+    return [r for r in rows if isinstance(r, PoliticalTrade)]
+
+
 def from_edisclosure(edisclosure_source) -> List[PoliticalTrade]:
     """eDisclosure gives us FILING metadata, not trade tickers (PDF
     parsing deferred). We emit a 'filing-detected' marker as a
@@ -195,12 +208,14 @@ class PoliticalAggregator:
         quiverquant=None,
         capitol_scrapers=None,
         edisclosure=None,
+        congress_dataset=None,
         max_workers: int = 4,
         deadline_seconds: float = 60.0,
     ) -> None:
         self._qq = quiverquant
         self._ct_scrapers = capitol_scrapers or {}
         self._ed = edisclosure
+        self._ds = congress_dataset
         self._max_workers = max_workers
         self._deadline = deadline_seconds
 
@@ -214,6 +229,8 @@ class PoliticalAggregator:
                 futs[ex.submit(from_capitol_trades, self._ct_scrapers)] = "capitoltrades"
             if self._ed is not None:
                 futs[ex.submit(from_edisclosure, self._ed)] = "edisclosure"
+            if self._ds is not None:
+                futs[ex.submit(from_congress_dataset, self._ds)] = "congress_dataset"
             for fut in futs:
                 try:
                     rows = fut.result(timeout=self._deadline)

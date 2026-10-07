@@ -6770,3 +6770,115 @@ The engine's own usage is unthrottled too, and nothing enforces a global
 budget across both processes. The pacing leaves headroom by arithmetic,
 not by a shared counter. If a third consumer is ever added, the
 arithmetic has to be redone by hand. Recorded as P-086.
+
+---
+
+## D-0086 — The political source is reconnected, and it yields nothing today
+**Date:** 2026-10-07
+**Status:** APPROVED by the Controller (this session), implemented,
+tested and pushed in the same session.
+**Scope:** a new data source and its wiring. No weight, no threshold, no
+window, no score formula, no pipeline stage, no ladder, floor, trailing,
+sizing or risk limit.
+
+### What was wired
+
+`src/research/congress_dataset_source.py` reads each whitelisted
+politician's trade history from a public dataset that parses the
+official STOCK Act filings itself, served as static JSON over a host
+both the research container and the VM can reach. It is registered as a
+fourth source on `PoliticalAggregator` and wired in
+`scripts/run_paper_session.py`.
+
+Chosen over the two alternatives for reasons measured on 2026-10-07 and
+written up in `docs/trading/political-data-source-research-2026-10-06.md`:
+the official House index gives the filing but not the ticker (the ticker
+is inside a PDF whose text layer is still unverified), and our own
+CapitolTrades scraper handles one politician per instance with nothing
+building the 15-instance dict, and returned 403 from the research
+container so it could not be checked against live HTML.
+
+### The join was the whole risk
+
+`politicians.lookup()` matches a normalized EXACT name, and the dataset
+spells people differently: **Rohit** Khanna, **Daniel S** Sullivan,
+**Thomas H** Tuberville, **A. Mitchell** McConnell. Joining on the
+display name would have produced a source that looks wired, fetches
+thousands of real rows, and contributes nothing, because the whitelist
+filter would drop every one — precisely how the eDisclosure adapter
+failed, silently, for weeks (P-074).
+
+So the join is on the dataset's stable filer id and this module emits
+OUR canonical names. Every pair was read from the live index, not
+inferred from a spelling rule. Three near-misses in that index are
+deliberately avoided and pinned by tests: Marjorie Taylor Greene and Al
+Green beside Mark Green, and a second Mullin record carrying zero
+purchases.
+
+14 of the 15 are covered. Chuck Schumer has no record in the dataset's
+449 filers; he stays on the whitelist and never contributes.
+
+### Verified against the LIVE source, not a fixture
+
+```
+filers        14 / 14 succeeded, zero failures
+trades        7,291 after the whitelist filter and dedup
+span          2014-10-24 -> 2026-08-27
+politicians   all 14 represented
+```
+
+### And it produces ZERO signals today. The number that matters.
+
+```
+signals built today                 0
+symbols it would add to the universe ()
+```
+
+Not a bug — arithmetic, and it is P-083 made concrete:
+
+```
+freshest TRADE date visible to us    2026-08-27   (41 days old)
+freshest FILING date visible to us   2026-09-14   (23 days old)
+the scoring window drops anything older than 30 days by TRADE date
+```
+
+Every row we can see is already outside the window on the first day we
+can see it. Measured across candidate windows on the same live data:
+
+```
+anchor   lookback  cluster   tickers firing today
+trade          30       14    0
+trade          60       30    0
+trade          90       45    0
+trade         120       60    1   MSFT
+filing         30       14    0
+filing         60       30    0
+filing         90       45    1   MSFT   (Gottheimer + Khanna)
+filing        120       60    1   MSFT
+```
+
+**So reconnecting the source does not, by itself, produce a political
+signal.** It is the prerequisite for one, and it is strictly better than
+the dead paid provider, but the Controller should expect no change to
+today's proposals from this decision alone.
+
+### What this does NOT decide
+
+The windows. `_LOOKBACK_DAYS = 30` and `_CLUSTER_WINDOW_DAYS = 14` are
+untouched, and the 0..25 signal scale that delivers a median of 3.18
+points out of a nominal 15 is untouched. Both are open as P-083 and
+P-088, and both now have live measurements attached rather than
+estimates. Changing either is a scoring change and needs its own
+approval.
+
+### Tests
+
+Full suite: **1812 passed, 106 subtests** (was 1794 / 78).
+`tests/research/test_d0086_congress_dataset.py`, 18 tests: every mapped
+name resolves on the whitelist, the dataset's own spellings provably do
+NOT, 14 of 15 covered with Schumer named as the only gap, no duplicate
+mapping, the Green and Mullin near-misses, row mapping, treasuries and
+placeholders dropped, undated rows dropped rather than guessed,
+fail-open per filer, a dead source reported as dead rather than quiet,
+and the end-to-end property the decision rests on: a fetched trade
+survives the aggregator's whitelist filter.

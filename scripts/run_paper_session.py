@@ -580,11 +580,22 @@ def main() -> int:
             from research.political_aggregator import PoliticalAggregator
             from research.edisclosure_source import EDisclosureSource
             from engine.political_universe_source import PoliticalUniverseSource
+            from research.congress_dataset_source import CongressDatasetSource
             qq = QuiverQuantSource.from_env()
             ed = EDisclosureSource()
-            agg = PoliticalAggregator(quiverquant=qq, edisclosure=ed)
+            # D-0086: the public congressional-trade dataset. The paid
+            # provider's key expired and will not be renewed (P-079),
+            # which left the political component at 0.0 for EVERY
+            # candidate -- 15 of the 90 weighted points unreachable and
+            # the D-0058 reserved slot with nothing to reserve.
+            ds = CongressDatasetSource()
+            agg = PoliticalAggregator(quiverquant=qq, edisclosure=ed,
+                                      congress_dataset=ds)
             political_universe = PoliticalUniverseSource(agg)
-            attached = "QuiverQuant" if qq else "eDisclosure-only"
+            attached = ", ".join(
+                name for name, on in (("QuiverQuant", qq is not None),
+                                      ("CongressDataset", True),
+                                      ("eDisclosure", True)) if on)
             print(f"[political] universe source ENABLED ({attached})")
         except Exception as exc:  # noqa: BLE001
             print(f"[political] init failed: {exc}")

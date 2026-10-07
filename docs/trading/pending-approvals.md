@@ -3362,3 +3362,70 @@ deployed. With notifications now written to the log (D-0085), that is a
 ```
 grep "429" logs/engine.log
 ```
+
+---
+
+## P-087 — The dataset's licence wording is a Controller question
+
+**Status:** OPEN — for the Controller, not a technical matter
+**Raised by:** D-0086
+
+The congressional-trade dataset wired in D-0086 carries an MIT licence
+on its CODE. Of the DATA it says only that it "is sourced from public
+filings and provided for research and educational purposes".
+
+The underlying filings are US public records, so the facts themselves
+are not the issue. What is unstated is whether the Controller considers
+paper trading on a daily-refreshed copy of them to sit inside
+"research", and whether that answer changes if this ever stops being
+paper.
+
+No action is proposed. It is recorded so the question is a decision
+rather than an omission, and so it is already on the board if live
+trading is ever considered.
+
+---
+
+## P-088 — The political signal scale is calibrated to something that never happens
+
+**Status:** OPEN — the Controller's question, with the measurement now done
+**Severity:** the component delivers a fifth of its nominal weight
+
+The Controller's design, stated 2026-10-07: the bar stays 60 for
+everyone, nobody is penalised, and a politically-backed symbol gets a
+small push so a 55 can cross. **That design is already what the code
+does** — `weight_political = 15` is added on top of what a symbol earns
+on the other six components, and the bar is 60 for all.
+
+The defect is not the weight. It is the mapping. The composite signal
+runs 0..25, and 25 requires FIVE distinct whitelisted buyers of the same
+ticker inside 14 days. Measured over 12 years of real trades for this
+exact whitelist, 179 firings:
+
+```
+two buyers    189 times   signal ~5.0    ->  3.18 points of 15
+three buyers   15 times   signal ~10.8   ->  6.48 points of 15
+four or more    0 times
+median delivered 3.18 | best ever 6.48 | times it reached 15: none
+```
+
+So a nominal 15-point push delivers about 3. Raising the weight to 20
+would deliver about 4; the scale, not the weight, is the binding
+constraint.
+
+**Recalibrating on the observed ceiling (~11 rather than 25) would give:**
+
+```
+two buyers    -> about  7 points      a 53 crosses 60
+three buyers  -> about 15 points      a 45 crosses 60
+```
+
+That is exactly the "small push that lets a 55 cross 60" the Controller
+described.
+
+**Do not decide this yet, for a measured reason.** D-0086 reconnected
+the source and it produces ZERO signals today, because the freshest
+trade we can see is 41 days old against a 30-day window (P-083).
+Calibrating a scale on a signal that never fires is calibrating on
+nothing. **P-083 comes first**; this one follows once real signals
+appear in `cycle_symbol_scores`.
