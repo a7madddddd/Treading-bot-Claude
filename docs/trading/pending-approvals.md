@@ -2837,7 +2837,7 @@ needs design and approval, not a patch.
 
 ## P-071 — "nothing to trade" has ONE slot a day, and the pre-open message spends it
 
-**Status:** OPEN — small, and it is what made today look silent
+**Status:** RESOLVED 2026-10-07 by D-0087 — the pre-open window no longer consumes the day's message, and an unscored cycle now leaves a row. Confirmed live: the 09:30 check fired at 09:28:31 ET and was the only message of the day.
 **Severity:** cosmetic, but it hid a real event
 
 `_notify_nothing_to_trade` deduplicates on the trading date alone:

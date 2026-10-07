@@ -298,11 +298,29 @@ class TestTheEngineRecordsEveryEvaluatedCycle(unittest.TestCase):
         rows = self._run({"A": -1.0, "B": -1.0}, ["A", "B"])
         self.assertIsNone(rows[0].best_score)
 
-    def test_an_empty_watchlist_records_NOTHING(self):
-        """Nothing was scored, so a zero row would be a lie -- it would
-        read as 'nothing was good enough' instead of 'nothing ran'."""
+    def test_an_empty_watchlist_records_an_UNSCORED_cycle(self):
+        """D-0087 reverses the original "record nothing" rule, and for a
+        reason the original could not foresee: on 2026-10-07 the 09:30
+        check found the market closed ninety seconds before the bell and
+        wrote no row, and the resulting empty table was read as a DEAD
+        ENGINE until the notification log settled it.
+
+        The original worry was right and is still honoured -- a row
+        claiming zero candidates CLEARED THE BAR would be a lie. So the
+        row written here says scored=0 with NULL score columns, which
+        the schema's CHECK already demands and which means exactly
+        "this slot ran and nothing was scored"."""
         rows = self._run({}, [])
-        self.assertEqual(rows, [])
+        self.assertEqual(len(rows), 1)
+        m = rows[0]
+        self.assertFalse(m.scored)
+        self.assertEqual(m.candidates_evaluated, 0)
+        self.assertIsNone(m.above_min_score,
+                          msg="a 0 here would read as 'nothing was good "
+                              "enough', which is the lie this must not tell")
+        self.assertIsNone(m.rejected_hard_filter)
+        self.assertIsNone(m.best_score)
+        self.assertEqual(m.proposals_created, 0)
 
     def test_the_default_engine_records_nothing_and_still_works(self):
         """Why all 1631 pre-existing tests are unaffected."""

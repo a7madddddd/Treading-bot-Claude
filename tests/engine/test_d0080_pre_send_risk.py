@@ -145,7 +145,13 @@ class TestLayer1CapsAlreadyExhausted(_Harness, unittest.TestCase):
         market_data.set_price("A", 100.0)
         engine._lock.acquire(now=_now())
         engine.run_trigger_check(now=_now())
-        self.assertEqual(rows, [])
+        # D-0087: the cycle IS recorded now, as UNSCORED. Layer 1 exits
+        # before any symbol is evaluated, so the row must say "this slot
+        # ran and scored nothing" rather than vanish -- an absent row is
+        # indistinguishable from an engine that never woke up.
+        self.assertEqual(len(rows), 1)
+        self.assertFalse(rows[0].scored)
+        self.assertIsNone(rows[0].above_min_score)
 
 
 class TestLayer2PerSymbol(_Harness, unittest.TestCase):

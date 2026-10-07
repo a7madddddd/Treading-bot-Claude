@@ -6882,3 +6882,105 @@ placeholders dropped, undated rows dropped rather than guessed,
 fail-open per filer, a dead source reported as dead rather than quiet,
 and the end-to-end property the decision rests on: a fetched trade
 survives the aggregator's whitelist filter.
+
+---
+
+## D-0087 — The first check of the day stops being thrown away
+**Date:** 2026-10-07
+**Status:** APPROVED by the Controller (this session), implemented,
+tested and pushed in the same session.
+**Closes:** P-071.
+**Scope:** when a closed-market answer is reported, and recording an
+unscored cycle. No weight, no threshold, no score, no window, no
+pipeline stage, no ladder, floor, trailing, sizing or risk limit. The
+market-open gate itself is unchanged: entries still wait.
+
+### Observed live, not reasoned about
+
+```
+[notify] 2026-10-07T13:28:31Z IMPORTANT nothing_to_trade_today
+         Reason: the broker reports the market is CLOSED right now
+cycle_metrics rows for 2026-10-07 at 09:35 ET: 0
+```
+
+13:28:31 UTC is **09:28:31 ET**. The D-0021 check times carry a +/-90s
+tolerance, so the 09:30 check fires at 09:28:30 — ninety seconds before
+the bell. The broker answered correctly. Two things then went wrong.
+
+**1. It burned the day's only message.** `_notify_nothing_to_trade`
+deduplicates on the ET trading date alone, so the first reason of the
+day wins and every later one is silenced. On a normal trading day the
+winner is always "the market is CLOSED", announced ninety seconds
+before the open — which is not news, and which then hides the reason
+that would have been.
+
+**2. It left no trace.** The cycle returned before evaluating, and
+`_record_cycle` was called only on exits that had actually scored. So
+the table held zero rows, which reads exactly like a dead engine — and
+was read that way for several minutes today, until the notification log
+(D-0085, shipped hours earlier) settled it.
+
+### Change 1 — a closed market inside the pre-open window is not news
+
+`_is_pre_open_tolerance` returns True only on a weekday, between
+`09:30 ET minus the scheduler tolerance` and the bell. Inside it, the
+closed answer returns quietly: no message, no dedup slot consumed.
+
+It is computed from the clock, not asked of the broker, because it runs
+only after the broker has already said "closed" — a second call would
+spend a request from the quota D-0085 just protected, to learn what the
+schedule already knows.
+
+Deliberately narrow, and pinned by tests: 09:28:29 is still news (the
+schedule did not put us there), 09:30:00 is not pre-open, a holiday at
+11:00 or a half-day close at 13:30 is still announced, and a weekend is
+never pre-open. **The failure this guard must not introduce is going
+quiet on a real closure, and that is the case the tests spend most of
+their attention on.**
+
+### Change 2 — a cycle that scored nothing still leaves a row
+
+`_record_unscored_cycle` writes `candidates_evaluated=0`, `scored=0` and
+NULL score columns on the exits that return before evaluating: market
+closed, caps already exhausted, macro blackout, and no candidates.
+
+This REVERSES the original D-0079 rule, which recorded nothing on those
+paths. That rule was right about the danger — a row claiming zero
+candidates *cleared the bar* would be a lie — and the schema already had
+the honest encoding for it: `scored=0` with NULLs, enforced by a CHECK.
+What the original could not foresee is that an absent row is also a lie,
+and a worse one: it cannot be told apart from an engine that never woke
+up.
+
+**Rejected implementation, recorded because it was tried:** writing the
+placeholder at the TOP of the check and letting the real row replace it.
+The database would have handled it — the table is keyed on
+(effective_date, scheduled_slot) with INSERT OR REPLACE — but it calls
+the recorder twice per cycle, which changes the recorder's contract for
+any consumer that is not an upsert. Thirteen tests failed and were right
+to. The targeted version calls it exactly once, on each path that needs
+it.
+
+### Effect
+
+```
+daily checks that reach the evaluator      6 of 7   ->   7 of 7
+the day's nothing_to_trade message         spent on a non-event -> kept
+                                           for a reason worth reading
+cycle_metrics rows on a quiet day          0 -> one per slot that ran
+```
+
+### Tests
+
+Full suite: **1822 passed, 113 subtests** (was 1812 / 106).
+`tests/engine/test_d0087_preopen_and_traces.py`, 10 tests: the exact
+timestamp from the incident, the whole tolerance window, the bell
+itself, a moment before the window, a midday holiday closure, weekends,
+that the pre-open check sends nothing, that a LATER real reason can
+still be reported, that a midday closure is still announced, and that
+the pre-open cycle is recorded as unscored.
+
+Two existing tests changed, both asserting the contract this decision
+deliberately reverses, and both rewritten to assert the new intent
+rather than deleted: an empty watchlist now records an UNSCORED cycle,
+and Layer 1's early exit now records one too.

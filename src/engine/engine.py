@@ -59,7 +59,7 @@ from __future__ import annotations
 
 import time as _time_module
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from execution.broker_client import (
@@ -91,7 +91,9 @@ from trade.repository import TradeRepository
 
 from .decision_source import ControllerDecision, DecisionKind, PendingDecisionSource
 from .lock import EngineLock
-from .schedule import D0021_TIMEZONE_ET, is_d0021_check_time
+from .schedule import (
+    D0021_TIMEZONE_ET, DEFAULT_TOLERANCE_SECONDS, is_d0021_check_time,
+)
 from .watchlist import WatchlistSource
 
 _LADDER_ACTIONS: Tuple[TradeAction, ...] = (TradeAction.LADDER_1, TradeAction.LADDER_2)
@@ -1538,6 +1540,26 @@ class Engine:
             return False
 
         if not is_open:
+            # D-0087 / P-071. The 09:30 check has a +/-90s tolerance, so
+            # on a normal trading day it FIRES AT 09:28:30 -- ninety
+            # seconds before the bell. The broker correctly answers
+            # "closed", and before this guard that answer did two
+            # damaging things: it burned the day's single
+            # nothing_to_trade message on a non-event, silencing every
+            # later and genuinely informative reason for the same date,
+            # and it consumed the first of the seven daily checks
+            # without evaluating anything.
+            #
+            # Observed live on 2026-10-07: the only message of the day
+            # was "the market is CLOSED", stamped 09:28:31 ET, and
+            # cycle_metrics held zero rows.
+            #
+            # A closed market inside the pre-open tolerance is not news;
+            # it is the schedule working as designed. Outside that
+            # window -- a holiday, a half-day, an unscheduled closure --
+            # it IS news and is reported exactly as before.
+            if self._is_pre_open_tolerance(now=now):
+                return False
             self._notify_nothing_to_trade(
                 "the broker reports the market is CLOSED right now "
                 "(holiday, half-day early close, or an unscheduled "
@@ -1547,6 +1569,29 @@ class Engine:
             )
             return False
         return True
+
+    @staticmethod
+    def _is_pre_open_tolerance(*, now: datetime) -> bool:
+        """True when `now` is inside the scheduler's tolerance BEFORE
+        the 09:30 ET open, on a weekday.
+
+        Deliberately computed from the clock rather than asked of the
+        broker: this runs only after the broker has already said
+        "closed", so another call would cost a request from the shared
+        quota (D-0085) to learn what the schedule already knows.
+
+        Narrow on purpose -- it covers only the minutes between the
+        earliest the 09:30 check can fire and the bell itself. A
+        holiday at 11:00, or a half-day close at 13:30, is outside it
+        and is still reported.
+        """
+
+        et = now.astimezone(D0021_TIMEZONE_ET)
+        if et.weekday() >= 5:
+            return False
+        open_dt = et.replace(hour=9, minute=30, second=0, microsecond=0)
+        earliest = open_dt - timedelta(seconds=DEFAULT_TOLERANCE_SECONDS)
+        return earliest <= et < open_dt
 
     @staticmethod
     def _symbol_scores(ranked) -> tuple:
@@ -1582,6 +1627,26 @@ class Engine:
                 pe_ratio=getattr(res, "pe_ratio", None),
             ))
         return tuple(out)
+
+    def _record_unscored_cycle(self, *, now: datetime) -> None:
+        """D-0087: record that this slot RAN and scored nothing.
+
+        Before this, a cycle that exited before scoring wrote no row at
+        all, and `cycle_metrics` for the day was indistinguishable from
+        a dead engine. On 2026-10-07 the 09:30 check fired, found the
+        market closed ninety seconds before the bell, returned, and left
+        the table empty -- and that emptiness was read as a failure
+        until the notification log settled it.
+
+        The row carries candidates_evaluated=0 with scored=0 and NULL
+        score columns, which the schema's CHECK already demands and
+        which says exactly "this slot ran and nothing was scored" --
+        never "nothing was good enough", which is the lie the original
+        design was right to refuse to tell.
+        """
+
+        self._record_cycle(now=now, ranked=None, accepted_count=0,
+                           candidates_evaluated=0)
 
     def _record_cycle(self, *, now: datetime, ranked, accepted_count: int,
                       candidates_evaluated: int) -> None:
@@ -1764,6 +1829,7 @@ class Engine:
         """
 
         if not self._market_open_for_new_proposals(now=now):
+            self._record_unscored_cycle(now=now)
             return
 
         # D-0080 Layer 1 -- before any research call is spent.
@@ -1782,6 +1848,7 @@ class Engine:
                 ),
                 symbol=None,
             )
+            self._record_unscored_cycle(now=now)
             return
 
         candidates: list = []
@@ -1850,6 +1917,7 @@ class Engine:
                     "propose."
                 )
             self._notify_nothing_to_trade(reason, now=now)
+            self._record_unscored_cycle(now=now)
             return
 
         if self._evaluator is None:
@@ -1920,6 +1988,7 @@ class Engine:
                     message=f"Skipping new proposals this cycle: {reason}",
                     symbol=None,
                 )
+                self._record_unscored_cycle(now=now)
                 return
 
         accepted_results = [r for r in ranked
