@@ -60,6 +60,28 @@ class TiingoConfigError(Exception):
     pass
 
 
+class TiingoHTTPError(RuntimeError):
+    """The endpoint answered with a non-200 status.
+
+    D-0084. Raised ONLY by `get_news`, deliberately. Every other method
+    keeps its fail-open "return empty" contract, because for prices an
+    empty result and a failed result lead to the same safe behaviour --
+    the candidate simply has no data and is not proposed.
+
+    News is different: `SymbolResearchHub` recorded a 403 and a quiet
+    "this symbol has no headlines" as the identical string "tiingo" in
+    `sources_failed`. On 2026-10-06 that hid a PERMANENT 403 (the news
+    endpoint is not included in our subscription) behind what looked
+    like thin coverage, and it took a hand-written probe to find it.
+    Carrying the status makes the difference visible in the recorded
+    metrics the next time it happens.
+    """
+
+    def __init__(self, status: int) -> None:
+        super().__init__(f"tiingo responded with HTTP {status}")
+        self.status = status
+
+
 class TiingoSource:
     def __init__(
         self,
@@ -132,15 +154,25 @@ class TiingoSource:
     def get_news(
         self, symbols: List[str], *, limit: int = 50,
     ) -> List[dict]:
+        """An empty list means the endpoint answered and had nothing.
+        A non-200 raises TiingoHTTPError -- see that class for why this
+        one method does not fail open (D-0084)."""
         if not symbols:
             return []
-        data = self._get_json(
-            "/tiingo/news",
-            params={
-                "tickers": ",".join(symbols),
-                "limit": max(1, min(limit, 1000)),
-            },
-        )
+        url = f"{self._base}/tiingo/news?" + urllib.parse.urlencode({
+            "tickers": ",".join(symbols),
+            "limit": max(1, min(limit, 1000)),
+        })
+        try:
+            resp = self._transport(url, self._headers(), self._timeout)
+        except Exception as exc:  # noqa: BLE001
+            raise TiingoHTTPError(0) from exc
+        if resp.status != 200:
+            raise TiingoHTTPError(resp.status)
+        try:
+            data = json.loads(resp.body.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return []
         if not isinstance(data, list):
             return []
         return [x for x in data if isinstance(x, dict)]

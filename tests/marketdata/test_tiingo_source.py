@@ -5,7 +5,7 @@ import unittest
 from datetime import date
 
 from marketdata.tiingo_source import (
-    TiingoSource, TiingoConfigError, HttpResponse,
+    TiingoSource, TiingoConfigError, TiingoHTTPError, HttpResponse,
 )
 
 
@@ -88,10 +88,36 @@ class TestTiingo(unittest.TestCase):
         self.assertEqual(s.get_eod_prices("TSLA", date(2026, 1, 1),
                                           date(2026, 1, 2)), [])
 
-    def test_transport_exception_returns_empty(self):
+    def test_transport_exception_on_news_RAISES(self):
+        """D-0084. get_news no longer fails open. An unreachable
+        endpoint and an endpoint that answered with nothing used to be
+        the same empty list, and on 2026-10-06 that hid a PERMANENT 403
+        behind what read as thin news coverage."""
         s = TiingoSource(api_key="k",
                          transport=_Stub(None, raise_exc=OSError("x")))
+        with self.assertRaises(TiingoHTTPError):
+            s.get_news(["TSLA"])
+
+    def test_a_forbidden_news_endpoint_carries_its_status(self):
+        s = TiingoSource(api_key="k", transport=_Stub(_r(403, {})))
+        with self.assertRaises(TiingoHTTPError) as ctx:
+            s.get_news(["TSLA"])
+        self.assertEqual(ctx.exception.status, 403)
+
+    def test_an_EMPTY_news_answer_is_not_an_error(self):
+        """The other half of the same distinction: HTTP 200 with no
+        articles is a real answer and must not raise."""
+        s = TiingoSource(api_key="k", transport=_Stub(_r(200, [])))
         self.assertEqual(s.get_news(["TSLA"]), [])
+
+    def test_prices_still_fail_open(self):
+        """Only get_news changed. Prices keep the fail-open contract,
+        because there an empty result and a failed result lead to the
+        same safe outcome."""
+        s = TiingoSource(api_key="k",
+                         transport=_Stub(None, raise_exc=OSError("x")))
+        self.assertEqual(s.get_eod_prices("TSLA", date(2026, 1, 1),
+                                          date(2026, 1, 2)), [])
 
     def test_api_key_in_header_not_url(self):
         t = _Stub(_r(200, []))

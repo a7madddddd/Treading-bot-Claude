@@ -6478,3 +6478,155 @@ Full suite: **1751 passed, 54 subtests.** No regressions.
 `cycle_symbol_scores` rows written before today carry -9.0 in
 `s_risk_discount`; later rows carry 0.0 unless a real rule fires. Any
 day-over-day comparison must account for this date.
+
+---
+
+## D-0084 — The news signal is made capable of measuring something
+**Date:** 2026-10-07
+**Status:** APPROVED by the Controller (this session), implemented and
+tested in the same session. HELD, NOT PUSHED, pending his review.
+**Scope:** the catalyst/risk questions, a deterministic filter for the
+"nothing material" answer, and the distinction between a news source
+that failed and one that found nothing. No weight, no threshold, no
+pipeline stage, no ladder, floor, trailing, sizing or risk limit.
+
+### Defect 1 — the polarity was a constant
+
+News polarity is `(catalysts - risks) / (catalysts + risks)`. Both
+questions demanded "3 very short bullets" and gave the model no way to
+answer "there are none", so it returned three of each for every symbol.
+
+```
+(3 - 3) / 6 = 0.0      for every candidate, in every cycle
+```
+
+Measured live on 2026-10-06, slot 15:30, from `cycle_symbol_scores`:
+
+```
+MUFG  news 3.50 of 7
+TX    news 3.50 of 7
+SMH   news 3.50 of 7
+```
+
+Identical to the cent. A measure that returns the same value for every
+input measures nothing — the same failure as the per-risk-bullet
+discount removed in D-0083, from the same root cause: the prompt fixed
+the count, and the score read the count.
+
+**Why a soft instruction was not enough.** The report path's wording
+already ended with *"If nothing material, say so"* and still produced
+three bullets, because a sentence saying "nothing material" is itself a
+finding and was counted as one. So the questions now demand an exact
+token and `drop_non_material` removes it deterministically. That filter
+is a pure function, tested without any API call, and the model only has
+to emit the token for it to work.
+
+The match is deliberately NARROW: only a line that is the bare token
+once bullet marks, quotes and trailing punctuation are stripped. A real
+finding that merely contains the word — "none of the three plants have
+reopened" — is kept, because dropping a genuine risk is a worse error
+than keeping an empty one. Pinned by a test.
+
+**Measured effect on the scorer** (`_score_news`, weight 7):
+
+```
+catalysts/risks     before      after
+    3 / 3             3.50       3.50     (unchanged)
+    3 / 0             3.50       7.00
+    2 / 1             3.50       5.83
+    1 / 2             3.50       2.33
+    0 / 3             3.50       0.00
+```
+
+The component's range goes from a single pinned value to 0.00–7.00.
+
+### Defect 2 — a forbidden endpoint looked like a quiet symbol
+
+`SymbolResearchHub` recorded both a transport failure and an empty
+answer as the identical string `"tiingo"` in `sources_failed`, and the
+Tiingo client returned `[]` for a non-200 as well as for no articles.
+
+On 2026-10-06 that hid a PERMANENT **HTTP 403** — the news endpoint is
+not in our subscription — behind what read as thin coverage. Verified
+by hand against the live API:
+
+```
+MUFG  403 Forbidden
+AAPL  403 Forbidden
+```
+
+Two symbols of wildly different coverage, the same refusal: not "no
+news", no access at all. It took a hand-written probe to see it.
+
+Now:
+
+- `TiingoSource.get_news` raises `TiingoHTTPError` carrying the status
+  on a non-200, and returns `[]` only when the endpoint answered with
+  nothing. **Only `get_news` changed** — prices keep the fail-open
+  contract, because there an empty result and a failed result lead to
+  the same safe outcome, and a test pins that.
+- The hub records the reason: `tiingo:http_403` rather than `tiingo`.
+  It goes in the existing TEXT column, so **no migration**.
+- An empty answer is now a SUCCESS with `news_count_48h = 0`, which is
+  what it always was in truth.
+
+`http_403` and `http_429` now read differently, which matters: a quota
+clears on its own, a missing subscription never will.
+
+### What was deliberately NOT done
+
+**The working news sources were NOT wired into the score.** Both
+alternatives were verified live and both work:
+
+```
+polygon MUFG  200, 10 items     finnhub MUFG  200, 2 items (3-day window)
+polygon AAPL  200, 10 items     finnhub AAPL  200, 99 items
+```
+
+Wiring either one was the obvious next step and the measurements
+refused it. The news component averages a freshness half with the
+polarity half, and averaging has two consequences, both measured with
+the real scorer:
+
+```
+1. more news could score LOWER than none
+   0 news 3.50 | 1 news 2.45 | 2 news 3.15 | 5 news 5.25
+   MUFG has 2 headlines in 3 days, so wiring the source would have
+   LOWERED the best candidate of the day by 0.35.
+
+2. it raises the floor under a genuinely bad symbol
+   all-negative polarity scores 0.00 alone, but 3.50 once a news count
+   is averaged in -- a symbol in crisis has MORE coverage, not less.
+```
+
+Headline count measures attention, not quality. Halving the influence
+of the one component that measures quality, in exchange for a measure
+of noise, is a bad trade on today's evidence. Recorded as **P-084** so
+it is a decision and not an omission.
+
+### Tests
+
+Full suite: **1771 passed, 66 subtests** (was 1754 / 54). New file
+`tests/engine/test_d0084_news_signal.py` — 17 tests covering the filter
+against decorated forms of the token, the narrow-match guarantee, the
+question wording, the polarity range and monotonicity, and the
+403-vs-empty distinction including 429.
+
+Two existing tests changed, each for a stated reason:
+
+- `test_transport_exception_returns_empty` asserted the exact contract
+  this decision reverses. Replaced by four tests that pin both halves of
+  the new distinction AND that prices still fail open.
+- `test_full_report_produced` failed on the first draft of the new
+  wording and was RIGHT to: the draft lowercased POSITIVE/NEGATIVE, and
+  the report path's stub branches on those words. Lowercasing them
+  turned the catalyst query into a risk query, which would have made the
+  live report list risks under "Catalysts". The emphasis was restored
+  rather than the test weakened, and a new test now pins it.
+
+### What cannot be verified from here
+
+Whether the live model actually emits the bare token when nothing is
+material. The filter does not depend on good behaviour beyond that one
+point, but the benefit does. It needs one real call with the key, on
+the VM, before this is considered proven.

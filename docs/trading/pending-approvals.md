@@ -3252,3 +3252,73 @@ a filing becomes public, not when the member traded 71 days earlier.
 
 Full measurements and the source comparison:
 `docs/trading/political-data-source-research-2026-10-06.md`
+
+---
+
+## P-084 — The news count is deliberately NOT in the score
+
+**Status:** OPEN as a decision to revisit with evidence, not a gap
+**Recorded by:** D-0084
+
+Both free news sources work and were verified live on 2026-10-07:
+
+```
+polygon MUFG  200, 10 items     finnhub MUFG  200, 2 items (3-day window)
+polygon AAPL  200, 10 items     finnhub AAPL  200, 99 items
+```
+
+Neither was wired into the score, on measurements rather than taste:
+
+1. The component AVERAGES freshness with polarity, so adding a thin
+   count drags the average DOWN: 0 news scores 3.50, one news 2.45, two
+   news 3.15. MUFG, the best candidate of 2026-10-06, has two headlines
+   in three days — wiring the source would have LOWERED it by 0.35.
+2. A symbol whose news is entirely negative scores 0.00 on polarity
+   alone, but 3.50 once a count is averaged in. Coverage would act as a
+   floor under the worst candidates, and a company in crisis has more
+   coverage, not less.
+
+Headline count measures attention. Polarity measures direction. Halving
+the influence of the one that measures direction to make room for the
+other is not justified by anything we have measured.
+
+**What would change this:** evidence that coverage density predicts
+forward return. `cycle_symbol_scores` can accumulate it if the
+Controller wants the question answered — the count can be recorded
+without being scored.
+
+**If it is ever wired, the averaging must be fixed first**, or thin
+coverage will be punished for existing. The monotone form measured on
+2026-10-07, for the record:
+
+```
+freshness half = 0.5 + 0.5 * min(1, count / 5)
+  0 news 3.50 | 1 news 3.85 | 2 news 4.20 | 5+ news 5.25
+```
+
+---
+
+## P-085 — D-0084 is unproven against the live model
+
+**Status:** OPEN — one command settles it
+**Severity:** the fix works by construction; the BENEFIT is unverified
+
+D-0084's filter is a pure function and is tested, so a "NONE" answer
+will be dropped. What is NOT verified is whether the live research model
+actually emits the bare token when nothing is material, rather than
+writing a sentence about there being nothing — which is exactly what it
+did with the previous, softer wording.
+
+If it writes a sentence instead, that sentence counts as a finding, the
+counts go back to 3 and 3, and the polarity returns to a constant zero.
+The symptom would be silent: news scores sitting at exactly 3.50 again.
+
+**The check, on the VM, after this is deployed:**
+
+```sql
+SELECT symbol, round(s_news,2) FROM cycle_symbol_scores
+WHERE effective_date = date('now');
+```
+
+Every row reading exactly 3.50 means the model is still padding, and the
+question needs another pass. A spread of values means it is working.

@@ -18,6 +18,93 @@ from typing import Dict, List, Optional, Tuple
 
 
 # ---------------------------------------------------------------------------
+# Catalyst / risk questions (D-0084)
+# ---------------------------------------------------------------------------
+#
+# The previous wording asked for "3 very short bullets" of catalysts and
+# "3 very short bullets" of risks, with no way to answer "there are
+# none". The model therefore returned three of each for every symbol,
+# and the news polarity
+#
+#     (catalysts - risks) / (catalysts + risks)
+#
+# was (3 - 3) / 6 = EXACTLY ZERO for every candidate in every cycle --
+# measured live on 2026-10-06, where MUFG, TX and SMH all scored an
+# identical 3.50 of 7 on news. A measure that returns the same value for
+# every input measures nothing.
+#
+# The fix is NOT to trust a softer instruction. "If nothing material,
+# say so" was already present in the report path's wording and still
+# produced three bullets, because a sentence saying "nothing material"
+# is itself a finding and was counted as one. So the question now
+# demands an exact token, and `drop_non_material` removes it
+# deterministically -- the filter is a pure function, testable without
+# any API call, and it does not depend on the model being well behaved
+# beyond emitting the token.
+
+NO_MATERIAL_TOKEN = "NONE"
+
+CATALYST_QUERY = (
+    "List ONLY the material POSITIVE catalysts or tailwinds for this "
+    "stock RIGHT NOW. At most 3, each under 18 words. Omit anything "
+    "routine or speculative. If there are no material POSITIVE "
+    f"catalysts, reply with exactly {NO_MATERIAL_TOKEN} and nothing "
+    "else. Do not pad the list to reach three."
+)
+
+RISK_QUERY = (
+    "List ONLY the material NEGATIVE risks or headwinds for this stock "
+    "RIGHT NOW. At most 3, each under 18 words. Omit anything routine "
+    "or speculative. If there are no material NEGATIVE risks, reply "
+    f"with exactly {NO_MATERIAL_TOKEN} and nothing else. Do not pad the "
+    "list to reach three."
+)
+
+
+def _failure_reason(exc: BaseException) -> str:
+    """A short, stable tag for why a source did not answer (D-0084).
+
+    An HTTP status is the single most useful fact -- 403 is a
+    subscription we do not have and will never get by retrying, while
+    429 is a quota that clears on its own. Anything else falls back to
+    the exception's class name, which is still strictly more than the
+    bare source name we recorded before.
+    """
+
+    status = getattr(exc, "status", None)
+    if isinstance(status, int) and status > 0:
+        return f"http_{status}"
+    if isinstance(exc, _fut.TimeoutError):
+        return "timeout"
+    return exc.__class__.__name__
+
+
+def drop_non_material(lines: List[str]) -> List[str]:
+    """Removes the 'nothing material' answer so it is not counted as a
+    catalyst or a risk.
+
+    Pure, deterministic, and matched narrowly ON PURPOSE: only a line
+    that is the bare token once bullet marks, quotes, stray punctuation
+    and surrounding whitespace are stripped. A real finding that merely
+    CONTAINS the word -- "none of the three plants reopened" -- is kept,
+    because dropping a genuine risk is a worse error than keeping an
+    empty one.
+    """
+
+    out: List[str] = []
+    for line in lines:
+        if not isinstance(line, str):
+            continue
+        bare = line.strip().strip("•-*·—–").strip().strip('"\'' ).strip()
+        bare = bare.rstrip(".!:;").strip()
+        if bare.upper() == NO_MATERIAL_TOKEN:
+            continue
+        if bare:
+            out.append(line.strip())
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Normalized research record
 # ---------------------------------------------------------------------------
 
@@ -175,8 +262,15 @@ class SymbolResearchHub:
             for name, fut in tasks.items():
                 try:
                     data = fut.result(timeout=self._deadline)
-                except Exception:  # noqa: BLE001
-                    research.sources_failed.append(name)
+                except Exception as exc:  # noqa: BLE001
+                    # D-0084: record WHY. A bare source name told us a
+                    # source "failed" and nothing more, which is how a
+                    # permanent HTTP 403 on the news endpoint passed for
+                    # thin coverage until a hand-written probe found it
+                    # on 2026-10-06. The reason goes in the same TEXT
+                    # column, so no migration is needed to read it.
+                    research.sources_failed.append(
+                        f"{name}:{_failure_reason(exc)}")
                     continue
                 if data is None:
                     research.sources_failed.append(name)
@@ -420,12 +514,12 @@ class SymbolResearchHub:
         return spy_ret
 
     def _fetch_tiingo(self, symbol: str) -> Optional[dict]:
-        try:
-            news = self._tn.get_news([symbol], limit=10)
-        except Exception:  # noqa: BLE001
-            return None
+        """D-0084: an empty answer is a SUCCESS with a count of zero,
+        not a failure. Only a transport or HTTP error is a failure, and
+        it propagates so the hub can record WHICH error it was."""
+        news = self._tn.get_news([symbol], limit=10)
         if not news:
-            return None
+            return {"news_count_48h": 0, "news_headlines": []}
         heads: List[Tuple[str, str]] = []
         for item in news[:5]:
             if isinstance(item, dict):
@@ -451,14 +545,10 @@ class SymbolResearchHub:
                 s = getattr(f, "text", None) or getattr(f, "summary", None)
                 if isinstance(s, str) and s.strip():
                     out.append(s.strip())
-            return out
+            return drop_non_material(out)
 
-        cat_q = ("In 3 very short bullets, list the single biggest POSITIVE "
-                 "catalyst or tailwind for this stock RIGHT NOW. Each bullet "
-                 "under 18 words.")
-        risk_q = ("In 3 very short bullets, list the single biggest NEGATIVE "
-                  "risk or headwind for this stock RIGHT NOW. Each bullet "
-                  "under 18 words.")
+        cat_q = CATALYST_QUERY
+        risk_q = RISK_QUERY
 
         import concurrent.futures as _f
         with _f.ThreadPoolExecutor(max_workers=2) as ex:

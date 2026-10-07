@@ -415,6 +415,9 @@ def _call_news(tiingo_client, pg_client, symbol: str
 def _call_perplexity(pxclient, symbol: str
                      ) -> Tuple[List[str], List[str]]:
     """Returns (catalysts_lines, risks_lines)."""
+    from engine.research_hub import (
+        CATALYST_QUERY, RISK_QUERY, drop_non_material,
+    )
     if pxclient is None:
         return [], []
 
@@ -428,16 +431,12 @@ def _call_perplexity(pxclient, symbol: str
         for f in findings[:max_bullets]:
             s = getattr(f, "text", None) or getattr(f, "summary", None)
             if isinstance(s, str) and s.strip():
-                out.append("• " + s.strip())
-        return out
+                out.append(s.strip())
+        # D-0084: same filter as the scoring path, so the Telegram
+        # report and the score never disagree about what was found.
+        return ["• " + line for line in drop_non_material(out)]
 
-    cat_q = ("In 3 very short bullets, list the single biggest POSITIVE "
-             "catalyst or tailwind for this stock RIGHT NOW. Each bullet "
-             "under 18 words. If nothing material, say so.")
-    risk_q = ("In 3 very short bullets, list the single biggest NEGATIVE "
-              "risk or headwind for this stock RIGHT NOW. Each bullet "
-              "under 18 words. If nothing material, say so.")
-    return _bullets(cat_q), _bullets(risk_q)
+    return _bullets(CATALYST_QUERY), _bullets(RISK_QUERY)
 
 
 # ---------------------------------------------------------------------------
