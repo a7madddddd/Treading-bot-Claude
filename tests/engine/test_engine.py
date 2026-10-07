@@ -861,7 +861,16 @@ class TestPoliticalSignalEndToEnd(unittest.TestCase):
             # still proves the political signal is what carries a symbol
             # over it (D-0083 moved the bar from 60.0 to a derived 50.0,
             # and a fixed 50.0 base would have cleared it on its own).
-            base = Engine._MIN_SCORE - 10.0
+            #
+            # P-092: read the per-symbol base from the same map rank()
+            # uses, instead of hardcoding one for every symbol. The real
+            # evaluator derives a candidate's base from that candidate's
+            # own research, so a stub that returned the same base for
+            # every symbol was not mirroring it -- and said so only once
+            # _correct_stale_prices started re-scoring candidates that
+            # carry no political signal at all. Callers that want the
+            # below-the-bar base still get it: they pass it in the map.
+            base = self._base.get(research.symbol, Engine._MIN_SCORE - 10.0)
             political_bonus = min(15.0, research.political_weighted_signal)
             return TestPoliticalSignalEndToEnd._FakeResult(
                 research.symbol, base + political_bonus, research,

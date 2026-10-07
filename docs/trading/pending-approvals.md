@@ -3627,8 +3627,10 @@ code is written before he decides.
 
 ## P-092 — the "Live snapshot" block is the PREVIOUS SESSION, and it reaches a hard filter
 
-**Status:** OPEN — root cause CONFIRMED from code 2026-10-07; the fix
-touches a hard filter, so it waits for the Controller
+**Status:** RESOLVED 2026-10-07 by **D-0090** — the Controller approved
+the alternative: price and session volume now come from the engine's own
+feed, and the snapshot heading says "Previous session" when that is what
+it is. 18 tests, 9 of which fail against the pre-change engine.
 **Severity:** a trading filter and a score component run on yesterday's
 data; the label on the Controller's own screen says "Live"
 
@@ -3823,6 +3825,13 @@ of number that must not be guessed, and nothing in the system records
 how far a price drifts across a decision window yet. The honest first
 step is to record that drift for every proposal and decide once there is
 a distribution.
+
+**RESOLVED 2026-10-07 by D-0090 part 3.** The band needed no
+calibration after all: `PRICE_BAND_FRACTION` (0.005) is D-0007's own
+approved band and describes exactly the condition under which a
+submission is refused, so it was used directly. The drift recording this
+row called for is therefore not needed to ship — it would only be needed
+if the band had to be a NEW number, which it did not.
 
 **CONTROLLER DECISION, 2026-10-07: REPLACED at a fresh price**
 (option 2). "the proposal that excluded should be replaced with a new

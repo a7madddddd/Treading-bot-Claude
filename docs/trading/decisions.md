@@ -7201,3 +7201,118 @@ re-running). Full suite: 1850 passed, 119 subtests.
 - `src/engine/engine.py` — `_prefetch_enrichment`,
   `ENRICHMENT_TIMEOUT_SECONDS`, `_mark_proposal_notified`, `_enrich`
   gains `prefetched`, the TTL sweep's `clock_start`
+
+## D-0090 — the score reads the engine's own price, and a drifted proposal is replaced
+
+- **Date:** 2026-10-07
+- **Status:** APPROVED
+- **Approved by:** Controller ("the filling price and the size should be
+  from the engine data", "the replacing for the excluded proposal should
+  be done")
+- **Closes:** P-092; implements the P-094 decision
+- **Supersedes:** nothing. D-0007's ±0.5% band and 5-minute window are
+  UNCHANGED and still enforced at submission.
+
+### Part 1 — price and session volume come from the engine's feed
+
+`PolygonSource.get_ticker_snapshot` falls back from `/v2/snapshot`
+(paid tiers) to `/v2/aggs/ticker/{sym}/prev` (free tier) and reshapes
+the PREVIOUS SESSION into a `day` block "so downstream parsing is
+unchanged". `research_hub` copied `day.c` into
+`SymbolResearch.current_price` and `day.v` into `day_volume`, and the
+evaluator used both:
+
+```
+trade_evaluator.py:118   day_volume < 100_000     -> HARD REJECT
+trade_evaluator.py:221   current_price > sma_50   -> score component
+```
+
+So yesterday's volume decided a hard filter and yesterday's close
+decided a score.
+
+`Engine._correct_stale_prices` now overwrites both from
+`self._market_data` — the same feed that prices the order sent to the
+broker — and re-scores, then re-sorts, because a corrected volume can
+flip a hard filter and a corrected price can move a score. Fail-open per
+candidate: an unreachable feed leaves that candidate exactly as the hub
+left it, never worse than before.
+
+**Did it change the PLXS outcome? No — checked, not assumed.**
+
+```
+day_volume    156,000 (yesterday)  vs  100,000 floor  -> passed
+current_price  272.63 (yesterday)  vs  SMA50 254.9    -> above
+today's real   264.93              vs  SMA50 254.9    -> also above
+```
+
+Same answers that time. The mechanism was still wrong: a symbol thin
+yesterday and active today was rejected, and the reverse admitted.
+
+**Deliberately NOT done:** `day_change_pct` is left as the hub leaves it
+— None on the free tier, which the evaluator already skips. Populating
+it would newly activate a dormant score component, which is a separate
+change and a separate decision.
+
+### Part 2 — the snapshot heading stops lying
+
+The fallback already stamps itself `"_fallback_source": "aggs/prev"` and
+leaves `prevDay` empty on purpose. Nothing read the stamp. Now
+`deep_research` does, and the section is headed **"📅 Previous session"**
+instead of "🎯 Live snapshot" whenever the data is the previous session.
+
+That is the defect in one line: the data said what it was and nobody
+asked.
+
+### Part 3 — a drifted PENDING entry is REPLACED, not left to rot
+
+`Engine._supersede_drifted_proposals` runs at the top of
+`run_trigger_check`, before the watchlist pass, so the freed symbol is
+re-proposed at a fresh price in the SAME tick. The Controller gets a
+replacement, not a gap.
+
+- **The band is not a new number.** It is `PRICE_BAND_FRACTION` =
+  0.005, the band D-0007 already approved, used for exactly the
+  condition it already describes: outside it, submission is refused. A
+  proposal that cannot be submitted is not an opportunity, whatever its
+  buttons say. Nothing was invented, so nothing needed calibrating.
+- **Cadence is the seven D-0021 checks, NOT the 30-second tick.** On a
+  symbol like 2026-10-07's PLXS — a 1.43% daily range against a 0.5%
+  band — a tick-rate sweep would replace the proposal many times an hour
+  and bury him in messages ("Not so many messages. That's annoying.").
+  Bounded to the schedule, the worst case is one replacement per check.
+- **INITIAL_ENTRY only, PENDING only.** A ladder belongs to a trade that
+  already holds shares; an APPROVED proposal is his decision and no
+  sweep discards it. Both restrictions mirror
+  `_expire_stale_proposals` for the same reasons.
+- No fresh price means no evidence of drift: the proposal stays PENDING,
+  the TTL still owns it, and D-0007 still refuses a bad submission.
+
+The transition reuses `_expire_one_proposal`, with a `drift` argument
+that changes the event and the message only. The state change and the
+symbol release are identical — which is why a second path was not
+written.
+
+New event: `proposal_superseded_on_price`, naming the old price, the new
+price, the drift, and that nothing was bought or sold.
+
+### Tests
+
+`tests/engine/test_d0090_price_source_and_replacement.py` — 18 tests, 9
+of which fail against the pre-change engine (verified by stashing `src/`
+and re-running). Full suite: 1868 passed, 119 subtests.
+
+One pre-existing test fixture was corrected, not worked around:
+`_ReevalCountingEvaluator.evaluate_research` hardcoded one base score
+for every symbol instead of reading the per-symbol map `rank()` uses, so
+it was not mirroring the real evaluator. It said so only once
+`_correct_stale_prices` began re-scoring candidates that carry no
+political signal.
+
+### Files
+
+- `src/engine/engine.py` — `_correct_stale_prices`,
+  `_supersede_drifted_proposals`, `_expire_one_proposal(drift=...)`,
+  `PRICE_BAND_FRACTION` import
+- `src/engine/deep_research.py` — `snapshot_is_previous_session`, the
+  conditional heading, `_call_snapshot` reads `_fallback_source`
+- `tests/engine/test_engine.py` — the fixture correction above

@@ -81,6 +81,7 @@ from marketdata.source import MarketDataSource, MarketDataUnavailableError
 from notifications.service import INotificationService, NotificationEvent, NotificationLevel
 from orchestration.trade_proposal_service import LadderAlreadyFilledError, TradeProposalService
 from proposals.models import ApprovalState, TradeAction, approved_strategy_rule_set
+from proposals.models import PRICE_BAND_FRACTION
 from proposals.models import FloorContext, StrategyRuleSet
 from proposals.position_sizing import (
     APPROVED_D0051_POLICY, PositionSizingPolicyError,
@@ -997,7 +998,89 @@ class Engine:
                     continue
                 self._expire_one_proposal(proposal, age_seconds=age_seconds, now=now)
 
-    def _expire_one_proposal(self, proposal, *, age_seconds: float, now: datetime) -> None:
+    def _supersede_drifted_proposals(self, *, now: datetime) -> None:
+        """D-0090 (Controller-approved 2026-10-07): a PENDING INITIAL
+        ENTRY whose price has left D-0007's band is retired here, so the
+        watchlist pass later in this same tick re-proposes the symbol at
+        a price he can actually act on.
+
+        His words: "the proposal that excluded should be replaced with a
+        new price."
+
+        Why REPLACE and not merely expire. D-0007's +/-0.5% band is
+        already enforced, but only at SUBMISSION. So a drifted proposal
+        kept live Approve/Reject buttons for the full hour and his
+        approval was refused at the end of it -- safe, because nothing
+        executed at a wrong price, but his decision was spent for
+        nothing. Retiring it tells him "too late"; retiring it one step
+        before the watchlist hands him the same opportunity repriced.
+
+        Why the band is NOT a new number. It is PRICE_BAND_FRACTION, the
+        band D-0007 already approved, used here for exactly the
+        condition it already describes: outside it, submission is
+        refused. A proposal that cannot be submitted is not an
+        opportunity, whatever its buttons say. Nothing was invented, so
+        nothing needed calibrating first.
+
+        Why only on this cadence. This runs in run_trigger_check -- the
+        seven D-0021 checks -- and NOT on the 30-second reconciliation
+        tick. A tick-rate sweep would, on a symbol like 2026-10-07's
+        PLXS (a 1.43% daily range against a 0.5% band), replace the
+        proposal many times an hour and bury him in messages. "Not so
+        many messages. That's annoying." Bounded to the approved
+        schedule, the worst case is one replacement per check.
+
+        Why INITIAL_ENTRY only. A LADDER proposal belongs to a trade
+        that already holds shares, and retiring it here would abandon
+        nothing but would still discard a ladder the frozen reference
+        says is live. Ladders lapse on the TTL as before; the same
+        restriction _expire_stale_proposals documents, for the same
+        reason.
+
+        PENDING only, like the TTL sweep: an APPROVED proposal is his
+        decision and no sweep discards it -- D-0007 revalidation already
+        refuses a drifted approved submission at the broker boundary.
+        """
+        for trade_record in self._trade_repo.list_active():
+            trade = trade_record.trade
+            for proposal in self._proposal_repo.list_for_trade(trade.trade_id):
+                if proposal.approval_state is not ApprovalState.PENDING:
+                    continue
+                if proposal.proposed_action is not TradeAction.INITIAL_ENTRY:
+                    continue
+                reference = proposal.proposed_entry
+                if not reference or reference <= 0:
+                    continue
+                try:
+                    price = self._price(trade.symbol)
+                except MarketDataUnavailableError:
+                    # No fresh price means no evidence of drift. Leaving
+                    # it PENDING is the safe side: the TTL still owns it,
+                    # and D-0007 still refuses a bad submission.
+                    continue
+                except Exception:  # noqa: BLE001 -- never block the loop
+                    continue
+                drift = abs(price - reference) / reference
+                if drift <= PRICE_BAND_FRACTION:
+                    continue
+                self._expire_one_proposal(
+                    proposal,
+                    age_seconds=(
+                        now - (proposal.notified_at
+                               or proposal.proposal_created_at)
+                    ).total_seconds(),
+                    now=now,
+                    drift=(reference, price, drift),
+                )
+
+    def _expire_one_proposal(self, proposal, *, age_seconds: float,
+                             now: datetime, drift=None) -> None:
+        """`drift` is (reference_price, current_price, fraction) when
+        the proposal is being retired for price movement (D-0090) rather
+        than for age. It changes the event and the message only -- the
+        state transition and the symbol release are identical, which is
+        the point of reusing this path instead of writing a second one.
+        """
         try:
             self._proposal_repo.expire_pending(
                 proposal.proposal_id, expired_at=now,
@@ -1021,18 +1104,40 @@ class Engine:
             return
 
         minutes = age_seconds / 60.0
-        self._notify(
-            level=NotificationLevel.IMPORTANT,
-            event="proposal_expired",
-            message=(
-                f"Proposal {proposal.proposal_id} ({proposal.symbol}, "
-                f"{proposal.proposed_action.value}) EXPIRED after "
-                f"{minutes:.0f} minutes with no decision. Its Approve / "
-                f"Reject buttons no longer do anything. Nothing was "
-                f"bought or sold."
-            ),
-            symbol=proposal.symbol,
-        )
+        if drift is not None:
+            reference, price, fraction = drift
+            self._notify(
+                level=NotificationLevel.IMPORTANT,
+                event="proposal_superseded_on_price",
+                message=(
+                    f"{proposal.symbol} moved too far to act on the "
+                    f"proposal you were sent, so it was retired and the "
+                    f"symbol released.\n\n"
+                    f"Proposed at ${reference:,.2f}, now "
+                    f"${price:,.2f} ({fraction*100:+.2f}% away, outside "
+                    f"the approved ±{PRICE_BAND_FRACTION*100:.1f}% "
+                    f"band).\n\n"
+                    f"Nothing was bought or sold, and approving the old "
+                    f"message would have been refused at submission "
+                    f"anyway. A fresh proposal at the current price "
+                    f"follows in this same check if the symbol still "
+                    f"qualifies."
+                ),
+                symbol=proposal.symbol,
+            )
+        else:
+            self._notify(
+                level=NotificationLevel.IMPORTANT,
+                event="proposal_expired",
+                message=(
+                    f"Proposal {proposal.proposal_id} ({proposal.symbol}, "
+                    f"{proposal.proposed_action.value}) EXPIRED after "
+                    f"{minutes:.0f} minutes with no decision. Its Approve / "
+                    f"Reject buttons no longer do anything. Nothing was "
+                    f"bought or sold."
+                ),
+                symbol=proposal.symbol,
+            )
 
         if proposal.proposed_action is TradeAction.INITIAL_ENTRY:
             # Release the symbol. Without this the trade stays in
@@ -1040,8 +1145,12 @@ class Engine:
             # symbol out forever -- exactly what happened to KO and V.
             self._abandon_initial_entry_after_refusal(
                 proposal.trade_id, proposal.proposal_id,
-                reason=(f"no Controller decision within "
-                        f"{self.PROPOSAL_TTL_SECONDS / 60.0:.0f} minutes"),
+                reason=(
+                    f"price left the ±{PRICE_BAND_FRACTION*100:.1f}% band"
+                    if drift is not None else
+                    f"no Controller decision within "
+                    f"{self.PROPOSAL_TTL_SECONDS / 60.0:.0f} minutes"
+                ),
                 now=now,
             )
 
@@ -1522,6 +1631,12 @@ class Engine:
     # ------------------------------------------------------------------
 
     def run_trigger_check(self, *, now: datetime) -> None:
+        self._heartbeat(now=now)
+        # D-0090: retire a PENDING entry whose price has drifted out of
+        # the band his approval could execute in, BEFORE the watchlist
+        # runs -- so the freed symbol is re-proposed at a fresh price in
+        # this same tick and he gets a replacement, not a gap.
+        self._supersede_drifted_proposals(now=now)
         self._heartbeat(now=now)
         self._check_watchlist(now=now)
         self._heartbeat(now=now)
@@ -2067,6 +2182,7 @@ class Engine:
         # with the political signal map so the evaluator sees it.
         try:
             ranked = self._evaluator.rank(candidates)
+            ranked = self._correct_stale_prices(ranked)
             if political_signals:
                 for r in ranked:
                     sig = political_signals.get(r.symbol)
@@ -2411,6 +2527,99 @@ class Engine:
         if delivered:
             self._mark_proposal_notified(proposal.proposal_id, now=now)
         self._notified.add(("pending_approval", proposal.proposal_id))
+
+    def _correct_stale_prices(self, ranked):
+        """P-092. Overwrite each candidate's price and session volume
+        with the engine's OWN market-data feed, then re-score.
+
+        Why this exists. `SymbolResearch.current_price` and `.day_volume`
+        were filled from Polygon, and on the free tier
+        `PolygonSource.get_ticker_snapshot` falls back to
+        `/v2/aggs/ticker/{sym}/prev` -- the PREVIOUS SESSION -- reshaped
+        into a `day` block "so downstream parsing is unchanged". The
+        evaluator then used yesterday's numbers in two places that
+        decide trading:
+
+            day_volume < 100_000            -> HARD REJECT
+            current_price > sma_50          -> score component
+
+        Checked against the 2026-10-07 PLXS proposal: yesterday's 156K
+        cleared the 100K floor and yesterday's 272.63 and today's 264.93
+        are both above SMA50 254.9, so that proposal's outcome did not
+        change. The mechanism was still wrong -- a symbol thin yesterday
+        and active today was rejected, and the reverse admitted.
+
+        The engine's feed is the SAME source that prices the order sent
+        to the broker, so after this the number he reads, the number
+        scored, and the number submitted all come from one place.
+
+        Scope, deliberately narrow: price and session volume only, which
+        is what the Controller approved. `day_change_pct` stays as the
+        hub left it -- None on the free tier, which the evaluator already
+        skips. Populating it here would newly activate a dormant score
+        component, which is a separate change and a separate decision
+        (recorded in P-092).
+
+        Fail-open per candidate: a symbol whose feed is unreachable keeps
+        whatever the hub gave it rather than losing its evaluation. That
+        is the pre-existing behavior for that symbol, never worse.
+
+        Returns the candidates RE-SORTED, because a corrected volume can
+        flip a hard filter and a corrected price can move a score.
+        """
+        for r in ranked or ():
+            research = getattr(r, "research", None)
+            if research is None:
+                continue
+            symbol = getattr(r, "symbol", None) or getattr(
+                research, "symbol", None)
+            if not symbol:
+                continue
+
+            changed = False
+            try:
+                price = self._market_data.get_last_trade(symbol)
+            except Exception:  # noqa: BLE001 -- fail open, per candidate
+                price = None
+            if price:
+                research.current_price = float(price)
+                changed = True
+
+            context = self._safe_price_context(symbol)
+            if isinstance(context, dict):
+                volume = context.get("today_volume")
+                if volume is not None:
+                    try:
+                        research.day_volume = float(volume)
+                        changed = True
+                    except (TypeError, ValueError):
+                        pass
+
+            if not changed:
+                continue
+            # Re-score: rank() already scored this candidate off the
+            # stale values, so the correction is inert until the
+            # evaluator sees it again. Same pattern the political
+            # injection below uses, and the same reason.
+            try:
+                rescored = self._evaluator.evaluate_research(research)
+            except Exception:  # noqa: BLE001 -- never block the loop
+                continue
+            r.soft_score = rescored.soft_score
+            r.score_breakdown = rescored.score_breakdown
+            r.passes_hard_filter = rescored.passes_hard_filter
+            r.hard_filter_reasons = rescored.hard_filter_reasons
+
+        # Re-sort, for the same reason the political pass does: a
+        # corrected volume can flip a hard filter and a corrected price
+        # can move a score, so the order rank() produced is no longer
+        # the order. Returning the list rather than mutating in place
+        # keeps that explicit at the call site.
+        items = list(ranked or ())
+        passed = sorted([r for r in items if r.passes_hard_filter],
+                        key=lambda r: -r.soft_score)
+        failed = [r for r in items if not r.passes_hard_filter]
+        return passed + failed
 
     def _safe_price_context(self, symbol: str) -> Optional[dict]:
         """Best-effort wrapper around MarketDataSource.get_price_context.

@@ -48,6 +48,18 @@ class DeepResearchReport:
     verdict_lines: List[str] = field(default_factory=list)
     # structured signal values used by the verdict synthesizer
     signals: Dict[str, object] = field(default_factory=dict)
+    snapshot_is_previous_session: bool = False
+    """P-092. True when the snapshot section holds the PREVIOUS
+    session, not today.
+
+    PolygonSource.get_ticker_snapshot falls back from /v2/snapshot (paid
+    tiers) to /v2/aggs/ticker/{sym}/prev (free tier) and reshapes the
+    previous session into a `day` block. The fallback stamps itself
+    `_fallback_source`, but nothing read that stamp, so a closed
+    session's bar was printed under the heading "Live snapshot" -- it was
+    byte-identical an hour apart on 2026-10-07, and its range
+    contradicted the engine's own range for the same day inside one
+    message."""
 
     def to_telegram_text(self) -> Optional[str]:
         """Returns the multi-line Telegram block, or None if no section
@@ -56,7 +68,8 @@ class DeepResearchReport:
             ("🌐 Macro",            self.macro_lines),
             ("🏢 Fundamentals",     self.fundamentals_lines),
             ("📈 Technicals",       self.technicals_lines),
-            ("🎯 Live snapshot",    self.snapshot_lines),
+            ("📅 Previous session" if self.snapshot_is_previous_session
+             else "🎯 Live snapshot", self.snapshot_lines),
             ("📰 News (48h)",       self.news_lines),
             ("🔍 Catalysts",        self.catalysts_lines),
             ("⚠ Risks",             self.risks_lines),
@@ -325,6 +338,9 @@ def _call_snapshot(pg_client, symbol: str) -> Tuple[List[str], Dict[str, object]
     except Exception:  # noqa: BLE001
         snap = None
     if isinstance(snap, dict):
+        # P-092: the free-tier fallback says so. Read it.
+        if snap.get("_fallback_source"):
+            signals["snapshot_is_previous_session"] = True
         day = snap.get("day") if isinstance(snap.get("day"), dict) else {}
         prev = snap.get("prevDay") if isinstance(snap.get("prevDay"), dict) else {}
         price = _as_float(day.get("c"))
@@ -611,6 +627,8 @@ class DeepResearchComposer:
                         report.news_lines = lines
                     all_signals.update(signals)
 
+        report.snapshot_is_previous_session = bool(
+            all_signals.get("snapshot_is_previous_session"))
         report.signals = all_signals
         report.verdict_lines = _synthesize_verdict(all_signals)
         return report
