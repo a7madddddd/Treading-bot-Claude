@@ -3432,41 +3432,93 @@ appear in `cycle_symbol_scores`.
 
 ---
 
-## P-089 — D-0088's effect is predicted from a sample, not measured
+## P-089 — D-0088's effect, MEASURED on a 1,200-symbol sample
 
-**Status:** OPEN — resolves itself at the next universe run
-**Severity:** the direction is certain; the size is not
+**Status:** RESOLVED 2026-10-07 — measured on the VM before the next
+universe run, by running the real pipeline twice over the same data
+**Severity:** the direction is confirmed; the size is now bounded
 
-D-0088 removed Stage C's relative tightness rule on evidence from a
-random sample of 384 symbols, 92 of which passed Stage A. The sample is
-enough to prove the MECHANISM — eight large caps checked by name, not
-one passed both Stage C and Stage D — but it is not the pipeline.
+### Method
 
-The prediction is that survivors rise from 26 into the hundreds.
+An experiment (kept out of the repo per the prove-it-first rule) drew a
+random sample of 1,200 of the 12,596 real Alpaca candidates with a fixed
+seed, enriched each ONCE, then ran the REAL `UniversePipeline` twice over
+the identical enriched candidates:
 
-**The real number arrives on its own**, at the 06:00 ET universe run,
-and needs no special work:
+- NEW — the stages as D-0088 left them,
+- OLD — identical, except Stage C's `top_percentile` rule restored.
+
+Both runs wrote to `InMemorySnapshotRepository`, so nothing was
+published and the engine's watchlist was untouched. Today's partial
+daily bar was dropped, so the sample saw what a 06:00 ET run would see.
+
+### Result
+
+```
+                        NEW (D-0088)      OLD (before 35152e1)
+A_tradability           -929 -> 271       -929 -> 271
+B_data_quality             -0 -> 271         -0 -> 271
+C_execution_quality        -0 -> 271       -162 -> 109
+D_strategy_mechanics_fit -210 ->  61       -105 ->   4
+E/F/G                      -0 ->  61         -0 ->   4
+PASSED A-G                      61                 4
+H_top_n                   -51 ->  10         -0 ->   4
+```
+
+Pass rate through A-G, extrapolated to the 12,596-symbol market:
+
+```
+OLD:  4/1200 = 0.33%  -> ~42    [95% Wilson CI   16 -  108]
+NEW: 61/1200 = 5.08%  -> ~640   [95% Wilson CI  501 -  816]
+```
+
+### Why this number is trusted
+
+The OLD arm is a prediction of a run that was ALREADY recorded. Today's
+real pipeline passed 26 of 12,597 through A-G, a rate of 0.206%. The
+OLD arm estimated ~42 with a 95% interval of 16 to 108. **26 falls
+inside that interval**, so the method reproduces a known answer before
+being used on an unknown one.
+
+### The scissors, in one line of the same table
+
+Among the symbols Stage C had KEPT, Stage D rejected 105 of 109 —
+**96.3%**. Among all symbols that reached it with C's rule gone, Stage D
+rejected 210 of 271 — **77.5%**. The two filters were pulling against
+each other over the same number, exactly as D-0088 argued.
+
+### The honest headline — the universe does NOT get bigger
+
+`top_n = 10` in `src/d0026/config.py`, and Stage H is a CAP, not a
+count: `survivors = candidates[:n]` in
+`src/d0026/stages/top_n.py`. It was 10 before and it is 10 after.
+
+What changed is the pool those 10 are chosen from: about 640 candidates
+instead of about 42. In the sample, Stage H rejected 51 under the new
+code and 0 under the old — the cap is now the binding constraint for the
+first time, where before the filters were.
+
+### What this moves to the ranking weights
+
+The ranking weights (momentum 40, quality 30, liquidity 30) and the
+engine's `_MIN_SCORE = 60.0` have never selected from a pool of this
+size. They were previously handed 4 candidates for 10 slots, so they
+decided nothing. They now decide everything. **This is the next thing
+that needs review, and it is a Controller decision, not an
+implementation detail.**
+
+### Still to confirm from the pipeline itself
+
+The 06:00 ET run remains the authority, because the sample cannot see
+the sector concentration cap acting on a full pool:
 
 ```sql
 SELECT effective_trading_date, rejection_summary_json, data_quality_json
 FROM universe_snapshots ORDER BY effective_trading_date DESC LIMIT 2;
 ```
 
-Compare `survivors_to_snapshot` and the per-stage rejection counts
-against 2026-10-07's: 7,509 + 2,717 at Stage A, 1,422 at Stage C, 923 at
-Stage D, 16 at Top-N, 10 survivors.
-
-**What to watch for, and what each would mean:**
-
-- Stage C now rejects only candidates with a MISSING proxy. If it still
-  rejects thousands, the removal did not take effect — check the deploy.
-- Stage D's rejection count should rise sharply, because far more
-  candidates now reach it. That is expected, not a regression.
-- If survivors jump past a few hundred, the Top-10 cut is doing real
-  selection for the first time, and the ranking weights (momentum 40,
-  quality 30, liquidity 30) start to matter in a way they never have.
-  Those weights have never been tested against a large pool and should
-  be reviewed once the new funnel is seen.
+Expected at Stage C: only MISSING-proxy rejections. Expected at Stage H:
+a rejection count in the hundreds.
 
 ---
 
