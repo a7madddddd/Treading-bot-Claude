@@ -20,6 +20,14 @@ Three Controller-approved changes (2026-10-07), one section each:
 
 The 9m52s gap of the real incident is reused verbatim below, so these
 tests fail against the pre-change engine for the real reason.
+
+D-0093 (2026-10-08) then removed the age-based TTL for INITIAL_ENTRY
+entirely -- GME was re-sent twice for no reason but the clock running
+out, with its price never leaving D-0007's band. The notified_at/TTL
+interaction this file tests is still real, just no longer reachable
+through INITIAL_ENTRY: section 3 below now exercises it through a
+LADDER proposal, which still age-expires. A dedicated test confirms
+INITIAL_ENTRY no longer age-expires at all.
 """
 
 from __future__ import annotations
@@ -33,8 +41,12 @@ from persistence.db import bootstrap_schema, connect
 from proposals.models import ApprovalState, TradeAction
 from proposals.repository import InMemoryProposalRepository
 
+from proposals.proposal import build_trade_proposal
+from proposals.models import FloorContext
+
 from .test_engine import (
-    StaticWatchlistSource, _make_engine, _now, _repos,
+    StaticWatchlistSource, _active_trade, _make_engine, _now, _repos,
+    _strategy,
 )
 
 REPORT_GAP = timedelta(minutes=9, seconds=52)   # the measured gap
@@ -67,8 +79,36 @@ def _the_pending(proposal_repo):
     return pending[0]
 
 
+def _engine_with_pending_ladder(notifier=None):
+    """D-0093: a PENDING LADDER proposal for a trade that already holds
+    shares. Age-based expiry still applies to this action -- unlike
+    INITIAL_ENTRY -- so this is what exercises the notified_at/TTL
+    interaction now that INITIAL_ENTRY no longer does."""
+    trade_repo, proposal_repo, execution_repo, conn = _repos()
+    kwargs = {} if notifier is None else {"notifier": notifier}
+    engine, _b, market_data, _d, used_notifier, _es = _make_engine(
+        trade_repo, proposal_repo, execution_repo, conn, **kwargs)
+    _active_trade(trade_repo, trade_id="T-LIVE", symbol="TSLA",
+                  price=100.0, shares=10, now=_now())
+    market_data.set_price("TSLA", 100.0)
+    engine._lock.acquire(now=_now())
+    ladder = build_trade_proposal(
+        proposal_id="T-LIVE-ladder_1-aaaa", trade_id="T-LIVE",
+        action=TradeAction.LADDER_1, symbol="TSLA",
+        current_price=100.0, as_of=_now(), strategy=_strategy(),
+        floor_context=FloorContext.known(90.0),
+    )
+    proposal_repo.save(ladder)
+    used_notifier.events.clear()
+    return engine, proposal_repo, used_notifier, ladder.proposal_id
+
+
 # ---------------------------------------------------------------- 3 --
 class TestTheClockStartsWhenHeCouldSeeIt(unittest.TestCase):
+    """D-0093 moved this mechanism off INITIAL_ENTRY -- it still governs
+    LADDER expiry, so the fixture here is a ladder, not an initial
+    entry."""
+
     def _case(self, *, notified):
         """A proposal whose message went out REPORT_GAP after the row was
         written -- the shape of every proposal before change 1.
@@ -78,19 +118,19 @@ class TestTheClockStartsWhenHeCouldSeeIt(unittest.TestCase):
         That is the only way to reproduce a pre-change row, which is
         exactly what the sweep must keep handling correctly.
         """
-        engine, repo, _n = _engine_with_pending()
-        proposal = _the_pending(repo)
+        engine, repo, _n, pid = _engine_with_pending_ladder()
+        engine.run_reconciliation_tick(now=_now())
         value = (_now() + REPORT_GAP).isoformat() if notified else None
         engine._proposal_repo._conn.execute(
             "UPDATE proposals SET notified_at = ? WHERE proposal_id = ?",
-            (value, proposal.proposal_id),
+            (value, pid),
         )
         engine._proposal_repo._conn.commit()
         self.assertEqual(
-            repo.get(proposal.proposal_id).notified_at,
+            repo.get(pid).notified_at,
             (_now() + REPORT_GAP) if notified else None,
             msg="fixture precondition")
-        return engine, repo, proposal.proposal_id
+        return engine, repo, pid
 
     def _state(self, repo, pid):
         return repo.get(pid).approval_state
@@ -124,16 +164,43 @@ class TestTheClockStartsWhenHeCouldSeeIt(unittest.TestCase):
     def test_a_delivered_proposal_is_marked_automatically(self):
         """Not a unit test of mark_notified -- a test that the engine
         actually calls it on the delivery path. Without this the column
-        stays NULL forever and the fix is inert."""
+        stays NULL forever and the fix is inert (and P-093's send-gap
+        measurement, which still reads notified_at, goes blind).
+
+        Uses the plain INITIAL_ENTRY fixture: notified_at is still
+        stamped on every proposal after D-0093, it is just no longer
+        read by INITIAL_ENTRY's own (now-removed) age expiry."""
         engine, repo, _n = _engine_with_pending()
         self.assertEqual(_the_pending(repo).notified_at, _now())
+
+
+class TestInitialEntryNoLongerAgeExpires(unittest.TestCase):
+    """D-0093 (Controller, 2026-10-08): "the one hour waiting we didn't
+    need it anymore" -- GME was re-sent at 14:38 and 15:37 purely because
+    the clock ran out, not because its price had moved. INITIAL_ENTRY now
+    retires ONLY on price drift (D-0090's PRICE_BAND_FRACTION, unchanged
+    at 0.5%), never on age."""
+
+    def test_an_initial_entry_survives_many_hours_at_a_flat_price(self):
+        engine, repo, _n = _engine_with_pending()
+        pid = _the_pending(repo).proposal_id
+        engine.run_reconciliation_tick(now=_now() + TTL * 10)
+        self.assertIs(repo.get(pid).approval_state, ApprovalState.PENDING)
+
+    def test_a_LADDER_still_age_expires_the_same_day(self):
+        """The contrast case, in the same file: age-based expiry is not
+        gone, it is scoped."""
+        engine, repo, _n, pid = _engine_with_pending_ladder()
+        engine.run_reconciliation_tick(now=_now() + TTL)
+        self.assertIs(repo.get(pid).approval_state, ApprovalState.EXPIRED)
 
 
 class TestADeliveryFailureDoesNotStartTheClock(unittest.TestCase):
     def test_an_undelivered_proposal_keeps_the_creation_clock(self):
         """He never saw it, so he is not owed an hour from the send --
-        and it must not become immortal either."""
-        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        and it must not become immortal either. Uses a LADDER proposal
+        (D-0093): INITIAL_ENTRY no longer age-expires at all, delivered
+        or not."""
 
         class _FailingNotifier:
             def __init__(self):
@@ -144,16 +211,11 @@ class TestADeliveryFailureDoesNotStartTheClock(unittest.TestCase):
                 self.events.append(event)
                 return NotificationResult(success=False, attempts=1)
 
-        engine, _b, market_data, _d, _n, _es = _make_engine(
-            trade_repo, proposal_repo, execution_repo, conn,
-            watchlist=StaticWatchlistSource(("TSLA",)),
-            notifier=_FailingNotifier(),
-        )
-        market_data.set_price("TSLA", 100.0)
-        engine._lock.acquire(now=_now())
-        engine.run_trigger_check(now=_now())
+        engine, proposal_repo, _n, pid = _engine_with_pending_ladder(
+            notifier=_FailingNotifier())
+        engine.run_reconciliation_tick(now=_now())
 
-        proposal = _the_pending(proposal_repo)
+        proposal = proposal_repo.get(pid)
         self.assertIsNone(proposal.notified_at)
 
         engine.run_reconciliation_tick(now=_now() + TTL)

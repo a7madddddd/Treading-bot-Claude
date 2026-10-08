@@ -1743,6 +1743,20 @@ class TestProposalExpiry(unittest.TestCase):
     Live motivation: KO and V sat PENDING from 2026-10-01 and locked
     both symbols out indefinitely, because nothing in the system ever
     expired a pending proposal.
+
+    D-0093 (Controller, 2026-10-08) then scoped the age-based TTL to
+    LADDER only. His words: "we need to [keep] one validation, the
+    price ... the one hour waiting we didn't need it anymore." GME was
+    re-sent at 14:38 ET and again at 15:37 ET on 2026-10-07/08 purely
+    because the first copy aged out -- its price never left D-0007's
+    ±0.5% band, so the age clock was a second validation on top of the
+    price one he actually wanted. INITIAL_ENTRY now retires ONLY via
+    _supersede_drifted_proposals (D-0090, price drift), which already
+    replaces the retired proposal with a fresh one in the same tick.
+    This class is rewritten onto a LADDER fixture, which still carries
+    the age-based TTL -- a ladder's trade already holds shares, so
+    D-0090 deliberately never touches it. A separate class below
+    pins the new INITIAL_ENTRY behavior directly.
     """
 
     TTL = Engine.PROPOSAL_TTL_SECONDS
@@ -1751,18 +1765,21 @@ class TestProposalExpiry(unittest.TestCase):
     def _events(notifier, name):
         return [e for e in notifier.events if e.event == name]
 
-    def _pending_initial_entry(self, now):
-        """Builds a trade in AWAITING_INITIAL_FILL with one PENDING
-        INITIAL_ENTRY proposal, exactly as _start_new_trade does."""
+    def _pending_ladder(self, now):
+        """A trade that already ACTIVE-holds shares, with one PENDING
+        LADDER_1 proposal -- the shape _check_floor_trigger/
+        _process_trade produce when a ladder trigger is crossed."""
         trade_repo, proposal_repo, execution_repo, conn = _repos()
         engine, _b, market_data, _d, notifier, _e = _make_engine(
             trade_repo, proposal_repo, execution_repo, conn,
-            watchlist=StaticWatchlistSource(("TSLA",)),
         )
-        market_data.set_price("TSLA", 100.0)
+        _active_trade(trade_repo, trade_id="T-1", symbol="TSLA",
+                      price=100.0, shares=10, now=now)
+        market_data.set_price("TSLA", 94.6)   # below ladder 1 at 95.0
         engine._lock.acquire(now=now)
         engine.run_trigger_check(now=now)
-        proposals = proposal_repo.list_for_symbol("TSLA")
+        proposals = [p for p in proposal_repo.list_for_trade("T-1")
+                    if p.proposed_action is TradeAction.LADDER_1]
         self.assertEqual(len(proposals), 1)
         self.assertIs(proposals[0].approval_state, ApprovalState.PENDING)
         return engine, trade_repo, proposal_repo, notifier, proposals[0]
@@ -1770,7 +1787,7 @@ class TestProposalExpiry(unittest.TestCase):
     def test_pending_proposal_survives_just_under_the_ttl(self):
         now = _now()
         engine, _tr, proposal_repo, _n, proposal = \
-            self._pending_initial_entry(now)
+            self._pending_ladder(now)
         engine.run_reconciliation_tick(
             now=now + timedelta(seconds=self.TTL - 1))
         self.assertIs(proposal_repo.get(proposal.proposal_id).approval_state,
@@ -1779,7 +1796,7 @@ class TestProposalExpiry(unittest.TestCase):
     def test_pending_proposal_expires_at_the_ttl(self):
         now = _now()
         engine, _tr, proposal_repo, notifier, proposal = \
-            self._pending_initial_entry(now)
+            self._pending_ladder(now)
         engine.run_reconciliation_tick(now=now + timedelta(seconds=self.TTL))
         stored = proposal_repo.get(proposal.proposal_id)
         self.assertIs(stored.approval_state, ApprovalState.EXPIRED)
@@ -1789,30 +1806,18 @@ class TestProposalExpiry(unittest.TestCase):
         self.assertIn("60 minutes", events[0].message)
         self.assertIn("Nothing was bought or sold", events[0].message)
 
-    def test_expired_initial_entry_releases_the_symbol(self):
-        """The KO/V failure. Without this the symbol is locked forever."""
-        now = _now()
-        engine, trade_repo, _pr, _n, _p = self._pending_initial_entry(now)
-        from trade.models import describe_status as _status
-        before = trade_repo.list_for_symbol("TSLA")
-        self.assertEqual(_status(before[0].trade), "AWAITING_INITIAL_FILL")
-
-        engine.run_reconciliation_tick(now=now + timedelta(seconds=self.TTL))
-
-        after = trade_repo.list_for_symbol("TSLA")
-        self.assertEqual(_status(after[0].trade), "ABANDONED")
-
-    def test_symbol_can_be_proposed_again_after_expiry(self):
-        """End to end: the release must actually let a NEW proposal be
-        created for the same symbol on a later cycle."""
+    def test_ladder_symbol_can_be_re_proposed_after_expiry(self):
+        """End to end: an expired ladder lapses and the next D-0021
+        tick re-proposes it from the unchanged frozen reference."""
         now = _now()
         engine, _tr, proposal_repo, _n, first = \
-            self._pending_initial_entry(now)
+            self._pending_ladder(now)
         later = now + timedelta(seconds=self.TTL)
         engine.run_reconciliation_tick(now=later)
         engine.run_trigger_check(now=later)
 
-        proposals = proposal_repo.list_for_symbol("TSLA")
+        proposals = [p for p in proposal_repo.list_for_trade("T-1")
+                    if p.proposed_action is TradeAction.LADDER_1]
         self.assertEqual(len(proposals), 2)
         ids = {p.proposal_id for p in proposals}
         self.assertIn(first.proposal_id, ids)
@@ -1825,10 +1830,10 @@ class TestProposalExpiry(unittest.TestCase):
         Staleness of an APPROVED proposal is D-0007 revalidation's job."""
         now = _now()
         engine, _tr, proposal_repo, _n, proposal = \
-            self._pending_initial_entry(now)
+            self._pending_ladder(now)
         proposal_repo.record_decision(
             proposal.proposal_id, approved=True, decided_by="controller",
-            decided_at=now, action=TradeAction.INITIAL_ENTRY,
+            decided_at=now, action=TradeAction.LADDER_1,
         )
         engine.run_reconciliation_tick(
             now=now + timedelta(seconds=self.TTL * 5))
@@ -1838,10 +1843,10 @@ class TestProposalExpiry(unittest.TestCase):
     def test_a_REJECTED_proposal_is_not_touched(self):
         now = _now()
         engine, _tr, proposal_repo, _n, proposal = \
-            self._pending_initial_entry(now)
+            self._pending_ladder(now)
         proposal_repo.record_decision(
             proposal.proposal_id, approved=False, decided_by="controller",
-            decided_at=now, action=TradeAction.INITIAL_ENTRY,
+            decided_at=now, action=TradeAction.LADDER_1,
         )
         engine.run_reconciliation_tick(
             now=now + timedelta(seconds=self.TTL * 5))
@@ -1883,7 +1888,7 @@ class TestProposalExpiry(unittest.TestCase):
 
     def test_expiry_is_reported_once_not_every_tick(self):
         now = _now()
-        engine, _tr, _pr, notifier, _p = self._pending_initial_entry(now)
+        engine, _tr, _pr, notifier, _p = self._pending_ladder(now)
         for extra in (0, 30, 60, 90):
             engine.run_reconciliation_tick(
                 now=now + timedelta(seconds=self.TTL + extra))
@@ -1918,19 +1923,26 @@ class TestProposalExpiry(unittest.TestCase):
     def test_tapping_a_button_after_expiry_is_not_a_CRITICAL_alarm(self):
         """With a 60-minute TTL this becomes routine. An alarm that
         fires on ordinary behavior trains the Controller to ignore
-        alarms."""
+        alarms.
+
+        D-0093: this can only still happen through a LADDER -- an
+        INITIAL_ENTRY proposal no longer age-expires at all, so a late
+        tap on one only loses this race via D-0090's price-drift
+        supersession, which this test does not exercise."""
         now = _now()
         trade_repo, proposal_repo, execution_repo, conn = _repos()
         decision_source = InMemoryDecisionSource()
         engine, _b, market_data, _d, notifier, _e = _make_engine(
             trade_repo, proposal_repo, execution_repo, conn,
-            watchlist=StaticWatchlistSource(("TSLA",)),
             decision_source=decision_source,
         )
-        market_data.set_price("TSLA", 100.0)
+        _active_trade(trade_repo, trade_id="T-1", symbol="TSLA",
+                      price=100.0, shares=10, now=now)
+        market_data.set_price("TSLA", 94.6)   # below ladder 1 at 95.0
         engine._lock.acquire(now=now)
         engine.run_trigger_check(now=now)
-        proposal = proposal_repo.list_for_symbol("TSLA")[0]
+        proposal = [p for p in proposal_repo.list_for_trade("T-1")
+                   if p.proposed_action is TradeAction.LADDER_1][0]
 
         # Tick 1 expires it. Tick 2 carries a late approval.
         engine.run_reconciliation_tick(now=now + timedelta(seconds=self.TTL))

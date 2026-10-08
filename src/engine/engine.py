@@ -958,22 +958,36 @@ class Engine:
                 )
 
     def _expire_stale_proposals(self, *, now: datetime) -> None:
-        """Expires PENDING proposals older than PROPOSAL_TTL_SECONDS.
+        """Expires PENDING LADDER proposals older than
+        PROPOSAL_TTL_SECONDS.
 
-        Two deliberate restrictions, both of which would be real bugs if
-        relaxed:
+        D-0093 (Controller, 2026-10-08): INITIAL_ENTRY proposals no
+        longer expire on age. His own words: "we need to [keep] one
+        validation, the price -- ... the one hour waiting we didn't
+        need it anymore." Two live cases forced this -- GME on
+        2026-10-07/08 was re-sent at 14:38 and again at 15:37 purely
+        because the first copy aged out, not because its price had
+        moved past D-0007's existing ±0.5% band
+        (PRICE_BAND_FRACTION, UNCHANGED). The age clock was a second,
+        redundant validation on top of the price one.
 
-        1. ONLY PENDING is touched. An APPROVED proposal is a Controller
-           decision and is never discarded by a timer -- D-0007
-           revalidation already refuses a stale approved submission on
-           price drift. (Enforced again inside plan_expiry.)
+        INITIAL_ENTRY is now retired ONLY by _supersede_drifted_proposals
+        (price drift past PRICE_BAND_FRACTION), which already runs every
+        scheduled check and already replaces the retired proposal with a
+        fresh one in the same tick -- so removing the age clock costs
+        nothing a Controller decision needs and removes exactly the
+        redundant validation he asked to drop.
 
-        2. ONLY an expired INITIAL_ENTRY abandons its trade. A LADDER
-           proposal belongs to a trade that already HOLDS SHARES, and
-           abandoning that trade would drop a live position's Ladder and
-           Floor tracking -- losing the protective floor on a real
-           position. An expired ladder simply lapses; the next D-0021
-           tick re-proposes it from the unchanged frozen reference.
+        LADDER proposals keep the age-based TTL: they have no
+        drift-supersede path (D-0090 scoped it to INITIAL_ENTRY only,
+        because a ladder belongs to a trade that already holds shares),
+        and an un-expiring ladder would leave stale buttons live
+        indefinitely with nothing to retire them.
+
+        Restriction preserved from before D-0093: ONLY PENDING is
+        touched. An APPROVED proposal is a Controller decision and is
+        never discarded by a timer -- D-0007 revalidation already
+        refuses a stale approved submission on price drift.
         """
 
         for trade_record in self._trade_repo.list_active():
@@ -981,17 +995,8 @@ class Engine:
             for proposal in self._proposal_repo.list_for_trade(trade.trade_id):
                 if proposal.approval_state is not ApprovalState.PENDING:
                     continue
-                # P-091: measure from the moment he could SEE it, not
-                # from the moment the row was written. The two differ by
-                # however long the research report took -- 9m52s and
-                # 9m47s on 2026-10-07 -- and that difference was being
-                # taken out of his hour without being disclosed.
-                #
-                # notified_at is NULL for every row written before
-                # migration 0010 and for any proposal whose delivery
-                # failed, and both fall back to proposal_created_at,
-                # which is exactly the old behavior. So nothing that
-                # used to expire stops expiring.
+                if proposal.proposed_action is TradeAction.INITIAL_ENTRY:
+                    continue
                 clock_start = proposal.notified_at or proposal.proposal_created_at
                 age_seconds = (now - clock_start).total_seconds()
                 if age_seconds < self.PROPOSAL_TTL_SECONDS:

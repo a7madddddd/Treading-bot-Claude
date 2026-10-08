@@ -7426,3 +7426,40 @@ minutes before the first check, and still catches a failed 06:00 timer.
 
 Offered to the Controller as a single-field change to the existing line.
 Not applied: the schedule is his.
+
+## D-0093 — INITIAL_ENTRY no longer age-expires; only the price band retires it
+
+- **Date:** 2026-10-08
+- **Status:** APPROVED
+- **Approved by:** Controller ("the one hour waiting we didn't need it
+  anymore ... just we need to keep the percentage number without change
+  it and remove the one hour validation")
+- **Scope:** `PRICE_BAND_FRACTION` (0.5%, D-0007) is UNCHANGED. Only the
+  age-based TTL sweep is narrowed.
+
+### Trigger
+
+GME, 2026-10-07/08: sent at 14:38 ET, expired at 15:28 ET (age only —
+its price never left the 0.5% band), re-sent at 15:37 ET, approved
+late and refused as `decision_on_expired_proposal`. Two validations
+were firing on the same proposal (age AND price); the Controller said
+the price check alone is enough.
+
+### Change
+
+`_expire_stale_proposals` now skips `INITIAL_ENTRY` entirely. Only
+`LADDER` proposals age out by `PROPOSAL_TTL_SECONDS` (3600s, unchanged).
+`INITIAL_ENTRY` is retired exclusively by `_supersede_drifted_proposals`
+(D-0090), which already replaces a retired proposal with a fresh one in
+the same tick.
+
+### Risk flagged, not blocking
+
+A flat-price `INITIAL_ENTRY` now stays PENDING indefinitely until the
+Controller acts or the price moves past 0.5%. Accepted: he can
+Approve/Reject at any time, and this is the behavior he asked for.
+
+Tests: `tests/engine/test_p091_approval_clock.py::TestInitialEntryNoLongerAgeExpires`
+(fails against the pre-change engine, verified). `TestProposalExpiry` in
+`test_engine.py` rewritten onto a LADDER fixture. Full suite: 1869
+passed.
