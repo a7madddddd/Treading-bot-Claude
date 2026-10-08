@@ -469,19 +469,27 @@ class Engine:
             maximum_position=sizing.maximum_position,
         )
 
-    ENRICHMENT_TIMEOUT_SECONDS = 45.0
-    """P-091. A cap on how long the research report may take.
+    ENRICHMENT_TIMEOUT_SECONDS = 90.0
+    """P-091 / P-093. A cap on how long the research report may take.
 
     There was no cap. On 2026-10-07 the report for a single symbol took
     9m52s, and because the proposal row is saved before the report is
     assembled, every one of those seconds came out of the Controller's
     60-minute decision window -- he was handed 50 minutes and told 60.
 
-    45 seconds is a bootstrap value, not a measurement: there is no
-    recorded distribution of report latency yet, so it is set to the
-    conservative side -- long enough that a healthy multi-source report
-    finishes, short enough that a hung call costs under a minute of the
-    hour. P-093 records the measurement that will replace it.
+    Was 45.0, raised to 90.0 on 2026-10-08. 45s was a bootstrap guess,
+    and it was too tight: `grep -c "Research report" logs/engine.log`
+    on the VM found exactly TWO complete reports EVER -- both PLXS, both
+    from before this cap existed. Every proposal since, GME included,
+    lost its research block to this timeout, because
+    DeepResearchComposer.enrich() is build_report() (its own internal
+    30s-per-section deadline, run concurrently) PLUS a separate
+    evaluator.evaluate() call with no deadline of its own -- so the
+    total can exceed 45s even when every individual source eventually
+    answers. 90s is still a bootstrap, not a measurement: there is no
+    recorded distribution of total enrich() latency yet. P-093 is the
+    open item to measure it (via the enrichment_timeout event rate) and
+    set this from data.
 
     Exceeding it is not an error. The proposal is sent WITHOUT the
     research block, which is exactly what already happened on any

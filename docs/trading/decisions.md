@@ -7463,3 +7463,35 @@ Tests: `tests/engine/test_p091_approval_clock.py::TestInitialEntryNoLongerAgeExp
 (fails against the pre-change engine, verified). `TestProposalExpiry` in
 `test_engine.py` rewritten onto a LADDER fixture. Full suite: 1869
 passed.
+
+## D-0094 — ENRICHMENT_TIMEOUT_SECONDS raised 45 -> 90
+
+- **Date:** 2026-10-08
+- **Status:** APPROVED
+- **Approved by:** Controller ("yes update it")
+- **Related:** D-0089, P-093
+
+### Finding
+
+`grep -c "Research report" logs/engine.log` on the VM: **2** matches in
+the whole log, both PLXS, both from before the 45s cap existed. Every
+proposal since -- GME included -- lost its research block to the
+timeout.
+
+### Cause
+
+`DeepResearchComposer.enrich()` = `build_report()` (own internal 30s
+per-section deadline, run concurrently) + a separate
+`evaluator.evaluate()` call with NO deadline of its own. The two are not
+bounded together, so total latency can exceed 45s even when every
+individual source eventually answers.
+
+### Change
+
+45.0 -> 90.0. Still a bootstrap, not a measurement -- no recorded
+distribution of total `enrich()` latency exists yet. **P-093 remains
+open**: measure the `enrichment_timeout` event rate against proposals
+sent and set this from data.
+
+Full suite: 1869 passed (no test hardcoded the old default; tests
+override the instance attribute directly).
