@@ -3894,3 +3894,77 @@ that did not start.
 
 **Waiting on the Controller** because it is a code change outside the
 push-without-asking list, not because it is risky.
+
+---
+
+## P-096 — A false CRITICAL position-drift alarm, caused by a timing gap, not a bug
+
+**Status:** OPEN — proposed, awaiting the Controller
+**Severity:** none to trading safety (self-healed within the same
+reconciliation tick); real cost is alarm fatigue on a CRITICAL channel
+that must stay trustworthy
+
+### What happened (2026-10-09)
+
+1. 12:37 ET — the Initial Entry proposal for `S` (47 shares @ $26.40) was
+   sent.
+2. The Controller approved it within the same minute. The broker filled
+   the order immediately and completely (47/47 @ $26.40, confirmed from
+   the Alpaca order record: `submitted_at == filled_at`).
+3. `_check_position_drift` (`src/engine/engine.py:835`, D-0073) ran
+   inside the same `run_reconciliation_tick` call, before
+   `reconcile_unresolved()` had picked up the fresh fill, and found the
+   broker holding 47 shares against the Engine's still-unreconciled 0.
+   It sent a CRITICAL `position_drift_detected`: "Broker says 47
+   shares, We think 0 shares ... 47 are unprotected."
+4. The very next tick's `reconcile_unresolved()` caught the terminal
+   fill and called `_apply_to_trade_if_terminal` →
+   `freeze_initial_reference`, so `total_shares` became 47 within
+   seconds. Confirmed from the live DB after the fact:
+   `('S-8265baa7', 'S', 47, 1, 47)` — fully reconciled, matches the
+   broker exactly.
+
+### FACT, why this is a race and not a drift
+
+`run_reconciliation_tick` already calls `reconcile_unresolved()` before
+`_check_position_drift()` (lines 809 and 831). The gap is not a missing
+call — it is that a freshly-approved order can be submitted, acked by
+the broker as "new", and filled by the broker's matching engine faster
+than the NEXT tick's poll can observe it. The drift check has no way to
+know a fill is "in flight" versus genuinely lost.
+
+### Why it is not dangerous as observed
+
+The position was never actually unprotected at the broker — Alpaca held
+the real position the whole time. What was briefly stale was only this
+Engine's own bookkeeping, for under one reconciliation interval. No
+Controller action was needed and none was possible faster than the
+self-heal.
+
+### Why it still matters
+
+D-0059's own reasoning ("an alarm that fires on ordinary behavior trains
+the Controller to ignore alarms") applies here directly. A CRITICAL
+`position_drift_detected` that resolves itself within seconds of a
+normal approve-and-fill is indistinguishable, in the moment, from a real
+lost-position event — the Controller has no way to tell them apart
+without reading the DB by hand, which is what this session did.
+
+### Options, not yet decided (any of these changes notification/detection code, not trading behavior)
+
+1. Debounce: require the drift to persist across two consecutive checks
+   (10-minute `POSITION_DRIFT_INTERVAL_SECONDS` apart) before notifying,
+   instead of notifying on the first observation.
+2. Skip the drift check for a trade whose `initial_order_reconciled` is
+   `False` and whose Initial Entry was approved less than N seconds ago
+   — i.e. recognize "fill in flight" as a known state, not an unknown
+   one.
+3. Leave it and accept the occasional false CRITICAL, documenting it so
+   the Controller recognizes the pattern on sight.
+
+**Recommendation not yet formed** — needs the Controller's sense of how
+often this is likely to recur (it requires an approval landing inside
+the same ~30s window as a drift check) before picking between a fix and
+accepting the noise.
+
+**Waiting on the Controller.**
