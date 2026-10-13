@@ -126,6 +126,10 @@ class SymbolResearch:
     day_low: Optional[float] = None
     day_volume: Optional[float] = None
     prev_close: Optional[float] = None
+    snapshot_is_previous_session: bool = False
+    """P-092. True when the Polygon snapshot fell back to the previous
+    session's bar (free-tier /v2/aggs fallback) instead of a live
+    /v2/snapshot. Must be read before labelling price data "live"."""
 
     # ---- Multi-period performance (Polygon aggregates, D-0050 Phase 12) --
     return_5d_pct: Optional[float] = None
@@ -278,6 +282,29 @@ class SymbolResearchHub:
                 self._apply(research, name, data)
                 research.sources_succeeded.append(name)
 
+        # Headline-display fallback: Tiingo's `news_headlines` (up to 5,
+        # via _fetch_tiingo) may still leave us under 3 displayable
+        # items, or no Tiingo client may be configured at all. Top up
+        # from Polygon news the same way the pre-dedup deep_research
+        # formatter used to, WITHOUT touching news_count_48h (that
+        # stays Tiingo's own count -- it feeds _score_news and must not
+        # shift just because the display list got padded).
+        if len(research.news_headlines) < 3 and self._pg is not None:
+            try:
+                pnews = self._pg.get_news(symbol, limit=5)
+            except Exception:  # noqa: BLE001
+                pnews = []
+            for item in (pnews or []):
+                if len(research.news_headlines) >= 3:
+                    break
+                if isinstance(item, dict):
+                    t = item.get("title")
+                    s_obj = item.get("publisher") or {}
+                    s = s_obj.get("name") if isinstance(s_obj, dict) else ""
+                    if isinstance(t, str) and t.strip():
+                        research.news_headlines.append(
+                            (t.strip(), str(s or "").strip()))
+
         return research
 
     # ---- per-source fetchers ----------------------------------------
@@ -409,6 +436,8 @@ class SymbolResearchHub:
         try:
             snap = self._pg.get_ticker_snapshot(symbol)
             if isinstance(snap, dict):
+                if snap.get("_fallback_source"):
+                    out["snapshot_is_previous_session"] = True
                 day = snap.get("day") if isinstance(snap.get("day"), dict) else {}
                 prev = snap.get("prevDay") if isinstance(snap.get("prevDay"), dict) else {}
                 out["current_price"] = _as_float(day.get("c"))

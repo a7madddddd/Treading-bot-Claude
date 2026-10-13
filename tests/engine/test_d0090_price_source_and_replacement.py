@@ -182,8 +182,15 @@ class TestTheSnapshotHeadingTellsTheTruth(unittest.TestCase):
 
     def test_the_fallback_marker_is_what_sets_it(self):
         """The marker existed all along -- `_fallback_source` -- and
-        nothing read it. That was the whole defect."""
+        nothing read it. That was the whole defect.
+
+        D-0092: the flag is now set by SymbolResearchHub.collect()
+        (the single collection enrich() uses) rather than refetched
+        separately by _call_snapshot, so this drives it through the
+        hub and checks the SAME SymbolResearch field _call_snapshot
+        reads."""
         from engine.deep_research import _call_snapshot
+        from engine.research_hub import SymbolResearchHub
 
         class _Pg:
             def get_ticker_snapshot(_s, symbol):
@@ -195,11 +202,14 @@ class TestTheSnapshotHeadingTellsTheTruth(unittest.TestCase):
             def get_ticker_details(_s, symbol):
                 return None
 
-        _lines, signals = _call_snapshot(_Pg(), "PLXS")
+        research = SymbolResearchHub(polygon=_Pg()).collect("PLXS")
+        self.assertTrue(research.snapshot_is_previous_session)
+        _lines, signals = _call_snapshot(research)
         self.assertTrue(signals.get("snapshot_is_previous_session"))
 
     def test_a_paid_snapshot_does_not_set_it(self):
         from engine.deep_research import _call_snapshot
+        from engine.research_hub import SymbolResearchHub
 
         class _Pg:
             def get_ticker_snapshot(_s, symbol):
@@ -210,7 +220,9 @@ class TestTheSnapshotHeadingTellsTheTruth(unittest.TestCase):
             def get_ticker_details(_s, symbol):
                 return None
 
-        _lines, signals = _call_snapshot(_Pg(), "PLXS")
+        research = SymbolResearchHub(polygon=_Pg()).collect("PLXS")
+        self.assertFalse(research.snapshot_is_previous_session)
+        _lines, signals = _call_snapshot(research)
         self.assertFalse(signals.get("snapshot_is_previous_session"))
 
 
