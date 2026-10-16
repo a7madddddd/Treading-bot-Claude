@@ -157,7 +157,11 @@ class TestOptionESupersession(unittest.TestCase):
         self.assertEqual(proposal_repo.get("P-1").approval_state, ApprovalState.APPROVED)
         self.assertIsNone(proposal_repo.get("P-2"))
 
-    def test_approved_but_d0007_invalid_sibling_is_never_touched_and_new_save_allowed(self):
+    def test_still_d0007_valid_sibling_blocks_the_new_save(self):
+        """2026-10-15: age is no longer part of D-0007 validity (see
+        revalidation.py), so P-1's approval from 6 minutes earlier is
+        STILL valid here (price is unchanged) and must still block the
+        new save with ProposalDecisionConflictError."""
         proposal_repo, trade_repo, _ = _repo()
         _save_trade(trade_repo)
         proposal_repo.save(_make_proposal(proposal_id="P-1", action=TradeAction.LADDER_1, price=100.0))
@@ -165,8 +169,6 @@ class TestOptionESupersession(unittest.TestCase):
             "P-1", approved=True, decided_by="controller", decided_at=_now(), action=TradeAction.LADDER_1
         )
 
-        # A new attempt created 6 minutes later -- P-1's approval has aged
-        # out of its 5-minute D-0007 window.
         stale_now = _now() + timedelta(minutes=6)
         p2 = build_trade_proposal(
             proposal_id="P-2",
@@ -178,10 +180,11 @@ class TestOptionESupersession(unittest.TestCase):
             strategy=_strategy(),
             floor_context=FloorContext.known(80.0),
         )
-        proposal_repo.save(p2)  # must not raise
+        with self.assertRaises(ProposalDecisionConflictError):
+            proposal_repo.save(p2)
 
-        self.assertEqual(proposal_repo.get("P-1").approval_state, ApprovalState.APPROVED)  # never auto-expired
-        self.assertEqual(proposal_repo.get("P-2").approval_state, ApprovalState.PENDING)
+        self.assertEqual(proposal_repo.get("P-1").approval_state, ApprovalState.APPROVED)
+        self.assertIsNone(proposal_repo.get("P-2"))
 
     def test_rejected_sibling_never_blocks_and_is_never_touched(self):
         proposal_repo, trade_repo, _ = _repo()
@@ -274,6 +277,10 @@ class TestActionScopedApprovalAndD0007(unittest.TestCase):
         self.assertFalse(result.allowed)
 
     def test_d0007_boundary_via_persisted_proposal(self):
+        """2026-10-15: age no longer gates validate_for_submission() --
+        only the price band and floor-priority checks do (see
+        revalidation.py). A persisted, approved proposal stays
+        submittable hours later as long as price is still in band."""
         proposal_repo, trade_repo, _ = _repo()
         _save_trade(trade_repo)
         proposal_repo.save(_make_proposal(action=TradeAction.LADDER_1, price=100.0))
@@ -281,16 +288,15 @@ class TestActionScopedApprovalAndD0007(unittest.TestCase):
             "P-1", approved=True, decided_by="controller", decided_at=_now(), action=TradeAction.LADDER_1
         )
         p = proposal_repo.get("P-1")
-        # Just over 5 minutes -- must fail.
         result = validate_for_submission(
             p,
             trigger_price=p.ladder_1_trigger,
             current_price=p.ladder_1_trigger,
             active_floor_price=80.0,
-            now=_now() + timedelta(minutes=5, seconds=1),
+            now=_now() + timedelta(hours=6),
             action=TradeAction.LADDER_1,
         )
-        self.assertFalse(result.allowed)
+        self.assertTrue(result.allowed)
 
 
 class TestProposalHistoryPreserved(unittest.TestCase):

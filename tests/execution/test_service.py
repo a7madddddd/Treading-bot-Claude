@@ -206,15 +206,21 @@ class TestApprovalAndD0007Boundaries(unittest.TestCase):
         self.assertEqual(broker.submit_calls, [])
         self.assertIsNone(execution_repo.get_by_proposal_id("P-1"))
 
-    def test_d0007_expired_approval_blocks_submission(self):
+    def test_approval_age_no_longer_blocks_submission(self):
+        """2026-10-15 (Ahmad's request): the post-approval age check
+        was removed from validate_for_submission() -- it used to make
+        an approved Ladder permanently unsubmittable after 5 minutes
+        with no way to recover, so the engine spammed an identical
+        submission_not_allowed notification every cycle forever once
+        that window passed (NVDA-1c731362-ladder_1, 2026-10-14/15).
+        Only the price band (and floor-priority) gate submission now."""
         trade_repo, proposal_repo, execution_repo = _repos()
         _approved_initial_entry(trade_repo, proposal_repo, price=100.0)
         broker = FakeBrokerClient()
         service = ExecutionService(execution_repo, proposal_repo, trade_repo, broker)
-        with self.assertRaises(SubmissionNotAllowedError):
-            service.submit_approved_proposal(
-                "P-1", current_price=100.0, active_floor_price=50.0, now=_now() + timedelta(minutes=10)
-            )
+        service.submit_approved_proposal(
+            "P-1", current_price=100.0, active_floor_price=50.0, now=_now() + timedelta(minutes=10)
+        )
 
 
 class TestInitialEntryFlow(unittest.TestCase):

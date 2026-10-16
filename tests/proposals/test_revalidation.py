@@ -76,27 +76,22 @@ class TestRevalidation(unittest.TestCase):
         self.assertFalse(result.allowed)
         self.assertIn("rejected", result.reason)
 
-    def test_rejects_approval_older_than_5_minutes(self):
+    def test_allows_approval_far_older_than_the_old_5_minute_window(self):
+        """2026-10-15: the post-approval age check was removed (Ahmad's
+        request) -- a Ladder that sits approved-but-untriggered, or
+        un-actioned, for hours must still be submittable as long as
+        price is still within band. Before this, approval age alone
+        made a Ladder permanently unsubmittable after 5 minutes with
+        no way to recover, so the engine spammed an identical
+        submission_not_allowed notification every cycle forever (the
+        NVDA-1c731362-ladder_1 case, 2026-10-14/15)."""
         p = _approved_proposal()
         result = validate_for_submission(
             p,
             trigger_price=95.0,
             current_price=95.0,
             active_floor_price=80.0,
-            now=p.approval_received_at + timedelta(minutes=5, seconds=1),
-            action=TradeAction.INITIAL_ENTRY,
-        )
-        self.assertFalse(result.allowed)
-        self.assertIn("5-minute", result.reason)
-
-    def test_allows_approval_at_exactly_5_minutes(self):
-        p = _approved_proposal()
-        result = validate_for_submission(
-            p,
-            trigger_price=95.0,
-            current_price=95.0,
-            active_floor_price=80.0,
-            now=p.approval_received_at + timedelta(minutes=5),
+            now=p.approval_received_at + timedelta(hours=6),
             action=TradeAction.INITIAL_ENTRY,
         )
         self.assertTrue(result.allowed)

@@ -392,19 +392,27 @@ class TestApprovedSiblingNeverSilentlyExpired(unittest.TestCase):
         self.assertIsNone(repo.get("P-2"))
 
     # -- Item 3: just over 5 minutes old -> allowed, old record unchanged.
-    def test_just_over_five_minutes_old_allows_creation(self):
+    def test_still_valid_sibling_hours_later_still_blocks_creation(self):
+        """2026-10-15: since validate_for_submission() no longer checks
+        approval age at all (Ahmad's request -- see revalidation.py),
+        an APPROVED sibling within the price band stays D-0007-valid
+        indefinitely, so it must keep blocking a new sibling proposal
+        no matter how much time has passed -- there is no longer any
+        age at which it naturally becomes supersedable on that basis
+        alone."""
         repo = InMemoryProposalRepository()
         t0 = _now()
         self._approve_ladder_1(repo, "P-1", "T-1", price=100.0, decided_at=t0)
         p1_before = repo.get("P-1")
 
         new_proposal = _make(proposal_id="P-2", trade_id="T-1", action=TradeAction.LADDER_1, price=95.0)
-        new_proposal = replace(new_proposal, proposal_created_at=t0 + timedelta(minutes=5, seconds=1))
-        repo.save(new_proposal)  # must not raise
+        new_proposal = replace(new_proposal, proposal_created_at=t0 + timedelta(hours=6))
+        with self.assertRaises(ProposalDecisionConflictError):
+            repo.save(new_proposal)
 
         self.assertEqual(repo.get("P-1"), p1_before)
-        self.assertEqual(repo.get("P-1").approval_state, ApprovalState.APPROVED)  # never auto-EXPIRED
-        self.assertEqual(repo.get("P-2").approval_state, ApprovalState.PENDING)
+        self.assertEqual(repo.get("P-1").approval_state, ApprovalState.APPROVED)
+        self.assertIsNone(repo.get("P-2"))
 
     # -- Item 4: exactly +/-0.5% price deviation -> blocked.
     def test_exactly_half_percent_deviation_still_blocks(self):
@@ -676,16 +684,19 @@ class TestPlanSaveSupersessionIsPure(unittest.TestCase):
         with self.assertRaises(ProposalDecisionConflictError):
             plan_save_supersession([approved], new)
 
-    def test_approved_but_d0007_invalid_sibling_is_never_returned_for_expiry(self):
+    def test_still_d0007_valid_sibling_blocks_the_new_save(self):
+        """2026-10-15: age is no longer part of D-0007 validity (see
+        revalidation.py), so a sibling created 6 minutes earlier is
+        STILL valid here (price is unchanged) and must still block --
+        plan_save_supersession() never silently drops a still-valid
+        Controller approval, it raises instead."""
         approved = _make(proposal_id="P-a", action=TradeAction.LADDER_1, price=100.0).with_decision(
             approved=True, decided_by="controller", decided_at=_now(), action=TradeAction.LADDER_1
         )
-        # New proposal created 6 minutes later -- the sibling's approval
-        # has aged out of its 5-minute D-0007 window.
         new = _make(proposal_id="P-new", action=TradeAction.LADDER_1, price=95.0)
         new = replace(new, proposal_created_at=_now() + timedelta(minutes=6))
-        result = plan_save_supersession([approved], new)
-        self.assertEqual(result, ())  # never auto-expired, never returned
+        with self.assertRaises(ProposalDecisionConflictError):
+            plan_save_supersession([approved], new)
 
     def test_rejects_invalid_current_price(self):
         new = _make(action=TradeAction.LADDER_1)

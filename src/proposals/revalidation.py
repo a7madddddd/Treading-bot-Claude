@@ -1,10 +1,18 @@
 """D-0007-compatible revalidation -- pure, deterministic, no network.
 
-Implements exactly `docs/architecture/state-management.md` §2
-invariant 5, unchanged:
+Implements `docs/architecture/state-management.md` §2 invariant 5,
+with the post-approval time window removed (Ahmad, 2026-10-15): an
+approved proposal used to also require `now - approval_received_at
+<= 5 min`, so a Ladder sitting un-decided (or decided but not yet
+triggered) for longer than 5 minutes became permanently unsubmittable
+-- the engine kept retrying it every cycle forever with no way for it
+to ever succeed again, spamming an identical `submission_not_allowed`
+notification each time (see the removed check's old failure message:
+"approval age ... exceeds the 5-minute window"). Approval age is no
+longer checked at all; only the price-band check below gates
+submission now:
 
     "Ladder N submission requires: proposal approved AND
-     now - approval_received_at <= 5 min AND
      |current - trigger| / trigger <= 0.005 AND
      trigger > active_floor_price."
 
@@ -84,13 +92,6 @@ def validate_for_submission(
                 f"{action.value!r} -- an approval for one action must never "
                 "authorize a different action"
             ),
-        )
-
-    age = now - proposal.approval_received_at
-    if age.total_seconds() > 5 * 60:
-        return RevalidationResult(
-            allowed=False,
-            reason=f"approval age {age} exceeds the 5-minute window",
         )
 
     if trigger_price <= 0:

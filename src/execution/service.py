@@ -50,6 +50,7 @@ separate, future Controller decision.
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from datetime import datetime
 from typing import List, Optional, Tuple
@@ -60,7 +61,7 @@ from proposals.models import ApprovalState, TradeAction, TradeProposal, approved
 from proposals.repository import ProposalRepository
 from proposals.revalidation import validate_for_submission
 from trade.models import InitialOrderStatus
-from trade.repository import TradeRepository
+from trade.repository import TradeRepository, TradeRevisionConflictError
 
 from .broker_client import BrokerClient
 from .models import CREATED, OrderExecution
@@ -512,6 +513,65 @@ class ExecutionService:
         self._apply_to_trade_if_terminal(new_record, proposal, now=now)
         return new_record
 
+    # D-0092 follow-up (2026-10-14, P-098): the Trade row is updated
+    # with optimistic locking (expected_revision). TradeRepository.update()
+    # itself documents that on a TradeRevisionConflictError "the caller
+    # must reload ... and decide how to proceed" -- but no caller here
+    # ever did, so a losing race was an uncaught exception propagating
+    # out of _reconcile_one(), caught only by reconcile_unresolved()'s
+    # broad per-execution try/except. That generic handler logs "left
+    # unresolved, will be retried on a later reconciliation pass", but
+    # that claim does not hold for this failure mode specifically: the
+    # execution's own row was already committed terminal (e.g. "filled")
+    # one step earlier in the SAME call (_reconcile_one -> the
+    # self._execution_repo.update() above), so list_unresolved() never
+    # surfaces it again. The fill is confirmed at the broker and
+    # recorded in order_executions, but is silently and permanently
+    # never applied to the Trade -- exactly what happened to
+    # S-8265baa7's Ladder 1 fill on 2026-10-13 (confirmed in
+    # logs/engine.log: "reconciliation failed for execution
+    # 460389e6be704f589a7c333f49980b12 ... left unresolved, will be
+    # retried" -- it never was, because trades.ladder1_filled stayed 0
+    # forever after). _update_trade_with_retry() is the actual retry
+    # TradeRepository.update()'s docstring always assumed existed:
+    # reload the Trade fresh and recompute from ITS current state (not
+    # from a result.of the loser's race) on each attempt, so a losing
+    # race is retried in-process instead of being lost outright.
+    _TRADE_UPDATE_MAX_ATTEMPTS = 5
+
+    def _update_trade_with_retry(self, trade_id: str, *, now: datetime, transition: str, compute):
+        """`compute(trade_record)` must be a pure function of the given
+        TradeRecord returning either the updated Trade to persist, or
+        None to mean "nothing to do" (already applied -- the caller's
+        own idempotency check, re-evaluated fresh on every attempt so a
+        fill that lands on a retry is never double-applied). Retries
+        up to _TRADE_UPDATE_MAX_ATTEMPTS times on TradeRevisionConflictError,
+        re-reading the Trade before each attempt. Any other exception
+        from compute() or from update() propagates immediately."""
+        last_exc: Optional[TradeRevisionConflictError] = None
+        for attempt in range(self._TRADE_UPDATE_MAX_ATTEMPTS):
+            trade_record = self._trade_repo.get(trade_id)
+            if trade_record is None:
+                raise ExecutionServiceError(f"no trade found for id {trade_id!r}")
+            updated_trade = compute(trade_record)
+            if updated_trade is None:
+                return None
+            try:
+                return self._trade_repo.update(
+                    updated_trade, expected_revision=trade_record.revision,
+                    transition=transition, now=now,
+                )
+            except TradeRevisionConflictError as exc:
+                last_exc = exc
+                logger.warning(
+                    "trade %s revision conflict applying %r (attempt %d/%d) -- "
+                    "reloading current state and retrying",
+                    trade_id, transition, attempt + 1, self._TRADE_UPDATE_MAX_ATTEMPTS,
+                )
+                if attempt + 1 < self._TRADE_UPDATE_MAX_ATTEMPTS:
+                    time.sleep(0.05 * (attempt + 1))
+        raise last_exc
+
     def _apply_to_trade_if_terminal(
         self,
         record: OrderExecutionRecord,
@@ -524,49 +584,49 @@ class ExecutionService:
             return
 
         if execution.side == "sell":
-            trade_record = self._trade_repo.get(execution.trade_id)
-            if trade_record is None:
-                raise ExecutionServiceError(f"no trade found for id {execution.trade_id!r}")
-            self._apply_protective_exit(trade_record, execution, now=now)
+            self._apply_protective_exit(execution.trade_id, execution, now=now)
             return
 
         if proposal is None:
             proposal = self._proposal_repo.get(execution.proposal_id)
 
-        trade_record = self._trade_repo.get(proposal.trade_id)
-        if trade_record is None:
-            raise ExecutionServiceError(f"no trade found for id {proposal.trade_id!r}")
-        trade = trade_record.trade
-        strategy = approved_strategy_rule_set()
-
         if proposal.proposed_action is TradeAction.INITIAL_ENTRY:
-            if trade.initial_order_reconciled:
-                return
-            if execution.filled_qty == execution.requested_qty:
-                order_status = InitialOrderStatus.FILLED
-            else:
-                # Zero or partial terminal fill -- D-0009/D-0010 already
-                # supports both via the same "not a full fill" bucket;
-                # the raw broker status string remains available on
-                # OrderExecution itself for full audit detail.
-                order_status = InitialOrderStatus.CANCELLED
-            updated_trade = trade.freeze_initial_reference(
-                order_status=order_status,
-                filled_shares=execution.filled_qty,
-                fill_price=execution.filled_avg_price,
-                strategy=strategy,
-                now=now,
-            )
-            self._trade_repo.update(
-                updated_trade,
-                expected_revision=trade_record.revision,
-                transition="initial_entry_reconciled",
-                now=now,
+            strategy = approved_strategy_rule_set()
+
+            def _compute_initial_entry(trade_record):
+                trade = trade_record.trade
+                if trade.initial_order_reconciled:
+                    return None
+                if execution.filled_qty == execution.requested_qty:
+                    order_status = InitialOrderStatus.FILLED
+                else:
+                    # Zero or partial terminal fill -- D-0009/D-0010 already
+                    # supports both via the same "not a full fill" bucket;
+                    # the raw broker status string remains available on
+                    # OrderExecution itself for full audit detail.
+                    order_status = InitialOrderStatus.CANCELLED
+                return trade.freeze_initial_reference(
+                    order_status=order_status,
+                    filled_shares=execution.filled_qty,
+                    fill_price=execution.filled_avg_price,
+                    strategy=strategy,
+                    now=now,
+                )
+
+            self._update_trade_with_retry(
+                proposal.trade_id, now=now, transition="initial_entry_reconciled",
+                compute=_compute_initial_entry,
             )
             return
 
         action = proposal.proposed_action
-        already_filled = trade.ladder1_filled if action is TradeAction.LADDER_1 else trade.ladder2_filled
+        trade_record = self._trade_repo.get(proposal.trade_id)
+        if trade_record is None:
+            raise ExecutionServiceError(f"no trade found for id {proposal.trade_id!r}")
+        already_filled = (
+            trade_record.trade.ladder1_filled if action is TradeAction.LADDER_1
+            else trade_record.trade.ladder2_filled
+        )
         if already_filled:
             return
 
@@ -592,11 +652,11 @@ class ExecutionService:
         # answer at all, so the ladder stays available for a later
         # trigger (D-0074, Engine side).
 
-        self._apply_ladder_fill(trade_record, action, execution, now=now, transition=f"{action.value}_reconciled")
+        self._apply_ladder_fill(proposal.trade_id, action, execution, now=now, transition=f"{action.value}_reconciled")
 
     def _apply_ladder_fill(
         self,
-        trade_record,
+        trade_id: str,
         action: TradeAction,
         execution: OrderExecution,
         *,
@@ -607,33 +667,41 @@ class ExecutionService:
         explicit confirm_ladder2_partial_fill() below -- both ultimately
         record a fill onto Trade via the same, unmodified
         Trade.record_ladder_fill(); this helper exists only to avoid
-        duplicating the weighted-average arithmetic in two places."""
+        duplicating the weighted-average arithmetic in two places.
 
-        trade = trade_record.trade
+        Goes through _update_trade_with_retry() (D-0092 follow-up,
+        P-098) so a Trade-row race at this exact moment retries against
+        the Trade's current state instead of silently discarding a fill
+        that is already confirmed filled in order_executions."""
+
         strategy = approved_strategy_rule_set()
-        new_total_shares = trade.total_shares + execution.filled_qty
-        if trade.weighted_avg_entry_price is None:
-            new_weighted_avg = execution.filled_avg_price
-        else:
-            new_weighted_avg = (
-                trade.total_shares * trade.weighted_avg_entry_price
-                + execution.filled_qty * execution.filled_avg_price
-            ) / new_total_shares
 
-        updated_trade = trade.record_ladder_fill(
-            action,
-            order_id=execution.broker_order_id,
-            fill_price=execution.filled_avg_price,
-            fill_qty=execution.filled_qty,
-            new_total_shares=new_total_shares,
-            new_weighted_avg_entry_price=new_weighted_avg,
-            strategy=strategy,
-        )
-        return self._trade_repo.update(
-            updated_trade, expected_revision=trade_record.revision, transition=transition, now=now
-        )
+        def _compute(trade_record):
+            trade = trade_record.trade
+            already_filled = trade.ladder1_filled if action is TradeAction.LADDER_1 else trade.ladder2_filled
+            if already_filled:
+                return None  # another attempt/process already applied this fill
+            new_total_shares = trade.total_shares + execution.filled_qty
+            if trade.weighted_avg_entry_price is None:
+                new_weighted_avg = execution.filled_avg_price
+            else:
+                new_weighted_avg = (
+                    trade.total_shares * trade.weighted_avg_entry_price
+                    + execution.filled_qty * execution.filled_avg_price
+                ) / new_total_shares
+            return trade.record_ladder_fill(
+                action,
+                order_id=execution.broker_order_id,
+                fill_price=execution.filled_avg_price,
+                fill_qty=execution.filled_qty,
+                new_total_shares=new_total_shares,
+                new_weighted_avg_entry_price=new_weighted_avg,
+                strategy=strategy,
+            )
 
-    def _apply_protective_exit(self, trade_record, execution: OrderExecution, *, now: datetime) -> None:
+        return self._update_trade_with_retry(trade_id, now=now, transition=transition, compute=_compute)
+
+    def _apply_protective_exit(self, trade_id: str, execution: OrderExecution, *, now: datetime) -> None:
         """Floor terminal application -- SELL side only (Controller-
         approved: automatic, no approval gate, auto-applies even a
         partial fill). Idempotent by construction, with NO new "applied"
@@ -648,26 +716,30 @@ class ExecutionService:
         ladder1_filled/ladder2_filled already serve that role for BUY
         executions. Relies on execution.requested_qty having been set
         to trade.total_shares at submission time (submit_protective_exit()'s
-        own contract) -- see its docstring."""
+        own contract) -- see its docstring.
 
-        trade = trade_record.trade
+        Goes through _update_trade_with_retry() (D-0092 follow-up,
+        P-098) for the same reason _apply_ladder_fill() does: a Trade
+        row race at this moment must retry against fresh state, not
+        drop a confirmed broker fill."""
+
         target_total_shares = execution.requested_qty - execution.filled_qty
-        if trade.total_shares <= target_total_shares:
-            return  # already applied, or nothing to apply (e.g. a zero fill)
-
         strategy = approved_strategy_rule_set()
-        new_weighted_avg = trade.weighted_avg_entry_price if target_total_shares > 0 else None
-        updated_trade = trade.reconcile_position(
-            total_shares=target_total_shares,
-            weighted_avg_entry_price=new_weighted_avg,
-            strategy=strategy,
-            now=now,
-        )
-        self._trade_repo.update(
-            updated_trade,
-            expected_revision=trade_record.revision,
-            transition="protective_exit_reconciled",
-            now=now,
+
+        def _compute(trade_record):
+            trade = trade_record.trade
+            if trade.total_shares <= target_total_shares:
+                return None  # already applied, or nothing to apply (e.g. a zero fill)
+            new_weighted_avg = trade.weighted_avg_entry_price if target_total_shares > 0 else None
+            return trade.reconcile_position(
+                total_shares=target_total_shares,
+                weighted_avg_entry_price=new_weighted_avg,
+                strategy=strategy,
+                now=now,
+            )
+
+        self._update_trade_with_retry(
+            trade_id, now=now, transition="protective_exit_reconciled", compute=_compute,
         )
 
     def submit_protective_exit(
