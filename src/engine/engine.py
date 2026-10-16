@@ -2877,7 +2877,24 @@ class Engine:
         except (ExecutionAlreadyResolvedError, ExecutionAlreadySubmittedError):
             return  # benign: already handled by a prior cycle
         except SubmissionNotAllowedError as exc:
-            self._notify(
+            # D-0092 follow-up (2026-10-16, Ahmad's request): a refused
+            # Ladder submission is legitimately retried every cycle
+            # forever now that D-0007's approval-age window is gone
+            # (see revalidation.py) -- that retrying itself is correct
+            # and must not be throttled, since price can come back into
+            # band at any time. But each retry used to also re-notify,
+            # so an approval sitting outside the price band for hours
+            # (NVDA-1c731362-ladder_1, 2026-10-14/16) spammed an
+            # almost-identical submission_not_allowed message every
+            # cycle. _notify_once's existing in-memory dedup (used
+            # elsewhere in this file for the same purpose) means the
+            # Controller is told ONCE per proposal_id that this
+            # submission is blocked, without being told again every
+            # cycle for as long as it keeps being blocked -- the retry
+            # loop itself is unaffected.
+            self._notify_once(
+                kind="submission_not_allowed",
+                key=proposal_id,
                 level=NotificationLevel.IMPORTANT,
                 event="submission_not_allowed",
                 message=f"Submission for {proposal_id} refused by D-0007 revalidation: {exc}",

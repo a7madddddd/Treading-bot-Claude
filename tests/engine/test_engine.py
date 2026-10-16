@@ -1341,6 +1341,58 @@ class TestInitialEntryAbandonedAfterSubmissionRefusal(unittest.TestCase):
         self.assertEqual(len(trade_repo.list_for_symbol("TSLA")), 2)
 
 
+class TestSubmissionNotAllowedIsNotifiedOnceNotEveryCycle(unittest.TestCase):
+    """2026-10-16 (Ahmad's request): once D-0007's post-approval age
+    window was removed (revalidation.py), a Ladder approval sitting
+    outside the +/-0.5% price band is retried every cycle forever with
+    no way for that retry to ever stop on its own -- correct, since
+    price can return into band at any moment. But _submit_approved()
+    used to also re-notify on every one of those retries, so a Ladder
+    approval that stayed out of band for hours (NVDA-1c731362-ladder_1,
+    2026-10-14/16) spammed an almost-identical submission_not_allowed
+    message every cycle. _notify_once's existing dedup (already used
+    elsewhere in this file for the same purpose) means the Controller
+    is told ONCE per proposal_id, while the retry loop itself keeps
+    running exactly as before."""
+
+    def test_two_refused_cycles_produce_only_one_notification(self):
+        from proposals.proposal import build_trade_proposal
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        engine, broker, market_data, decisions, notifier, exec_service = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+        )
+        _active_trade(trade_repo, trade_id="T-1", symbol="TSLA", price=100.0)
+
+        proposal = build_trade_proposal(
+            proposal_id="P-L1", trade_id="T-1", action=TradeAction.LADDER_1,
+            symbol="TSLA", current_price=95.0, as_of=_now(),
+            strategy=_strategy(), floor_context=FloorContext.known(80.0),
+        )
+        proposal_repo.save(proposal)
+        proposal_repo.record_decision(
+            "P-L1", approved=True, decided_by="controller", decided_at=_now(),
+            action=TradeAction.LADDER_1,
+        )
+
+        # 97.0 vs. a 95.0 trigger is a ~2.1% deviation -- well outside
+        # the +/-0.5% band, so both cycles refuse. The price is not
+        # identical across the two calls (continuous market movement,
+        # like the real NVDA case), to confirm dedup is keyed on the
+        # proposal, not on an exact-text match of the reason string.
+        engine._submit_approved(
+            "P-L1", current_price=97.0, active_floor_price=80.0,
+            now=_now() + timedelta(minutes=1),
+        )
+        engine._submit_approved(
+            "P-L1", current_price=96.8, active_floor_price=80.0,
+            now=_now() + timedelta(hours=1),
+        )
+
+        refusals = [e for e in notifier.events if e.event == "submission_not_allowed"]
+        self.assertEqual(len(refusals), 1,
+            "a Ladder refused on two separate cycles must notify once, not twice")
+
+
 class TestInitialEntryRecoveryAfterCrashBetweenRecordAndSubmit(unittest.TestCase):
     """Regression for 2026-10-01 Finding #4: a crash between
     proposal_repo.record_decision and ExecutionService.
