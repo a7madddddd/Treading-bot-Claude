@@ -1023,39 +1023,40 @@ session starts from substance instead of re-deriving it.
   ETF bug (D-0056) both happened — one path, two instrument behaviors.
 
 ### P-034 — A "remind me later" action on Telegram proposals
-- **Status:** BACKLOG. Requested by the Controller 2026-10-05.
+- **Status:** DECIDED 2026-10-20. Design session complete; ready for
+  implementation. This entry is the source of truth and supersedes the
+  original BACKLOG framing below it in history.
 - **What it is:** a third inline button beside Approve and Reject.
-- **It interacts directly with something built TODAY, which is why the
-  obvious implementation is probably wrong.** D-0059 gives a PENDING
-  proposal a 60-minute TTL. A naive "remind me later" would extend that
-  TTL and re-send the same proposal.
-- **Why that would be close to useless.** D-0007 revalidation refuses a
-  submission once price has drifted more than **0.5%** from the
-  proposal's trigger. A proposal held for an hour so it can be
-  re-offered will, in most sessions, simply be refused on approval. The
-  Controller would get a button that looks like a choice and mostly
-  is not.
-- **The better framing, recorded so it is not re-derived:** what is
-  actually wanted is almost certainly *"I am interested in this SYMBOL,
-  ask me again with a FRESH price"* — a snooze on the symbol, not a
-  stay of execution on a stale proposal. That suggests:
-  - expire the current proposal normally (no change to D-0059);
-  - mark the symbol as Controller-flagged;
-  - have `_check_watchlist` give a flagged symbol priority on the next
-    D-0021 cycle, if it still passes every stage, with a fresh price
-    and a fresh proposal.
-  That is a different and smaller change than extending a TTL, and it
-  produces a proposal that can actually be approved.
-- **Open questions for the design session:**
-  1. How long does a flag last — one cycle, the trading day, or until
-     cleared?
-  2. Does a flagged symbol bypass `_MIN_SCORE`, or only reorder within
-     the qualifiers (as D-0058's political slot does)? Bypassing a
-     threshold on request is a different risk from reordering.
-  3. Does it occupy one of the three per-cycle proposal slots, or sit
-     outside the cap?
-  4. What happens if the symbol stops passing the pipeline — silence,
-     or a message saying why it will not return?
+- **D-0059's 60-minute PENDING TTL is removed entirely.** Proposal
+  freshness is enforced only by D-0007's existing revalidation check
+  (refuse on approval if price has drifted more than 0.5% from the
+  proposal's trigger). No time-based expiry remains.
+- **Mechanism — a snooze on the symbol, not a stay of execution on a
+  stale proposal.** Choosing "remind me later" does not extend or
+  re-send the original proposal. It flags the SYMBOL as
+  Controller-flagged:
+  - the current proposal expires/resolves normally;
+  - `_check_watchlist` gives the flagged symbol priority on the next
+    D-0021 cycle, with a fresh price and a fresh proposal, once it
+    passes every stage again.
+- **Flag clears on next action.** The flag is removed automatically
+  the moment the Controller takes any action (Approve or Reject) on a
+  future proposal for that same symbol. No separate "clear flag"
+  control is needed.
+- **No `_MIN_SCORE` bypass.** A flagged symbol must clear the normal
+  `_MIN_SCORE` threshold (**> 60%**) like any other symbol — no
+  exception, no reordering privilege.
+- **Proposal is labeled.** When a flagged symbol clears 60% and is
+  proposed again, the proposal is visibly marked as "this is the item
+  you previously chose Remind Me Later on," so the Controller has
+  context for why it reappeared.
+- **Slot behavior: outside the cap, not competing for it.** The
+  flagged symbol does NOT take one of the three per-cycle proposal
+  slots. If it passes every filtering/outlier stage, it is sent as an
+  **optional 4th proposal** alongside the normal three.
+- **If the symbol stops qualifying: silence, indefinitely.** No
+  message is sent. The flag stays set with no time limit and the
+  symbol is simply re-evaluated each cycle until it clears 60% again.
 - **Touches:** `src/notifications/telegram.py` (the button),
   `src/engine/decision_source.py` (a third `DecisionKind`),
   `Engine._apply_decision`, and `_check_watchlist`.
