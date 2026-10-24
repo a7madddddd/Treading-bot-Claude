@@ -307,6 +307,23 @@ def _format_political_tag(signal) -> str:
     return "\n".join(lines)
 
 
+def _format_remind_later_tag(was_remind_later: bool) -> str:
+    """P-034: labels a re-proposed symbol so the Controller has context
+    for why it reappeared -- this is the item he previously chose
+    "Remind me later" on. Sent as an extra, uncapped proposal (see
+    `Engine._apply_remind_later_slot`), never in place of one of the
+    normal `_TOP_N_PER_CYCLE` proposals."""
+    if not was_remind_later:
+        return ""
+    return (
+        "\n\n--- REMIND ME LATER (P-034) ---\n"
+        "This is the symbol you previously chose Remind Me Later on. "
+        "It has now cleared the normal score threshold again at a "
+        "fresh price. Sent as an extra proposal, not in place of one "
+        "of today's regular picks."
+    )
+
+
 class Engine:
     def __init__(
         self,
@@ -416,6 +433,24 @@ class Engine:
         # its signal data enriches every candidate's SymbolResearch
         # before the evaluator scores it.
         self._political_universe = political_universe_source
+        # P-034 (decided 2026-10-20): symbols the Controller tapped
+        # "Remind me later" on, keyed by symbol, valued by the UTC
+        # timestamp the flag was set. Membership means "re-propose this
+        # symbol, with a fresh price, the next time it clears
+        # `_MIN_SCORE`" -- it is cleared automatically the next time the
+        # Controller takes any APPROVE/REJECT action on a future
+        # proposal for that symbol (see `_clear_remind_later`). Held
+        # in-process like `self._notified` / `self._outages` above; not
+        # yet written through to the SQLite state store, so a process
+        # restart loses pending flags -- that is a known, accepted gap
+        # for this phase, not a silent one.
+        self._remind_later_flags: Dict[str, datetime] = {}
+
+    def _flag_remind_later(self, symbol: str, *, now: datetime) -> None:
+        self._remind_later_flags[symbol] = now
+
+    def _clear_remind_later(self, symbol: str) -> None:
+        self._remind_later_flags.pop(symbol, None)
 
     def _sized_strategy(self, *, price: float) -> Optional[StrategyRuleSet]:
         """D-0051: queries the broker for the account's current equity,
@@ -691,6 +726,15 @@ class Engine:
                     interactive_actions=(
                         ("✅ Approve", f"approve:{proposal.proposal_id}"),
                         ("❌ Reject", f"reject:{proposal.proposal_id}"),
+                        *(
+                            # P-034: offer on recovery/re-delivery too,
+                            # same INITIAL_ENTRY-only restriction as a
+                            # freshly-sent proposal.
+                            (("🔔 Remind me later",
+                              f"remind_later:{proposal.proposal_id}"),)
+                            if proposal.proposed_action is TradeAction.INITIAL_ENTRY
+                            else ()
+                        ),
                     ),
                 )
                 continue
@@ -797,6 +841,10 @@ class Engine:
             interactive_actions=(
                 ("✅ Approve", f"approve:{proposal.proposal_id}"),
                 ("❌ Reject", f"reject:{proposal.proposal_id}"),
+                # P-034: this path only ever recreates an INITIAL_ENTRY
+                # proposal (see the docstring above), so the button is
+                # unconditional here.
+                ("🔔 Remind me later", f"remind_later:{proposal.proposal_id}"),
             ),
         )
 
@@ -1458,6 +1506,19 @@ class Engine:
                 )
             return
 
+        if decision.kind is DecisionKind.REMIND_LATER:
+            self._apply_remind_later_decision(decision, proposal, now=now)
+            return
+
+        # Any ordinary APPROVE/REJECT decision on a symbol clears a
+        # previously-set Remind Me Later flag for it (P-034: "when I
+        # choose to accept or reject for any future proposal, that
+        # will be the end for the remind me later flag"). Cleared here,
+        # unconditionally and before the approve/reject branches below,
+        # so it happens on every path that can produce a decision for
+        # the symbol, including the ones that return early.
+        self._clear_remind_later(proposal.symbol)
+
         approved = decision.kind is DecisionKind.APPROVE
         try:
             self._proposal_repo.record_decision(
@@ -1638,6 +1699,116 @@ class Engine:
                 active_floor_price=trade.active_floor_price,
                 now=now,
             )
+
+    def _apply_remind_later_decision(
+        self, decision: ControllerDecision, proposal, *, now: datetime,
+    ) -> None:
+        """P-034: "Remind me later" on a proposal.
+
+        Deliberately NOT a stay of execution on `proposal` itself --
+        that was the naive implementation this design rejected (see
+        D-0059/D-0007 discussion in docs/trading/pending-approvals.md).
+        Instead: resolve the current proposal exactly the way a REJECT
+        does (same repo call, same trade-abandon path, so the symbol is
+        immediately free for `_check_watchlist` again), then flag the
+        SYMBOL so a later cycle re-proposes it at a fresh price once it
+        clears `_MIN_SCORE`. Scoped to INITIAL_ENTRY only -- a LADDER
+        belongs to a trade that already holds shares, so "ask me again
+        later at a fresh price" has no meaning there; a remind-later
+        tap on a LADDER proposal is treated as a plain REJECT with a
+        note, not silently dropped.
+        """
+        try:
+            self._proposal_repo.record_decision(
+                decision.proposal_id,
+                approved=False,
+                decided_by=decision.decided_by,
+                decided_at=now,
+                action=proposal.proposed_action,
+            )
+        except ProposalDecisionConflictError as exc:
+            current = self._proposal_repo.get(decision.proposal_id)
+            if (current is not None
+                    and current.approval_state is ApprovalState.EXPIRED):
+                self._notify(
+                    level=NotificationLevel.IMPORTANT,
+                    event="decision_on_expired_proposal",
+                    message=(
+                        f"Your Remind Me Later tap for {decision.proposal_id} "
+                        f"({proposal.symbol}) arrived after the proposal had "
+                        f"already expired, so it was not applied. The symbol "
+                        f"is already free and will be re-proposed normally "
+                        f"on a later cycle if it still qualifies."
+                    ),
+                    symbol=proposal.symbol,
+                )
+                return
+            self._notify(
+                level=NotificationLevel.CRITICAL,
+                event="decision_conflict",
+                message=f"Controller decision for {decision.proposal_id} could not be recorded: {exc}",
+                symbol=proposal.symbol,
+            )
+            return
+
+        if proposal.proposed_action is TradeAction.INITIAL_ENTRY:
+            trade_record = self._trade_repo.get(proposal.trade_id)
+            if trade_record is not None:
+                trade = trade_record.trade
+                if not trade.initial_order_reconciled:
+                    try:
+                        self._trade_repo.update(
+                            trade.abandon_before_fill(now=now),
+                            expected_revision=trade_record.revision,
+                            transition="remind_later_before_fill",
+                            now=now,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        self._notify(
+                            level=NotificationLevel.CRITICAL,
+                            event="abandon_failed",
+                            message=(
+                                f"Could not mark {proposal.trade_id} as ABANDONED "
+                                f"after Remind Me Later on {proposal.proposal_id}: "
+                                f"{exc}. Symbol may be blocked from new proposals "
+                                f"until DB is cleaned."
+                            ),
+                            symbol=proposal.symbol,
+                        )
+                        return
+
+            self._flag_remind_later(proposal.symbol, now=now)
+            self._notify(
+                level=NotificationLevel.IMPORTANT,
+                event="remind_later_flagged",
+                message=(
+                    f"Noted -- {proposal.symbol} is flagged. Nothing was "
+                    f"bought or sold. This proposal is closed, and the "
+                    f"symbol is free in the meantime, but it will be "
+                    f"proposed to you again, at a fresh price, as soon as "
+                    f"it clears the normal {self._MIN_SCORE:.0f}% score "
+                    f"threshold on a later cycle. Approving or rejecting "
+                    f"that next proposal clears this flag."
+                ),
+                symbol=proposal.symbol,
+            )
+            return
+
+        # LADDER (or anything else): no "ask again" semantics apply --
+        # treat it as a plain rejection and say so, rather than silently
+        # dropping the tap.
+        self._notify(
+            level=NotificationLevel.IMPORTANT,
+            event="remind_later_not_applicable",
+            message=(
+                f"Remind Me Later isn't meaningful for a "
+                f"{proposal.proposed_action.value} proposal (it already "
+                f"belongs to an open position) -- {proposal.proposal_id} "
+                f"({proposal.symbol}) was treated as a REJECT instead. "
+                f"Nothing was bought or sold."
+            ),
+            symbol=proposal.symbol,
+        )
 
     # ------------------------------------------------------------------
     # Trigger detection (D-0021-gated cadence)
@@ -2279,6 +2450,9 @@ class Engine:
         accepted = self._apply_political_reserved_slot(
             accepted_results, political_signals=political_signals,
         )
+        accepted, remind_later_symbol = self._apply_remind_later_slot(
+            accepted, accepted_results,
+        )
 
         if not accepted:
             # Candidates existed but none survived research. Report it
@@ -2309,6 +2483,7 @@ class Engine:
             self._start_new_trade(
                 r.symbol, now=now,
                 political_signal=political_signals.get(r.symbol),
+                was_remind_later=(r.symbol == remind_later_symbol),
             )
 
     def _report_political_signals(self, signals: dict, *, now: datetime) -> None:
@@ -2444,8 +2619,57 @@ class Engine:
         )
         return kept + [promoted]
 
+    def _apply_remind_later_slot(
+        self, accepted_results: list, all_qualified: list,
+    ) -> tuple:
+        """P-034 (decided 2026-10-20): a Controller-flagged symbol that
+        clears every normal check -- hard filter, `_MIN_SCORE`, and the
+        portfolio filter (both already folded into `all_qualified` by
+        the time this runs) -- is sent as an OPTIONAL EXTRA proposal
+        this cycle, outside `_TOP_N_PER_CYCLE` and never displacing one
+        of the three regular picks (unlike the political reserved slot,
+        which trades places with the lowest natural qualifier -- the
+        Controller was explicit this is additive, not a swap).
+
+        Returns (possibly-extended accepted_results, flagged symbol or
+        None) so the caller can tag the message for exactly the one
+        symbol that was added here, not the whole batch.
+
+        Picks at most one flagged symbol per cycle (the first, by
+        rank, that is not already proposed) -- one extra message per
+        cycle is the agreed shape; nothing stops a second one from
+        going out next cycle if more than one symbol is flagged.
+        """
+        if not self._remind_later_flags:
+            return accepted_results, None
+
+        already = {r.symbol for r in accepted_results}
+        candidate = next(
+            (r for r in all_qualified
+             if r.symbol in self._remind_later_flags
+             and r.symbol not in already),
+            None,
+        )
+        if candidate is None:
+            return accepted_results, None
+
+        self._notify(
+            level=NotificationLevel.OPTIONAL,
+            event="remind_later_slot_added",
+            message=(
+                f"{candidate.symbol} (score {candidate.soft_score:.1f}) "
+                f"cleared the threshold again and is being re-proposed "
+                f"as an extra pick this cycle, per your earlier Remind "
+                f"Me Later tap. It does not take one of today's "
+                f"{self._TOP_N_PER_CYCLE} regular slots."
+            ),
+            symbol=candidate.symbol,
+        )
+        return accepted_results + [candidate], candidate.symbol
+
     def _start_new_trade(
         self, symbol: str, *, now: datetime, political_signal=None,
+        was_remind_later: bool = False,
     ) -> None:
         try:
             price = self._price(symbol)
@@ -2521,6 +2745,7 @@ class Engine:
             price_context=self._safe_price_context(symbol),
         ), blurb=enrichment, prefetched=True)
         message += _format_political_tag(political_signal)
+        message += _format_remind_later_tag(was_remind_later)
         delivered = self._notify(
             level=NotificationLevel.IMPORTANT,
             event=("political_proposal_awaiting_approval"
@@ -2531,6 +2756,12 @@ class Engine:
             interactive_actions=(
                 ("✅ Approve", f"approve:{proposal.proposal_id}"),
                 ("❌ Reject", f"reject:{proposal.proposal_id}"),
+                # P-034: INITIAL_ENTRY only -- a LADDER proposal belongs
+                # to a trade that already holds shares, where "ask me
+                # again later at a fresh price" has no meaning (see
+                # `_apply_remind_later_decision`), so no third button is
+                # offered there.
+                ("🔔 Remind me later", f"remind_later:{proposal.proposal_id}"),
             ),
         )
         # P-091: the clock starts when he could SEE it. A delivery that

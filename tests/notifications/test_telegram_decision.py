@@ -176,6 +176,30 @@ class TestParsingPipeline(unittest.TestCase):
         decisions = src.poll()
         self.assertEqual(decisions[0].kind, DecisionKind.CONFIRM_LADDER2_PARTIAL_FILL)
 
+    def test_callback_remind_later_produces_decision(self):
+        """P-034."""
+        transport = _StubTransport(empty_after_queue=False)
+        transport.queue(_ok_updates_body(updates=[
+            _callback_update(update_id=1, sender_id=111, data="remind_later:P-7"),
+        ]))
+        src = _source(transport)
+        src._process_one_batch()
+        decisions = src.poll()
+        self.assertEqual(decisions[0].kind, DecisionKind.REMIND_LATER)
+        self.assertEqual(decisions[0].proposal_id, "P-7")
+
+    def test_text_command_remind_later_produces_decision(self):
+        """P-034."""
+        transport = _StubTransport(empty_after_queue=False)
+        transport.queue(_ok_updates_body(updates=[
+            _text_update(update_id=1, sender_id=111, text="/remind_later P-8"),
+        ]))
+        src = _source(transport)
+        src._process_one_batch()
+        decisions = src.poll()
+        self.assertEqual(decisions[0].kind, DecisionKind.REMIND_LATER)
+        self.assertEqual(decisions[0].proposal_id, "P-8")
+
     def test_text_command_approve_produces_decision(self):
         transport = _StubTransport(empty_after_queue=False)
         transport.queue(_ok_updates_body(updates=[

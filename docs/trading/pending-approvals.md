@@ -1023,9 +1023,17 @@ session starts from substance instead of re-deriving it.
   ETF bug (D-0056) both happened — one path, two instrument behaviors.
 
 ### P-034 — A "remind me later" action on Telegram proposals
-- **Status:** DECIDED 2026-10-20. Design session complete; ready for
-  implementation. This entry is the source of truth and supersedes the
-  original BACKLOG framing below it in history.
+- **Status:** IMPLEMENTED 2026-10-20. End-to-end: `DecisionKind.REMIND_LATER`
+  (decision_source.py), the `remind_later:<id>` callback / `/remind_later`
+  text command (telegram_decision.py), the third inline button on every
+  INITIAL_ENTRY proposal send/recovery site, `Engine._apply_remind_later_decision`,
+  and `Engine._apply_remind_later_slot` in `_check_watchlist`. Covered by
+  `tests/engine/test_engine.py::TestRemindLaterP034` (5 cases) and two
+  parsing cases in `tests/notifications/test_telegram_decision.py`. The
+  flag store (`Engine._remind_later_flags`) is in-process only for this
+  phase -- not yet written through to the SQLite state store, so a
+  process restart loses a pending flag; that gap is accepted for now,
+  not hidden (see the code comment on the attribute).
 - **What it is:** a third inline button beside Approve and Reject.
 - **D-0059's 60-minute PENDING TTL is removed entirely.** Proposal
   freshness is enforced only by D-0007's existing revalidation check

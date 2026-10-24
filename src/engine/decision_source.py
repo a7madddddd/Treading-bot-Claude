@@ -36,6 +36,16 @@ class DecisionKind(Enum):
     APPROVE = "approve"
     REJECT = "reject"
     CONFIRM_LADDER2_PARTIAL_FILL = "confirm_ladder2_partial_fill"
+    REMIND_LATER = "remind_later"
+    """P-034 (decided 2026-10-20): a third button on an INITIAL_ENTRY
+    proposal. NOT a stay of execution on the proposal itself -- it
+    flags the proposal's SYMBOL as Controller-flagged ("I'm interested,
+    ask me again at a fresh price"), resolves the current proposal the
+    same way a REJECT would (frees the symbol, abandons the pre-fill
+    trade row), and the Engine re-proposes the symbol on a later
+    D-0021 cycle once it clears `_MIN_SCORE` again. The flag is cleared
+    automatically the next time the Controller takes any action
+    (APPROVE or REJECT) on a future proposal for that same symbol."""
 
 
 @dataclass(frozen=True)

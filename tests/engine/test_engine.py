@@ -2320,8 +2320,9 @@ class TestPoliticalD0058(unittest.TestCase):
         self.assertIn("Khanna", body)
         self.assertIn("committee match: YES", body)
         self.assertIn("congress buys (30d): 3", body)
-        # And it still carries its approval buttons.
-        self.assertEqual(len(tagged[0].interactive_actions), 2)
+        # And it still carries its approval buttons (plus the P-034
+        # Remind Me Later button, added to every INITIAL_ENTRY proposal).
+        self.assertEqual(len(tagged[0].interactive_actions), 3)
 
     def test_non_political_proposal_has_no_tag_and_the_plain_event(self):
         _tr, notifier, _src = self._run(
@@ -2507,3 +2508,181 @@ class TestP019RecoveryPathReleasesSymbol(unittest.TestCase):
             f"{len(with_trade_id)}. A new site without it would silently "
             "reintroduce the symbol-lockout bug.",
         )
+
+
+class TestRemindLaterP034(unittest.TestCase):
+    """P-034 (decided 2026-10-20): the "Remind me later" button.
+
+    Covers the full loop: the button is offered, tapping it resolves
+    the proposal like a REJECT (frees the symbol), flags the symbol,
+    a later cycle re-proposes it as an EXTRA 4th slot once it clears
+    `_MIN_SCORE` again (tagged, not displacing a regular pick), and the
+    flag clears on the next ordinary APPROVE/REJECT for that symbol.
+    """
+
+    class _Eval:
+        def __init__(self, scores):
+            self._scores = scores
+
+        def rank(self, candidates):
+            results = [TestWatchlistWithTradeEvaluator._FakeEvalResult(
+                s, self._scores.get(s, 0.0), True) for s in candidates]
+            return sorted(results, key=lambda r: -r.soft_score)
+
+        def evaluate_research(self, research):
+            raise AssertionError("not used in these tests")
+
+    @staticmethod
+    def _events(notifier, name):
+        return [e for e in notifier.events if e.event == name]
+
+    def _make(self, *, watchlist, scores):
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        engine, broker, market_data, decisions, notifier, exec_service = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            watchlist=StaticWatchlistSource(watchlist),
+            trade_evaluator=self._Eval(scores),
+        )
+        for sym in watchlist:
+            market_data.set_price(sym, 100.0)
+        engine._lock.acquire(now=_now())
+        return engine, trade_repo, proposal_repo, market_data, decisions, notifier
+
+    def test_initial_entry_proposal_offers_the_third_button(self):
+        engine, _tr, proposal_repo, _md, _dec, notifier = self._make(
+            watchlist=("AAA",), scores={"AAA": 90.0},
+        )
+        engine.run_trigger_check(now=_now())
+        sent = self._events(notifier, "proposal_awaiting_approval")
+        self.assertEqual(len(sent), 1)
+        labels = [label for label, _cb in sent[0].interactive_actions]
+        self.assertEqual(len(sent[0].interactive_actions), 3)
+        self.assertTrue(any("Remind" in l for l in labels))
+
+    def test_tapping_it_resolves_the_proposal_and_frees_the_symbol(self):
+        from trade.models import describe_status
+        engine, trade_repo, proposal_repo, _md, decisions, notifier = self._make(
+            watchlist=("AAA",), scores={"AAA": 90.0},
+        )
+        engine.run_trigger_check(now=_now())
+        trade_id = trade_repo.list_for_symbol("AAA")[0].trade.trade_id
+        proposal = [p for p in proposal_repo.list_for_trade(trade_id)
+                    if p.proposed_action is TradeAction.INITIAL_ENTRY][0]
+
+        decisions.submit(ControllerDecision(
+            proposal_id=proposal.proposal_id,
+            kind=DecisionKind.REMIND_LATER,
+            decided_by="controller",
+        ))
+        engine.run_reconciliation_tick(now=_now() + timedelta(seconds=1))
+
+        resolved = proposal_repo.get(proposal.proposal_id)
+        self.assertEqual(resolved.approval_state, ApprovalState.REJECTED)
+        self.assertEqual(describe_status(trade_repo.get(trade_id).trade),
+                         "ABANDONED")
+        self.assertIn("AAA", engine._remind_later_flags)
+        self.assertTrue(self._events(notifier, "remind_later_flagged"))
+
+    def test_flagged_symbol_is_re_proposed_as_an_extra_fourth_slot(self):
+        """3 regular qualifiers fill the normal TOP_N, a 4th symbol was
+        previously flagged and now also clears MIN_SCORE -- it must be
+        sent as an extra proposal, and the 3 regular picks must NOT be
+        displaced."""
+        engine, trade_repo, proposal_repo, _md, decisions, notifier = self._make(
+            watchlist=("FLAG",), scores={"FLAG": 90.0},
+        )
+        engine.run_trigger_check(now=_now())
+        trade_id = trade_repo.list_for_symbol("FLAG")[0].trade.trade_id
+        proposal = [p for p in proposal_repo.list_for_trade(trade_id)
+                    if p.proposed_action is TradeAction.INITIAL_ENTRY][0]
+        decisions.submit(ControllerDecision(
+            proposal_id=proposal.proposal_id,
+            kind=DecisionKind.REMIND_LATER,
+            decided_by="controller",
+        ))
+        engine.run_reconciliation_tick(now=_now() + timedelta(seconds=1))
+        self.assertIn("FLAG", engine._remind_later_flags)
+
+        # Next cycle: 3 fresh regular qualifiers PLUS the flagged symbol
+        # (still clearing MIN_SCORE) all show up in the watchlist.
+        engine._watchlist = StaticWatchlistSource(("A", "B", "C", "FLAG"))
+        engine._evaluator = self._Eval(
+            {"A": 95.0, "B": 90.0, "C": 85.0, "FLAG": 70.0})
+        for sym in ("A", "B", "C"):
+            engine._market_data.set_price(sym, 100.0)
+
+        engine.run_trigger_check(now=_now() + timedelta(seconds=2))
+
+        for sym in ("A", "B", "C", "FLAG"):
+            self.assertTrue(trade_repo.list_for_symbol(sym),
+                            f"{sym} should have an open trade")
+        extra = self._events(notifier, "remind_later_slot_added")
+        self.assertEqual(len(extra), 1)
+        self.assertEqual(extra[0].symbol, "FLAG")
+
+        tagged = [e for e in self._events(notifier, "proposal_awaiting_approval")
+                  if e.symbol == "FLAG"]
+        # Two FLAG proposals exist across the test: the original (tick
+        # 1, resolved via Remind Me Later) and this cycle's re-proposal.
+        # Only the latest carries the tag.
+        self.assertEqual(len(tagged), 2)
+        self.assertIn("REMIND ME LATER", tagged[-1].message)
+
+    def test_flag_clears_on_the_next_ordinary_decision_for_the_symbol(self):
+        engine, trade_repo, proposal_repo, _md, decisions, notifier = self._make(
+            watchlist=("AAA",), scores={"AAA": 90.0},
+        )
+        engine.run_trigger_check(now=_now())
+        trade_id = trade_repo.list_for_symbol("AAA")[0].trade.trade_id
+        first = [p for p in proposal_repo.list_for_trade(trade_id)
+                 if p.proposed_action is TradeAction.INITIAL_ENTRY][0]
+        decisions.submit(ControllerDecision(
+            proposal_id=first.proposal_id,
+            kind=DecisionKind.REMIND_LATER,
+            decided_by="controller",
+        ))
+        engine.run_reconciliation_tick(now=_now() + timedelta(seconds=1))
+        self.assertIn("AAA", engine._remind_later_flags)
+
+        # A fresh proposal for AAA arrives (simulating the symbol
+        # clearing the threshold again) and the Controller rejects it.
+        engine.run_trigger_check(now=_now() + timedelta(seconds=2))
+        trades_after = trade_repo.list_for_symbol("AAA")
+        self.assertEqual(len(trades_after), 2)
+        second_trade_id = [t.trade.trade_id for t in trades_after
+                           if t.trade.trade_id != trade_id][0]
+        second = [p for p in proposal_repo.list_for_trade(second_trade_id)
+                  if p.proposed_action is TradeAction.INITIAL_ENTRY][0]
+        decisions.submit(ControllerDecision(
+            proposal_id=second.proposal_id,
+            kind=DecisionKind.REJECT,
+            decided_by="controller",
+        ))
+        engine.run_reconciliation_tick(now=_now() + timedelta(seconds=3))
+
+        self.assertNotIn("AAA", engine._remind_later_flags)
+
+    def test_remind_later_on_a_ladder_proposal_is_treated_as_reject(self):
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        _active_trade(trade_repo, price=100.0)
+        engine, broker, market_data, decisions, notifier, exec_service = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn
+        )
+        market_data.set_price("TSLA", 94.6)
+        engine._lock.acquire(now=_now())
+        engine.run_trigger_check(now=_now())
+        proposal = [p for p in proposal_repo.list_for_trade("T-1")
+                    if p.proposed_action is TradeAction.LADDER_1][0]
+
+        decisions.submit(ControllerDecision(
+            proposal_id=proposal.proposal_id,
+            kind=DecisionKind.REMIND_LATER,
+            decided_by="controller",
+        ))
+        engine.run_reconciliation_tick(now=_now() + timedelta(seconds=1))
+
+        resolved = proposal_repo.get(proposal.proposal_id)
+        self.assertEqual(resolved.approval_state, ApprovalState.REJECTED)
+        self.assertEqual(broker.submit_calls, [])
+        self.assertNotIn("TSLA", engine._remind_later_flags)
+        self.assertTrue(self._events(notifier, "remind_later_not_applicable"))

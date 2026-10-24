@@ -56,14 +56,16 @@ _DEFAULT_BACKOFF_BASE_SECONDS = 1.0
 _DEFAULT_BACKOFF_MAX_SECONDS = 30.0
 
 # Callback-button payloads look like: "approve:P-1", "reject:P-1",
-# "confirm_l2:P-1". Text commands look like: "/approve P-1",
-# "/reject P-1", "/confirm_l2 P-1", optionally with a trailing "@BotName".
+# "confirm_l2:P-1", "remind_later:P-1". Text commands look like:
+# "/approve P-1", "/reject P-1", "/confirm_l2 P-1", "/remind_later P-1",
+# optionally with a trailing "@BotName".
 _CALLBACK_KINDS = {
     "approve": DecisionKind.APPROVE,
     "reject": DecisionKind.REJECT,
     "confirm_l2": DecisionKind.CONFIRM_LADDER2_PARTIAL_FILL,
+    "remind_later": DecisionKind.REMIND_LATER,
 }
-_TEXT_COMMAND_RE = re.compile(r"^/(approve|reject|confirm_l2)(?:@\S+)?\s+(\S+)\s*$")
+_TEXT_COMMAND_RE = re.compile(r"^/(approve|reject|confirm_l2|remind_later)(?:@\S+)?\s+(\S+)\s*$")
 _PROPOSAL_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 
 
