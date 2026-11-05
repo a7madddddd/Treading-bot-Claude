@@ -4189,3 +4189,47 @@ API, kept OUT of the repository (uncommitted / throwaway) until its
 result is seen and the Controller decides it's worth keeping, per
 `.claude/rules/05-change-tracking.md` ("prove it before it enters the
 repo").
+
+### Backtest script written 2026-11-05 — not run yet, blocked on the Controller's API token
+
+**Status:** code written, deliberately NOT committed to the repo (per
+the "prove it first" rule), living only in this session's scratchpad.
+Cannot run yet — needs an `OTSPX_API_TOKEN` from a free
+0DTESPX.com account the Controller has not created yet.
+
+Verified the real endpoint schema by fetching the live API docs (not
+guessed): `POST /auth/sessions` → `{"token": ...}`, bare token in the
+`Authorization` header (no `Bearer` prefix); `GET
+/market-data/historical/{date}` gives the 1-second SPX index series
+only (no option prices); `GET
+/market-data/option-chain-snapshots/{timestamp}` gives per-strike
+call/put bid/ask/delta at one instant, 10 credits per call.
+
+**Design, scoped to exactly what the Controller approved:**
+- Long call/put only, no spreads.
+- Time-based exit only for this first pass — no profit-target/stop-loss
+  (none has been approved yet); holds to the cap and closes at market.
+- Both 40- and 50-minute hold caps tested per trade candidate, so the
+  cap is picked from the result, not guessed.
+- Entry signal: Opening Range Breakout + a VWAP-style filter (the
+  most-cited, least-verified 0DTE pattern found in research) — labeled
+  EXPERIMENTAL IDEA, this backtest is what verifies or kills it.
+  **Caveat recorded in the code itself:** the feed has no volume, so the
+  "VWAP" is actually a time-weighted average (TWAP) proxy, not a true
+  volume-weighted VWAP — flagged, not hidden.
+- A naive fixed-time baseline (ATM call every session at 09:35 ET, no
+  signal at all) runs alongside it, per
+  `docs/trading/backtesting.md` §2 ("never present a strategy in
+  isolation").
+- Fill model: buy at entry ASK, sell at exit BID (conservative side of
+  the spread) — no commission model yet, flagged as a TODO in the
+  report output rather than silently assumed zero.
+- Credit budget: ~95 credits per sampled date (well inside the
+  10,000-credit bucket for a 30-40 date sample), and only 2
+  option-chain-snapshot calls per trade candidate (entry + exit) —
+  never a full-session second-by-second pull, to respect the site's
+  "no bulk extraction" rule while still running a real sample.
+
+**Waiting on:** the Controller to create a free 0DTESPX.com account and
+provide the resulting API token (via a secure credential mechanism, not
+pasted in chat) before the backtest can actually run.
