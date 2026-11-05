@@ -4233,3 +4233,46 @@ call/put bid/ask/delta at one instant, 10 credits per call.
 **Waiting on:** the Controller to create a free 0DTESPX.com account and
 provide the resulting API token (via a secure credential mechanism, not
 pasted in chat) before the backtest can actually run.
+
+### Credential delivery note 2026-11-05 — this cloud session's secret mechanism does not fit this API
+
+`request_credential` and the environment's own Network-secrets settings
+both force a fixed prefix (Bearer or similar) on an `Authorization`
+header value; this API requires the BARE token with no prefix, and both
+mechanisms were confirmed (token regenerated and verified via a live
+201 Created response, still rejected with `X-Proxy-Error: upstream auth
+failed`) unable to send it bare. **Resolution:** the Controller runs the
+backtest script locally instead, with `OTSPX_API_TOKEN` set directly as
+a real environment variable (same pattern as every other key in
+`.env.example`) — this has no such constraint outside the cloud
+session's credential proxy.
+
+### First backtest run 2026-11-05 — smoke test only, n=10, NOT a conclusion
+
+The Controller ran the script locally with `--sample-size 10`. Results
+(long call/put, time-exit only, no commission/slippage modeled):
+
+| | ORB+VWAP 40min | ORB+VWAP 50min | naive baseline 40min | naive baseline 50min |
+|---|---|---|---|---|
+| win rate | 30% | 40% | 30% | 20% |
+| expectancy/contract | -$0.87 | -$0.645 | -$2.46 | -$2.59 |
+| profit factor | 0.73 | 0.79 | 0.31 | 0.34 |
+
+**FACT:** every combination is net-negative on this sample — consistent
+with the 2026-11-05 research finding that naive long 0DTE buying is
+close to a coin flip before costs (no commission/slippage is modeled
+here yet, so real results would be worse, not better).
+
+**FACT:** the ORB+VWAP signal beats the naive fixed-time baseline on
+every metric, in both hold caps — some real signal value over random
+entry, even though neither is profitable yet.
+
+**FACT:** 50-minute outperformed 40-minute for ORB+VWAP on this sample,
+but the pattern reversed for the naive baseline (40min less bad than
+50min there) — an inconsistency that itself shows the sample is too
+small to decide the hold-cap question yet.
+
+**NOT a conclusion:** `docs/trading/backtesting.md` requires 30-50+
+trades before a result is trusted; this is 10. **Next step:** rerun
+with `--sample-size 40` (or larger) before drawing any real decision on
+viability or the 40-vs-50-minute cap.
