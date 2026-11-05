@@ -4115,7 +4115,45 @@ Research this session (web search) changed the recommendation:
   VWAP filter — repeated across vendor sources but with no rigorous
   independent backtest found; treat as a starting hypothesis only.
 
-### Decisions still needed (updated)
+### Data-source search, round 2, 2026-11-05 — broader sweep for a sub-2-minute source
+
+The Controller rejected the 15-minute-delayed free sources and the paid
+options (Tradier/Polygon/IBKR) and asked for a wider search. Checked:
+Charles Schwab API, Webull OpenAPI, moomoo/Futu OpenD, ThetaData, Cboe
+One, Tradier live (non-sandbox), tastytrade API, TradeStation,
+E*TRADE, and the unofficial Robinhood `robin_stocks` library.
+
+**FACT, strongest evidence found (official developer docs + an
+independent secondary source agreeing):** tastytrade's Open API gives
+real-time market data (via DXLink streaming), including option chains,
+to any funded tastytrade brokerage account holder, with **no
+additional data-subscription fee** — the free sandbox is 15-minute
+delayed, but the live account tier is real-time and free.
+
+Other candidates and why they rank lower:
+- Schwab: likely similar, but the only evidence is third-party and
+  mentions an unconfirmed ~$500 funding threshold for real-time access.
+- Interactive Brokers: real-time but not free — ~$1.50/month (waivable).
+- Robinhood (`robin_stocks`): unofficial, no documented data freshness,
+  Terms-of-Service risk — **not recommended**, consistent with this
+  project's existing caution on Yahoo/Stooq ToS ambiguity
+  (`docs/trading/free-data-verification-pass.md`).
+- TradeStation / E*TRADE: no confirmation that real-time options data
+  is free; likely a separate data fee.
+
+### DECISION — Controller approved 2026-11-05: data source = tastytrade
+
+**Status:** data-source question (P-097 item 4) is RESOLVED. The
+Controller approved tastytrade's Open API as the data source: free,
+real-time, tied to a funded tastytrade brokerage account, no separate
+data subscription.
+
+**Next step (Controller's own action, not Claude's):** open and fund a
+tastytrade account, then Claude verifies the API terms directly against
+`developer.tastytrade.com` (official docs, not secondary sources) before
+any integration code is written.
+
+### Decisions still needed
 
 1. Trade structure: long call/put (capped risk, ~50% historical win
    rate) vs. defined-risk vertical credit spread (capped risk, higher
@@ -4126,7 +4164,8 @@ Research this session (web search) changed the recommendation:
    measure the actual win rate/expectancy for this specific hold window
    instead of assuming it from longer-hold studies.
 3. Exact hold time: a fixed 40 or 50 minutes, or a range.
-4. Final data-vendor choice (Tradier vs Polygon) after the Controller's
-   own manual price check.
 
-**Waiting on the Controller.**
+**Waiting on the Controller** for items 1-3 above, and for the
+tastytrade account to exist, before Claude writes the
+CHANGE/WHY/EXPECTED BENEFIT/RISK/FILES AFFECTED/TEST PLAN/BACKTEST PLAN
+design doc.
