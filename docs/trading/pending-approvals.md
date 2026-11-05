@@ -4153,19 +4153,39 @@ tastytrade account, then Claude verifies the API terms directly against
 `developer.tastytrade.com` (official docs, not secondary sources) before
 any integration code is written.
 
-### Decisions still needed
+### DECISIONS — Controller approved 2026-11-05
 
-1. Trade structure: long call/put (capped risk, ~50% historical win
-   rate) vs. defined-risk vertical credit spread (capped risk, higher
-   historical win rate, more complex execution). Claude's
-   recommendation: vertical credit spread, contingent on our own
-   backtest confirming it over a 40-50 minute window.
-2. Whether to run a historical backtest before any paper execution, to
-   measure the actual win rate/expectancy for this specific hold window
-   instead of assuming it from longer-hold studies.
-3. Exact hold time: a fixed 40 or 50 minutes, or a range.
+1. **Trade structure:** long calls/puts (not credit spreads). Capped
+   risk = premium paid; simpler execution; accepted ~50% historical
+   win-rate baseline from research, to be confirmed/refuted by our own
+   backtest.
+2. **Backtest first:** CONFIRMED — a historical backtest runs before any
+   paper execution of the options module.
+3. **Hold time:** not fixed to one number by the Controller. Both 40 and
+   50 minutes (range 0-40 and 0-50) will be tested in the backtest, and
+   the better-performing cap is chosen from the measured result, per
+   `.claude/rules/03-research-and-workflow.md` ("calculate from recorded
+   data, never from a chosen number").
 
-**Waiting on the Controller** for items 1-3 above, and for the
-tastytrade account to exist, before Claude writes the
-CHANGE/WHY/EXPECTED BENEFIT/RISK/FILES AFFECTED/TEST PLAN/BACKTEST PLAN
-design doc.
+### Historical data source for the backtest — verified 2026-11-05 (real page fetches, not search summaries)
+
+Two candidates were fetched directly (not just searched). Comparison:
+
+| | OptionsDX | 0DTESPX.com |
+|---|---|---|
+| Actually free | Unconfirmed — $0-$50 price range per product, EOD tier appears free but not stated outright | **CONFIRMED free**, registered account, per their Terms §5 and FAQ |
+| Resolution | up to 1-minute | **1-second** |
+| Coverage | 2010-2023 only, no API, file download via ShareFile | All historical dates, via a documented REST API |
+| License for an automated backtest | Not stated for automated/backtest use | Terms §7-8: personal non-commercial use; **bulk/crawler extraction is explicitly prohibited**; a **targeted backtest querying specific sessions is explicitly listed as acceptable** (their own rate-limits page example) |
+
+**DECISION:** use **0DTESPX.com** for the historical backtest — free,
+confirmed, higher resolution, real API, covers recent dates. Hard
+constraint carried into the backtest script's design: it must query
+only the specific session dates it studies, never iterate/archive the
+full history, per the site's own Terms.
+
+**Next step:** Claude builds a backtest script against 0DTESPX.com's
+API, kept OUT of the repository (uncommitted / throwaway) until its
+result is seen and the Controller decides it's worth keeping, per
+`.claude/rules/05-change-tracking.md` ("prove it before it enters the
+repo").
