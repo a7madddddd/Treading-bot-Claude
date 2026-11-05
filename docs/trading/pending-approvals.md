@@ -4067,3 +4067,66 @@ Recommendation` (2026-11-04, Controller's own analysis), D-0051
 cycle questions above. No implementation should start before these are
 answered — this is a new strategy and a new asset class, both of which
 require explicit approval per `.claude/rules/01-roles-and-authority.md`.
+
+### Architecture revised 2026-11-05 — TradingView dropped from the design
+
+The Controller asked for the best possible cycle, whether raw data can
+arrive "before" it reaches TradingView, and how to raise the win rate.
+Research this session (web search) changed the recommendation:
+
+- **FACT:** TradingView alerts normally fire on bar close, plus ~1-5s of
+  TradingView-side processing, plus webhook network latency — a slower
+  path than consuming the same real-time feed directly.
+- **FACT:** TradingView's own default chart data is delayed for many
+  exchanges/indices unless a separate real-time data add-on is
+  purchased from TradingView itself — a second subscription, on top of
+  the options-data vendor subscription already under discussion.
+- **FACT:** no one can receive market data "before" the exchange
+  publishes it; every data consumer, TradingView included, receives the
+  same tick from the same exchange. The real lever is skipping
+  TradingView as a middle hop, not getting data earlier than the market.
+- **Revised recommendation:** drop TradingView from the design.
+  Build the signal logic inside this project, consuming the same
+  real-time feed bought for the options data (Tradier or Polygon),
+  reusing the `research_hub.py`-style architecture. Removes a paid
+  TradingView real-time add-on, removes the webhook latency hop, and
+  keeps the signal logic fully backtestable on our own data.
+
+### Win-rate research 2026-11-05 — set expectations honestly before any design commitment
+
+- **FACT (Option Alpha study, ~230k trades):** 0DTE long call/put buyers
+  win roughly 49.6% of trades — close to a coin flip, before costs.
+- **FACT (Beckmeyer/Branger/Gayda academic study):** retail 0DTE traders
+  lose money in aggregate, on the order of hundreds of thousands of
+  dollars/day market-wide, worse since daily SPX expirations began May
+  2022.
+- **FACT:** credit spreads / iron condors show higher win rates (~60-75%
+  cited) but with losing trades sized several times larger than winners
+  — high win rate does not imply positive expectancy; worked example
+  given to the Controller: 70% win rate at $100/win vs 30% loss at
+  $400/loss nets a $5,000 loss over 100 trades.
+- **UNKNOWN, stated explicitly:** no study found covers a 40-50 minute
+  SPX 0DTE hold specifically — every win-rate figure above is for
+  multi-hour or full-day holds. This gap must be closed with our own
+  historical backtest before going live even in paper, per
+  `.claude/rules/03-research-and-workflow.md` ("calculate from recorded
+  data, never from a chosen number").
+- Most-cited 0DTE entry signal in research: Opening Range Breakout +
+  VWAP filter — repeated across vendor sources but with no rigorous
+  independent backtest found; treat as a starting hypothesis only.
+
+### Decisions still needed (updated)
+
+1. Trade structure: long call/put (capped risk, ~50% historical win
+   rate) vs. defined-risk vertical credit spread (capped risk, higher
+   historical win rate, more complex execution). Claude's
+   recommendation: vertical credit spread, contingent on our own
+   backtest confirming it over a 40-50 minute window.
+2. Whether to run a historical backtest before any paper execution, to
+   measure the actual win rate/expectancy for this specific hold window
+   instead of assuming it from longer-hold studies.
+3. Exact hold time: a fixed 40 or 50 minutes, or a range.
+4. Final data-vendor choice (Tradier vs Polygon) after the Controller's
+   own manual price check.
+
+**Waiting on the Controller.**
