@@ -4027,18 +4027,43 @@ Recommendation` (2026-11-04, Controller's own analysis), D-0051
 1. Which data-source option (vendor + cost) to approve, since the
    Controller's own note recommends the small paid-subscription option
    over widening the trade window.
-2. What "TradingView > bot > enter/exit > Telegram" means as an
-   architecture — is TradingView meant to be the signal generator (via
-   webhook into this project), or only a chart/visual reference. This
-   project does not currently consume TradingView signals.
-3. What "form > fields > style > collapse wizard with details" refers
-   to — unclear from the message; needs a concrete description or
-   mockup before any UI/notification design work starts.
+2. ~~What "TradingView > bot > enter/exit > Telegram" means~~ —
+   CLARIFIED 2026-11-05: the Controller confirmed this is a NEW,
+   SEPARATE module from the equity ladder engine, and asked to design
+   the cycle together rather than specifying it himself. He did not
+   know what TradingView actually is; Claude explained it (chart/
+   screener/alerting platform with Pine Script + webhook alerts, not a
+   broker and not an options-data provider) and proposed TradingView's
+   role as the directional-signal source via a webhook alert, with this
+   project's own module handling contract selection, sizing, the
+   Telegram proposal, execution and the timed exit. Still needs the
+   Controller's decision on the open numeric/design questions below.
+3. ~~What "form > fields > style > collapse wizard with details" refers
+   to~~ — WITHDRAWN 2026-11-05: the Controller said that line was sent
+   by mistake. No design needed here.
 4. Whether a 50-minute options strategy is designed as a fully separate
-   module from the equity ladder strategy (recommended, since the exit
-   logic, sizing and risk model are fundamentally different), or as an
-   extension of the existing engine.
+   module from the equity ladder strategy — CONFIRMED 2026-11-05 by the
+   Controller: yes, a new, separate module.
 
-**Waiting on the Controller.** No implementation should start before
-these are answered — this is a new strategy and a new asset class, both
-of which require explicit approval per `.claude/rules/01-roles-and-authority.md`.
+### Still open, raised 2026-11-05 — the cycle itself is not yet designed
+
+1. Does TradingView generate the entry/exit trigger itself (Pine Script
+   condition + webhook), with this project's module only filtering and
+   sizing it — or does this project's own signal logic decide
+   independently and TradingView is only a chart reference?
+2. Profit-target and stop-loss thresholds, as a percent of premium paid.
+3. Exact hold-time rule: a hard 50-minute cutoff always, or up to 50
+   minutes with an earlier exit allowed on the target/stop.
+4. Expiry selection: same-day (SPXW 0DTE) only, or next available
+   expiry too.
+5. Long-only (buy calls/puts, risk capped at premium paid) vs. also
+   selling premium (undefined risk) — Claude's recommendation is
+   long-only to start.
+6. Position sizing / risk budget per options trade (percent of equity,
+   like the existing 5% equity rule for stocks, or a fixed dollar/
+   contract-count cap).
+
+**Waiting on the Controller** for the data-source choice and the six
+cycle questions above. No implementation should start before these are
+answered — this is a new strategy and a new asset class, both of which
+require explicit approval per `.claude/rules/01-roles-and-authority.md`.
