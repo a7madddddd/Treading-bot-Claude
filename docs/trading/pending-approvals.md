@@ -4276,3 +4276,35 @@ small to decide the hold-cap question yet.
 trades before a result is trusted; this is 10. **Next step:** rerun
 with `--sample-size 40` (or larger) before drawing any real decision on
 viability or the 40-vs-50-minute cap.
+
+### Second backtest run 2026-11-05 — n=40, result flipped from negative to positive
+
+| | ORB+VWAP 40min | ORB+VWAP 50min | naive baseline 40min | naive baseline 50min |
+|---|---|---|---|---|
+| win rate | 42.5% | 40% | 27.5% | 30% |
+| expectancy/contract | +$1.07 | +$1.01 | -$3.14 | -$3.14 |
+| profit factor | 1.30 | 1.29 | 0.37 | 0.42 |
+
+**FACT, the central caution:** the result flipped sign entirely between
+n=10 (negative on both caps) and n=40 (positive on both caps) — this is
+exactly the "small-sample luck" failure mode `docs/trading/backtesting.md`
+names, not evidence the strategy just "got better". At n=40, the 95%
+confidence interval on the 42.5% win rate is roughly ±15 percentage
+points (±1.96·√(0.425·0.575/40)) — the true win rate could plausibly be
+anywhere from ~27% to ~58%. Not yet a result to act on.
+
+**FACT:** ORB+VWAP clearly separates from the naive baseline on both
+caps (profit factor ~1.3 vs ~0.4) — the signal itself looks real, even
+though the strategy's net profitability is not yet statistically
+established.
+
+**FACT:** 40-minute and 50-minute are within noise of each other
+(expectancy $1.07 vs $1.01) — no winner decided yet.
+
+**FACT:** still no commission/slippage model. A profit factor of 1.30
+is a thin margin that a realistic per-contract cost could erase.
+
+**Next step, Controller's own action:** rerun locally with
+`--sample-size 80` to narrow the confidence interval before any
+viability or hold-cap decision, then add a commission model before
+trusting the sign of the result.
