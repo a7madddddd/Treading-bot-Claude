@@ -3977,3 +3977,68 @@ the same ~30s window as a drift check) before picking between a fix and
 accepting the noise.
 
 **Waiting on the Controller.**
+
+---
+
+## P-097 — SPX options (calls/puts, ~50-minute hold) — new asset class, NOT YET DESIGNED
+
+**Status:** OPEN — Controller asked 2026-11-05 whether SPX option
+trading (call/put, target hold time up to ~50 minutes) is feasible in
+this project, and for the data-source mechanism. Research done this
+session; no code written; no trading-behavior change made.
+**Related:** uploaded note `SPX Options Data Source — Problem &
+Recommendation` (2026-11-04, Controller's own analysis), D-0051
+(current ladder sizing), `docs/trading/strategy.md`.
+
+### FACT, confirmed by reading the code this session
+
+- No options support exists anywhere in `src/`.
+  `src/execution/alpaca_broker_client.py` only builds equity orders
+  (symbol/qty/side) — no OCC option-symbol handling, no options order
+  endpoint.
+- No TradingView integration exists anywhere in the repo (`grep` for
+  `tradingview` across `src/` and `docs/` returns zero hits).
+- The approved strategy in `docs/trading/strategy.md` is percentage-based
+  off the original equity fill price (Buy / Ladder 1 at −5% / Ladder 2 at
+  −8% / Floor at −10%), with no built-in time-based exit. A ~50-minute
+  options hold needs a different exit mechanism (time-based, not
+  price-ladder-based) — this is a new strategy, not an extension of the
+  approved one.
+- Finnhub and Polygon are already integrated for research/enrichment
+  (`src/engine/research_hub.py`, `src/engine/deep_research.py`), so
+  adding either as an options-data source reuses existing credentials
+  and client code rather than a new integration from zero.
+
+### Research done this session (web search, 2026-11-05) — summarized, not 100% certain
+
+- Every source checked disagrees on exact current pricing for Tradier
+  and Polygon options tiers; none could be confirmed against the
+  vendor's own live pricing page via this session's search tool.
+- Alpaca: paper-trading accounts get Level 3 multi-leg automatically;
+  SPX/SPXW/VIX/VIXW/DJX/XSP index options were added to paper trading;
+  SPXW support 0DTE same-day expiration; index options are cash-settled.
+  Live (real-money) index options exist separately — not relevant while
+  the project stays paper-only.
+- No source confirmed whether Finnhub's free real-time feed includes the
+  SPX index symbol specifically.
+
+### Decision needed from the Controller (none made yet)
+
+1. Which data-source option (vendor + cost) to approve, since the
+   Controller's own note recommends the small paid-subscription option
+   over widening the trade window.
+2. What "TradingView > bot > enter/exit > Telegram" means as an
+   architecture — is TradingView meant to be the signal generator (via
+   webhook into this project), or only a chart/visual reference. This
+   project does not currently consume TradingView signals.
+3. What "form > fields > style > collapse wizard with details" refers
+   to — unclear from the message; needs a concrete description or
+   mockup before any UI/notification design work starts.
+4. Whether a 50-minute options strategy is designed as a fully separate
+   module from the equity ladder strategy (recommended, since the exit
+   logic, sizing and risk model are fundamentally different), or as an
+   extension of the existing engine.
+
+**Waiting on the Controller.** No implementation should start before
+these are answered — this is a new strategy and a new asset class, both
+of which require explicit approval per `.claude/rules/01-roles-and-authority.md`.
