@@ -4518,3 +4518,26 @@ Finnhub (real-time directional signal) + yfinance `^SPX` (options chain,
 zero account/country barrier) + Alpaca (execution at live price). All
 three free, all three accessible from Jordan, confirmed by direct
 testing rather than vendor claims at every step.
+
+### Further source sweep 2026-11-06 — DoltHub ruled out; Alpaca options eligibility RESOLVED
+
+**DoltHub `post-no-preference/options`:** checked directly via its free,
+keyless public SQL API (`dolthub.com/api/v1alpha1/...`, no account, no
+rate-limit wall hit) — found real schema with Greeks (delta/gamma/
+theta/vega/rho) included for free, but the `date` column confirms
+**daily (EOD) granularity only**, same dead end as OptionsDX's free
+tier for a 40-50 minute hold. Ruled out.
+
+**Critical gap surfaced and closed:** realized Alpaca's OPTIONS asset
+class (not just equities, which the project already trades) might have
+its own country eligibility restriction separate from the account
+itself — this would have been a bigger blocker than any data source.
+**RESOLVED:** the Controller's own Alpaca account configuration shows
+**Options Level 3 already enabled**, including Long Calls, Long Puts,
+Spreads, and Multi-leg Strategies — exactly what this module needs. No
+new broker account required anywhere in the design.
+
+**Status now:** every component of the live pipeline (signal, options
+chain, execution) is resolved and accessible from Jordan at zero cost.
+Only the historical backtest sample size remains blocked, on the
+0DTESPX IP-ban reply.
