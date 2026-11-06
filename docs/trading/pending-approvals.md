@@ -4467,3 +4467,34 @@ human, not usable by this pipeline.
 Delivered `live_signal_source.py` to the Controller to run both
 pending checks (Finnhub delay during market hours, Tradier sandbox SPX
 chain availability) with his own keys.
+
+### Tradier dropped too 2026-11-06 — same country-eligibility wall
+
+**FACT:** developer.tradier.com refused the Controller's registration:
+"Unfortunately, we are unable to open accounts for residents of Jordan
+at this time." This is the THIRD US broker-tied service in a row to
+reject Jordan (tastytrade, IBKR-required-paid, now Tradier) — a
+recurring pattern: any service backed by a real or sandbox brokerage
+account inherits that brokerage's country allowlist, even a "no KYC
+needed" developer sandbox.
+
+**DECISION:** switch the options-chain leg to **yfinance** (unofficial
+Yahoo Finance scraper) specifically because it requires NO account of
+any kind, so no country gate can exist. Tested directly this session:
+real ^SPX index history works; SPY option chain data confirmed real
+(strikes/bid/ask/volume); the same session hit Yahoo's crumb-token
+rate-limiting intermittently (HTTP 429) from this cloud session's
+shared IP, same shape of problem as 0DTESPX/BLS — **no workaround
+attempted**, test handed to the Controller's own machine instead
+(`test_yfinance_spx.py` delivered).
+
+**Still open:** whether `^SPX` itself carries an option chain on
+yfinance, or only the `SPY` proxy does — genuinely unknown, not
+assumed either way, pending the Controller's local test.
+
+**Known, pre-existing caution carried forward, not new:** this
+project's own `docs/trading/free-data-verification-pass.md` already
+flags Yahoo's terms of use as legally unclear. Accepted for now because
+this data feeds only the displayed premium estimate, never the
+execution price (that's always Alpaca's live quote) — same reasoning
+already applied to the Tradier-sandbox delay question.
