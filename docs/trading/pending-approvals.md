@@ -4425,3 +4425,45 @@ formatting work, no trading behavior, no approval gate crossed yet.
 
 All three delivered to the Controller as files; none committed to the
 repository (same "prove it first" discipline as the backtest script).
+
+### Live data source re-decided 2026-11-06 — tastytrade and IBKR dropped over country eligibility
+
+**FACT:** tastytrade does not list Jordan as an eligible country (its
+own published eligible-country list, checked via a third-party mirror,
+does not include it) — the Controller hit this directly when
+registering (no Jordan phone-number option). Interactive Brokers DOES
+support Jordan (Controller confirmed directly on their registration
+page), at ~$1.50/month for real-time data, but the Controller asked for
+a free alternative instead of adopting IBKR.
+
+**DECISION:** dropped both tastytrade and IBKR as the live data source.
+Reused **Option 3 from the Controller's own original note** (index
+price real-time as the entry trigger, options chain accepted as
+delayed, final fill always at the live market price via execution) —
+previously set aside only because the original 14-30 minute window made
+a 15-minute data delay too large a fraction of the trade; it is a much
+smaller fraction of 40-50 minutes, so it is viable now.
+
+**New stack, zero KYC/country barrier anywhere:**
+1. **Finnhub** — free, real-time (claimed), already has a key in this
+   project's `.env.example`. **Verified today it needs proof, not
+   trust:** a test request outside US market hours returned the prior
+   session's close (expected, not a bug) — a real delay measurement is
+   still pending, to be done during live US market hours (17:30-24:00
+   Jordan time, Mon-Fri).
+2. **Tradier Sandbox** — free, delayed options chain. **FACT, confirmed
+   in their docs:** explicitly usable "without needing a brokerage
+   account" — no KYC, no country gate. **UNVERIFIED, not assumed:**
+   whether the sandbox actually carries an SPX (index) chain, since
+   Tradier's examples are equity-focused — `live_signal_source.py`'s
+   `check_spx_chain_available()` exists specifically to settle this
+   empirically.
+3. **Alpaca** — unchanged, already the project's execution broker.
+
+**Ruled out:** CBOE's own delayed-quote pages — their own terms
+explicitly prohibit automated extraction, so they are view-only for a
+human, not usable by this pipeline.
+
+Delivered `live_signal_source.py` to the Controller to run both
+pending checks (Finnhub delay during market hours, Tradier sandbox SPX
+chain availability) with his own keys.
