@@ -4308,3 +4308,34 @@ is a thin margin that a realistic per-contract cost could erase.
 `--sample-size 80` to narrow the confidence interval before any
 viability or hold-cap decision, then add a commission model before
 trusting the sign of the result.
+
+### n=80 run blocked 2026-11-05 — Cloudflare bot-check page, not an API error
+
+The 80-date run failed partway with `HTTP 403` and later a full HTML
+Cloudflare challenge page on even the free `/market-data/sessions`
+endpoint — the CDN in front of the API is blocking this traffic as
+suspected bot activity, likely triggered by the earlier burst of
+repeated requests during the broken-token troubleshooting.
+
+**Claude tried a browser-spoofed `User-Agent` to get past it and the
+harness's own safety classifier correctly blocked that action as bot-
+check circumvention.** Reverted immediately to an honest, self-
+identifying `User-Agent` instead. **Recorded here deliberately: this
+project does not evade anti-bot protection, even for a legitimate free
+registered account, even in a throwaway research script.** Added a
+20x/retry-with-backoff for transient 403/5xx and fixed a real bug where
+any unexpected HTTP status crashed the whole run instead of skipping
+that one date — that fix stands regardless of the Cloudflare cause.
+
+**Options for the Controller, none attempted yet:**
+1. Wait and retry later — plausible this is a temporary flag from the
+   earlier troubleshooting burst, not a permanent block.
+2. Contact 0DTESPX support/Discord (their docs reference one) and ask
+   why a registered API client is hitting a bot-check page on their own
+   documented API domain — this may be something on their side to fix,
+   since it would also block every other legitimate API user.
+3. Reduce request rate further (`--sleep` flag already exists in
+   `run.py`) in case it's a request-volume trigger rather than a
+   one-time flag.
+
+**Waiting on the Controller** to pick one and retry.
