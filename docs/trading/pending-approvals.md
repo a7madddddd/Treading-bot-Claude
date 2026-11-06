@@ -4349,3 +4349,17 @@ reinforce the block / look more bot-like to their WAF) and contact
 0DTESPX support/Discord directly instead. The n=40 result above remains
 the best evidence available until this is resolved — still explicitly
 not a large enough sample to act on.
+
+**Root cause confirmed 2026-11-05 (Controller screenshot):** Cloudflare
+error 1107, "The owner of this website (www.0dtespx.com) has banned
+your IP address." This is a deliberate owner-set IP ban, not an
+automated bot heuristic — almost certainly triggered by the repeated
+failed-auth attempts during the broken-token troubleshooting earlier
+this session (looks like credential stuffing from their security
+system's point of view).
+
+**Claude will not help circumvent this ban** (no VPN/proxy workaround
+suggested or built) — it is the site owner's access decision. **Only
+path forward:** the Controller contacts 0DTESPX support directly,
+explains the failed-auth attempts were his own integration testing, and
+asks for the IP to be unbanned. Blocked on that until resolved.
