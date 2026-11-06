@@ -4498,3 +4498,23 @@ flags Yahoo's terms of use as legally unclear. Accepted for now because
 this data feeds only the displayed premium estimate, never the
 execution price (that's always Alpaca's live quote) — same reasoning
 already applied to the Tradier-sandbox delay question.
+
+### RESOLVED 2026-11-06 — `^SPX` confirmed to have a real option chain on yfinance
+
+The Controller ran `test_yfinance_spx.py` locally (clean IP, no rate
+limiting there). **FACT:** `yf.Ticker("^SPX").options` returns real
+expirations and `option_chain()` returns real strikes with non-zero
+bid/ask — `^SPX` itself, not just the `SPY` proxy. Example row: strike
+5700, bid 1676.6, ask 1692.1.
+
+**Explained, not a defect:** `lastTradeDate` varies per strike (some
+Oct 27, some same-day) because it's the last time THAT SPECIFIC strike
+actually traded, not a feed-staleness indicator — illiquid far strikes
+trade rarely, liquid near-the-money strikes trade constantly. The
+quoted bid/ask is separate from that field.
+
+**Data-source question (P-097 item 4) is now RESOLVED for real:**
+Finnhub (real-time directional signal) + yfinance `^SPX` (options chain,
+zero account/country barrier) + Alpaca (execution at live price). All
+three free, all three accessible from Jordan, confirmed by direct
+testing rather than vendor claims at every step.
