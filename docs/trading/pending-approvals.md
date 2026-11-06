@@ -4390,3 +4390,38 @@ ban being lifted.
 the live tastytrade data client, the Telegram proposal message format,
 and the FRED/BLS/Fed economic-calendar integration — all read-only /
 formatting work, no trading behavior, no approval gate crossed yet.
+
+### Prep work done 2026-11-06 — three scratchpad modules, none in the repo yet
+
+1. **`tastytrade_client.py`** — read-only (option chains + DXLink quote
+   token). **FACT, verified against developer.tastytrade.com directly:**
+   auth changed to OAuth2-only — the old username/password `POST
+   /sessions` flow was decommissioned 2026-02-11. Needs the Controller
+   to create an OAuth Application + Grant at my.tastytrade.com (Manage
+   -> My Profile -> API -> OAuth Applications) to get a refresh token;
+   not started yet. Sandbox (`api.cert.tastyworks.com`) and production
+   use separate, non-interchangeable credentials; this client defaults
+   to sandbox. One confirmed gap: the nested option-chain response's
+   exact field names weren't verified (OpenAPI fetch was truncated) —
+   left as a raw dict with a TODO rather than a guessed schema.
+2. **`telegram_proposal.py`** — reuses the project's existing
+   `NotificationEvent`/Approve-Reject callback convention
+   (`src/notifications/service.py`, `telegram_decision.py`'s
+   `"approve:<id>"`/`"reject:<id>"` parsing) rather than inventing a
+   parallel notification path. Message style copied from
+   `_format_proposal_message` in `src/engine/engine.py`. Tested, prints
+   correctly.
+3. **`econ_calendar.py`** — merges FRED `releases/dates` (reuses the
+   existing `FRED_API_KEY` env var), the BLS `.ics` feed, and a
+   hardcoded, dated, verified 2026 FOMC meeting list (Fed publishes no
+   machine-readable feed) into `is_blackout_window()`, a pure SAFETY
+   FILTER that only ever says "skip the signal", never "enter". **Found
+   and left unresolved, not worked around:** BLS.gov's CDN (Akamai)
+   returns 403 to this cloud session's requests — same shape of problem
+   as the 0DTESPX IP ban. No header-spoofing attempted. The module
+   degrades gracefully (tested): a failed source is skipped, never
+   crashes the caller. Recommended the Controller test the BLS fetch
+   from his own machine, where it will likely work.
+
+All three delivered to the Controller as files; none committed to the
+repository (same "prove it first" discipline as the backtest script).
