@@ -4363,3 +4363,30 @@ suggested or built) — it is the site owner's access decision. **Only
 path forward:** the Controller contacts 0DTESPX support directly,
 explains the failed-auth attempts were his own integration testing, and
 asks for the IP to be unbanned. Blocked on that until resolved.
+
+### OptionsDX checked as a fallback 2026-11-06 — dead end, verified by live price check
+
+While waiting on 0DTESPX support, checked whether OptionsDX's free tier
+could substitute. Verified directly (headless browser against the live
+product page, not a guess): only "End of Day" is $0.00; every intraday
+frequency is paid —
+
+| frequency | price |
+|---|---|
+| End of Day | $0.00 (free) |
+| 30 Minutes | $3.00 |
+| 15 Minutes | $5.00 |
+| 5 Minutes | $20.00 |
+| Minutely | $50.00 |
+
+**Dead end for this project's purpose:** a 40-50 minute hold needs the
+option's price AT entry and AT exit, which End-of-Day data cannot give
+(one daily close only). Every intraday tier is paid, which conflicts
+with the project's free-data-source rule. No account was created —
+nothing to gain from it. Backtesting stays blocked on the 0DTESPX IP
+ban being lifted.
+
+**Meanwhile:** starting prep work that doesn't depend on backtest data —
+the live tastytrade data client, the Telegram proposal message format,
+and the FRED/BLS/Fed economic-calendar integration — all read-only /
+formatting work, no trading behavior, no approval gate crossed yet.
