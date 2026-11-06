@@ -4560,3 +4560,12 @@ Only the historical backtest sample size remains blocked, on the
 **Every other requirement in the module is now sourced, verified, and
 accessible from Jordan at zero cost.** The single remaining gap is the
 backtest sample size, blocked on 0DTESPX lifting the IP ban.
+
+### Finnhub delay MEASURED 2026-11-06 — 12 seconds, during live US market hours
+
+Controller ran the quote test at 17:35:02 Jordan time (within market
+hours). Finnhub's `t` field: `1793975690` = 17:34:50 Jordan time.
+**FACT, measured, not claimed:** 12 seconds of delay. Effectively
+real-time — far inside the "under 2 minutes" bar originally set, let
+alone the 40-50 minute hold window. The Finnhub leg of the live
+pipeline is now fully confirmed, not just assumed from vendor docs.
