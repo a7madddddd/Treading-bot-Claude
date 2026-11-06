@@ -4339,3 +4339,13 @@ that one date — that fix stands regardless of the Cloudflare cause.
    one-time flag.
 
 **Waiting on the Controller** to pick one and retry.
+
+**Update 2026-11-05, same day:** retried once (`--sleep 2`, honest
+User-Agent) — same 403 Cloudflare challenge page, failing on the very
+first call (`/market-data/sessions`). It is immediate, not load-related,
+so this is a standing IP-level block, not a transient rate trigger.
+**Recommendation acted on:** stop retrying (repeated attempts could
+reinforce the block / look more bot-like to their WAF) and contact
+0DTESPX support/Discord directly instead. The n=40 result above remains
+the best evidence available until this is resolved — still explicitly
+not a large enough sample to act on.
