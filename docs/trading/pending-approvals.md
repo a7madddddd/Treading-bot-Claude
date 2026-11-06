@@ -4541,3 +4541,22 @@ new broker account required anywhere in the design.
 chain, execution) is resolved and accessible from Jordan at zero cost.
 Only the historical backtest sample size remains blocked, on the
 0DTESPX IP-ban reply.
+
+### Final source-coverage sweep 2026-11-06 — complete map, every requirement sourced
+
+- **Greeks (delta/gamma/theta):** checked -- yfinance's option chain
+  gives `impliedVolatility` but not Greeks directly (confirmed against
+  the library's actual field set, not assumed). **Resolution: compute
+  them locally via Black-Scholes from the IV yfinance already
+  provides** -- no external source needed, zero cost, zero dependency.
+- **More historical intraday backtest alternatives checked:** FirstRate
+  Data (free sample is index price only, not options), ORATS
+  (1-minute options data, paid), historicaloptiondata.com (intraday
+  tier $1,815/yr). **No free alternative to 0DTESPX found for
+  intraday-granularity historical SPX options** after this and all
+  earlier rounds (OptionsDX, DoltHub, CBOE, ThetaData) -- this appears
+  to be the actual state of the market, not a search gap.
+
+**Every other requirement in the module is now sourced, verified, and
+accessible from Jordan at zero cost.** The single remaining gap is the
+backtest sample size, blocked on 0DTESPX lifting the IP ban.
