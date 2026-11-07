@@ -4596,3 +4596,48 @@ field, closing the Greeks gap identified earlier with zero external
 dependency, zero account, zero cost. Tested: ATM SPX call, 2h to
 expiry, IV 15% -> delta 0.50, theta -$32.37/day (illustrates the real
 theta-decay risk already flagged in the 2026-11-05 research).
+
+### BREAKTHROUGH 2026-11-07 — manual GreeksLab cross-checks, then the real fix: Alpaca's own historical options API
+
+**Manual cross-validation via GreeksLab (free, UI-only, no API -- used
+for spot-checking only, never automated per their ToS):** ran the
+naive-baseline-equivalent (long call, fixed 09:31 entry, fixed 50-min
+exit, no signal) over all of 2022, n=220 -- win rate 25.91%, profit
+factor 0.6, -13.98% annualized, Sharpe -2.74. This independently
+confirms, from a second data vendor, the earlier 0DTESPX-based finding
+that unfiltered long-call buying is a clear loser.
+
+Then built the REAL ORB+VWAP-equivalent signal in GreeksLab's condition
+builder (it has an "Opening Range" condition category + a "Time in
+Trade" relative-hold condition -- exactly what's needed) and ran it at
+n=161 (Call side, 15-min opening range, 50-min hold, all of 2022):
+win rate 44.1%, profit factor ~1.0, -0.27% annualized, Sharpe -0.02 --
+dramatically better than the naive baseline, independently confirming
+the ORB signal has real value. The Put side (n=168, same rules
+mirrored) was clearly worse: win rate 42.86%, profit factor 0.84,
+-11.17% annualized -- an asymmetry not previously known, worth
+investigating (likely IV expansion on down moves eating the Put's
+edge even when direction is right).
+
+**The Controller then asked for a source Claude could access
+programmatically**, not manual screenshot relay. Checked Option Omega
+(has an MCP server Claude could use directly, but $49.99+/month --
+Controller declined, wants free). **Found the actual fix: Alpaca's own
+`/v1beta1/options/bars` historical options data endpoint is on the
+FREE Basic tier** (confirmed directly against official docs: 15-minute
+recency restriction only, 200 calls/min, no restriction on how far back
+history goes) -- the SAME Alpaca account this project already uses for
+paper trading. No new registration, no new country-eligibility risk
+(already resolved).
+
+**Verified with a real API call, not just docs:** `SPXW` (not `SPX`) is
+the correct 0DTE root symbol. Real historical 1-minute bars returned
+for real SPXW contracts on 2026-11-04 (e.g. `SPXW261104C06900000` ->
+real trade at $782.15). Empty results for other strikes are normal
+(those strikes simply had no trades that minute) -- not a data gap.
+
+**Next step:** rebuild the backtest script (reusing `signal.py`'s
+ORB+VWAP logic and `backtest.py`'s metrics) against Alpaca's options
+data API instead of 0DTESPX. This fully resolves the backtest-data
+blocker that has been open since 2026-11-05 -- no more waiting on
+0DTESPX, no more manual GreeksLab relay.
