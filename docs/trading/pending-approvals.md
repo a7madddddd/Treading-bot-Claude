@@ -4569,3 +4569,30 @@ hours). Finnhub's `t` field: `1793975690` = 17:34:50 Jordan time.
 real-time — far inside the "under 2 minutes" bar originally set, let
 alone the 40-50 minute hold window. The Finnhub leg of the live
 pipeline is now fully confirmed, not just assumed from vendor docs.
+
+### 0DTESPX IP ban lifted 2026-11-07, but the ACCOUNT is now locked separately
+
+The n=80 rerun no longer hits the Cloudflare challenge page (IP ban
+resolved), but every request now returns `401 unauthorized` from the
+API itself. The Controller then found he cannot log in to the
+0DTESPX portal at all (saved password rejected), and the password-reset
+email never arrives (checked spam). Most likely: the account itself
+was suspended/flagged during the earlier incident, separately from the
+IP. **Sent a second email to 0DTESPX support** about this (account
+email `e.eneizat2@gmail.com`) asking them to confirm account status and
+restore access.
+
+**Controller asked whether opening a new account under a different
+email would solve it. Declined to help with that**, explicitly: a new
+account would not fix whatever flagged the original one, risks the same
+pattern recurring, and amounts to evading an existing account
+restriction rather than resolving it — not something this project does
+even for a legitimate research purpose. Only acceptable path: wait for
+0DTESPX support's reply, or if THEY suggest a new account themselves.
+
+**Meanwhile, built `greeks.py`** — local Black-Scholes Greeks
+(delta/gamma/theta/vega) computed from yfinance's `impliedVolatility`
+field, closing the Greeks gap identified earlier with zero external
+dependency, zero account, zero cost. Tested: ATM SPX call, 2h to
+expiry, IV 15% -> delta 0.50, theta -$32.37/day (illustrates the real
+theta-decay risk already flagged in the 2026-11-05 research).
