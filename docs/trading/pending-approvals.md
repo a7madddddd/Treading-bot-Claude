@@ -4641,3 +4641,56 @@ ORB+VWAP logic and `backtest.py`'s metrics) against Alpaca's options
 data API instead of 0DTESPX. This fully resolves the backtest-data
 blocker that has been open since 2026-11-05 -- no more waiting on
 0DTESPX, no more manual GreeksLab relay.
+
+### Full-year Alpaca backtests run 2026-11-07/08 -- single outlier trade problem found
+
+**FACT, 2026 (Jan 1 - Nov 5, n=27 trades, 40min cap):** win rate
+51.85%, expectancy +$3.80, profit factor 4.62 -- looked strong.
+
+**FACT, 2025 (full year, n=31 trades, 40min cap):** win rate 22.58%,
+expectancy +$2.47, profit factor 1.81 -- positive, but **removing a
+single trade (2025-04-07, the day after the "Liberation Day" tariff
+announcement, entry $116.80 -> exit $264.90, +$148.10/contract) flips
+the whole year negative (-$2.39 expectancy)**. VIX-tercile analysis
+initially looked like it found an edge in high-VIX days, but the
+"high VIX" bucket's apparent edge is that exact same trade
+reclassified by VIX level (10% win rate in that bucket, positive
+expectancy only because of the one trade) -- NOT independent evidence.
+
+**Controller's verdict, correctly:** this is not an acceptable
+strategy as-is -- its apparent profitability depends almost entirely
+on catching a rare tail event, not a repeatable process. Declined to
+proceed with the simple ORB-only design.
+
+### Strategy "grown up" 2026-11-08 -- entry filters, sizing, dynamic exit, full tree
+
+Researched what actually-documented (not vendor-promoted) professional
+day-trading process looks like: selective multi-signal confirmation,
+strict daily trade caps, journaling/review -- no single secret
+indicator found, consistently a "several things must align, skip if
+they don't" discipline. Built four pieces together:
+
+1. **`entry_filters.py`** -- economic-calendar check (reuses
+   `econ_calendar.py` unchanged), volume confirmation (breakout bar
+   volume >= 1.3x recent average -- bootstrap, unvalidated), VIX range
+   filter (12-35 -- deliberately wide, only excludes the two extremes
+   most sources agree are unreliable; explicitly NOT built from the
+   tainted VIX-tercile finding above).
+2. **`sizing.py`** -- 1 contract fixed (Controller's standing
+   decision) + max 3 trades/day cap (from the professional-discipline
+   research, bootstrap).
+3. **`advanced_exit.py`** -- minute-by-minute exit logic, Controller-
+   designed collaboratively: profit target +60-100% of premium: exit;
+   else if ever reached +25%, "armed" -- breakeven stop (exit at P0)
+   OR 3-DATA-bar momentum stall (not wall-clock minutes, since
+   Alpaca's trade-print data has gaps) locks in the gain; else
+   (never armed) stop loss at -35-45%; else the existing 40/50-minute
+   time cap. Unit-tested against 5 synthetic scenarios (target hit,
+   stall after arming, breakeven stop, stop-loss never-armed, time
+   cap) -- all behaved correctly.
+4. **Full strategy tree diagram**, published and iterated live with
+   the Controller: https://claude.ai/artifact/25yE5Dy4kRJPib5r9N9HDS
+
+**Next step:** wire `advanced_exit.py` into the Alpaca backtest script
+and re-run 2025+2026 with the new exit logic (several target/stop
+combinations) before drawing any conclusion -- not run yet.
