@@ -4691,6 +4691,71 @@ they don't" discipline. Built four pieces together:
 4. **Full strategy tree diagram**, published and iterated live with
    the Controller: https://claude.ai/artifact/25yE5Dy4kRJPib5r9N9HDS
 
-**Next step:** wire `advanced_exit.py` into the Alpaca backtest script
-and re-run 2025+2026 with the new exit logic (several target/stop
-combinations) before drawing any conclusion -- not run yet.
+### Deeper strategy discussion 2026-11-08/09 -- before any more testing
+
+The Controller paused further testing to discuss the strategy's core
+design more deeply, not just bolt filters onto a weak signal. Key
+points from that discussion, recorded for the eventual design doc:
+
+- **Why backtesting matters even for fast small trades:** explained
+  that trade duration is irrelevant to the need for repetition -- a
+  bot has no lived experience/judgment of its own (unlike a human
+  professional's years of pattern-matching), so historical repetition
+  is the only substitute available for validating a rule before
+  trusting it with money.
+- **Researched GEX (gamma exposure)/dealer positioning** as a
+  professional-grade market-read signal: positive gamma dampens moves
+  (pinning, breakouts fail), negative gamma amplifies them (breakouts
+  continue) -- theoretically powerful, but CBOE has stated 0DTE
+  market-maker positioning is "fairly de minimis," so there's genuine
+  academic doubt about its real driving power. **Can be computed
+  locally for free** (yfinance's live chain has `openInterest`;
+  `greeks.py` already computes gamma via Black-Scholes) -- but only as
+  a LIVE filter, since yfinance has no historical chain, so it cannot
+  be backtested with current free data.
+- **Multi-timeframe trend alignment** (reject counter-trend
+  breakouts, e.g. only take Calls when price is above its 20-day
+  moving average): IS backtestable (daily closes are stable historical
+  data). Flagged honestly that this would likely have EXCLUDED the
+  2025-04-07 outlier trade (a counter-trend snapback), so it is not a
+  free win -- must be tested, not assumed.
+- **Core principle the Controller set: make the strategy "dynamic"
+  wherever logically justified, but explicitly cautioned (by Claude)
+  against turning every parameter into a free-floating variable** --
+  with only ~60-120 trades/year of data, too many simultaneous "dynamic"
+  parameters reproduces the exact single-outlier-dependency problem
+  already found, just spread across more knobs. Agreed split:
+  - Dynamic (justified, keep): adaptive opening-range duration (extends
+    until a real 0.2%-of-price range forms, 10-30 min bound), the
+    20-day trend filter (recalculates daily by nature), the
+    arm/breakeven/stall exit logic (already fully path-dependent per
+    trade), and position size scaling with how many filters pass.
+  - Fixed, locked from data (not guessed): 40-minute hold (the
+    2026-11-07 Alpaca backtest's own result, not an assumption);
+    profit target/stop as flat percentages for now (volatility-scaled
+    versions deferred until more data exists to validate them without
+    overfitting).
+
+### Three more filters built 2026-11-09 -- `entry_filters.py` extended
+
+1. **`time_quality_window()`** -- rejects entries in the 12:00-13:30 ET
+   "lunch chop" window cited repeatedly in the professional-trading
+   research (bootstrap window, not yet measured from our own data).
+2. **`cross_market_confirmed()`** -- requires QQQ (Nasdaq-100) AND IWM
+   (Russell 2000) to show the same directional bias as the SPX signal
+   over their own opening range -- a lone SPX breakout without broader
+   confirmation is more likely index-specific noise.
+3. **`liquidity_ok()`** -- bid/ask spread check (<=10% of mid,
+   bootstrap). **LIVE-TRADING ONLY**: Alpaca's historical options bars
+   are trade prices, not quotes, so this cannot run against the
+   backtest data -- it applies to a live yfinance quote right before
+   an actual order.
+
+All three unit-tested against synthetic data, correct behavior
+confirmed (blocks/passes as designed).
+
+**Still not run against real backtest data.** Next real step, per the
+Controller's own validation framework from this discussion: lock the
+full parameter spec (no more changes), then run a genuine train/test
+split -- tune nothing further after fixing on 2025, verify unchanged
+on 2026 -- rather than the mixed-together runs done so far.
