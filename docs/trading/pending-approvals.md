@@ -4881,3 +4881,72 @@ rejected subset performs no worse (or better), the 1.3x threshold is
 actively hurting sample size for no protective benefit, and should be
 loosened or dropped -- a finding we would act on with evidence, not
 with a parameter search.
+
+### Volume-filter measurement RESULT + exit-reason breakdown, 2026-11-13
+
+2025 (volume filter off, n=37): rejected-by-volume subset (n=27)
+expectancy -0.956, passed subset (n=10) expectancy -1.074 -- rejected
+subset was NOT worse.
+
+2026 (volume filter off, n=38): rejected-by-volume subset (n=31)
+expectancy -1.536, passed subset (n=7) expectancy +0.486 (profit_factor
+341.0 -- a near-zero-denominator artifact from avg_loss=-0.002, not
+real edge).
+
+**Conclusion: the volume filter's effect is inconsistent across the
+two years (helped in 2026's pooled view, hurt in 2025's) -- not a
+reliable discriminator, and it shrinks the sample to n=7-10 where
+single-trade artifacts like profit_factor=341 dominate.**
+
+**The bigger finding, with the larger/more credible n=37-38 sample
+(volume filter off): the base ORB+VWAP signal + current exit params is
+negative in BOTH independent years** -- 2025 expectancy -0.988, 2026
+expectancy -1.163, win rate 21.6%/23.7%. Two independently-measured
+negative years at this sample size is the strongest evidence this
+project has produced so far -- not an outlier-driven result like the
+April 2025 trade flagged earlier.
+
+Built `analyze_exit_reasons.py` (reads existing CSVs, no new network
+calls) to find WHERE the loss comes from. Combined n=75:
+
+- `time_cap`: 53 trades (70.7% of all), -69.04 total pnl (85% of all
+  losses), win_rate 17%
+- `stop_loss`: 10 trades, -27.33 total, win_rate 0% (by definition)
+- `stall`: 7 trades, +15.58 total, win_rate 100%
+- `breakeven_stop`: 4 trades, ~0
+- `target`: 1 trade only (1.3% of all trades ever reach it)
+
+**Diagnosis:** 84% of all trades (63/75) never even reach the +25% arm
+threshold. The entry signal frequently produces no real move at all --
+the position just bleeds theta until the time cap, not a sharp adverse
+move. The exit LOGIC (stall/breakeven) works well when a trade does
+move (100% win rate on stall exits) -- the problem is upstream, at
+entry-signal quality, not at the exit rules.
+
+### Scratch-exit measurement built, 2026-11-13
+
+Research basis already logged (2026-11-08/09): a "scratch" exit --
+cut the trade early if it shows no real progress within ~30 minutes --
+is a named practice for exactly this failure mode (theta bleed on a
+signal that didn't produce movement).
+
+Built `measure_scratch_exit.py` (scratchpad only): adds exactly ONE
+new rule to a copy of the exit simulation -- for a trade that has not
+yet armed (+25%), if `scratch_minutes` (bootstrap: 15, half the cited
+~30-minute range, conservative) have elapsed and the running gain is
+still below `scratch_arm_pct` (bootstrap: +10%), exit immediately
+("scratch") instead of waiting for time_cap. Can only end a trade
+earlier/smaller, never touches an already-armed or already-profitable
+path. Held on the same no-volume-filter, n=75-trade configuration
+already measured, so this isolates ONLY the new rule's effect.
+
+Syntax-checked, not yet run. Sent to the Controller.
+
+STATUS: built, awaiting the Controller's run (2025 + 2026 ranges).
+NEXT: compare total_pnl and exit_reason_counts against the n=75
+baseline above. If scratch materially reduces the time_cap bleed
+without cutting into the stall/target winners, that is evidence for
+adding it; if it doesn't move the total much, the problem is the
+entry signal itself, not early-exit timing, and the next step moves to
+re-examining ORB+VWAP (opening-range duration, direction confirmation)
+rather than more exit-side tuning.
