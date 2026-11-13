@@ -4950,3 +4950,39 @@ adding it; if it doesn't move the total much, the problem is the
 entry signal itself, not early-exit timing, and the next step moves to
 re-examining ORB+VWAP (opening-range duration, direction confirmation)
 rather than more exit-side tuning.
+
+### Scratch redesigned as relative pace, not fixed clock, 2026-11-13
+
+Controller's objection to the fixed-15-minute scratch, before running
+it: a flat wait (even if scaled by the day's pace) still can't tell a
+trade that resolves in 3 minutes from one that resolves in 15 -- it
+needs to judge the TRADE's own realized progress, not a clock.
+
+Replaced with a relative-pace rule, explained to the Controller step
+by step and confirmed before building:
+
+    time_ratio     = elapsed_minutes_since_entry / dynamic_cap_today
+    progress_ratio = best_gain_so_far / arm_pct   (arm_pct = 0.25)
+
+Exit ("lagging_pace") pre-arm only, if `progress_ratio < lag_threshold
+x time_ratio` (bootstrap lag_threshold = 0.5 -- "less than half the
+pace it should be on"). Guarded against early noise: only evaluated
+once >=2 real data bars AND >=3 elapsed minutes have both passed.
+Uses only numbers already in the locked spec (dynamic_cap from
+DailyPaceTracker, arm_pct) plus one new bootstrap ratio -- no absolute
+clock number anywhere in the rule.
+
+Built `measure_pace_scratch.py` (scratchpad only), same no-volume-
+filter n=75 configuration as the other measurements, to isolate only
+this rule's effect. Syntax-checked, not yet run. Sent to the
+Controller.
+
+STATUS: built, awaiting the Controller's run.
+NEXT: compare against the n=75 baseline (-80.75 total, 70.7% time_cap)
+and against the fixed-scratch measurement. If lagging_pace materially
+cuts the time_cap bleed earlier without touching stall/target winners
+(which it structurally cannot, since it's pre-arm only), that's
+evidence this shape of rule helps; if the result is similar to the
+fixed-scratch version, the specific scratch mechanism matters less
+than suspected and the entry signal itself is still the dominant
+problem.
