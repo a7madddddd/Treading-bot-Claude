@@ -4788,3 +4788,48 @@ This is explicitly complementary to, not a duplicate of, the existing
 per-trade armed/breakeven/stall logic: that adapts to how the
 INDIVIDUAL TRADE is moving; this adapts to how the DAY as a whole is
 moving.
+
+### Design locked, unified backtest script built 2026-11-13
+
+The Controller asked to lock the design and start testing, and to
+confirm the old local `advanced_exit.py` file needs replacing with the
+latest version (yes -- it now contains `DailyPaceTracker`).
+
+Built `final_backtest.py` (scratchpad only, not committed -- this
+project's "prove it before it enters the repo" rule): wires every
+piece from this session into ONE locked-spec runner --
+
+- `signal.py` ORB+VWAP breakout (SPY proxy)
+- `entry_filters.py` -- calendar, volume, VIX, lunch-chop window,
+  cross-market (QQQ+IWM) confirmation, all run before a signal is
+  allowed to become a trade
+- `sizing.py` -- 1 contract, max 3 trades/day
+- `advanced_exit.py` -- target/armed-breakeven-stall/stop-loss, with
+  the new day-pace-scaled dynamic time cap
+
+`run_one_date()` per day: fetch SPY bars -> compute today's pace and
+the day's dynamic cap (recorded for EVERY day, traded or not, so the
+trailing average stays honest) -> detect ORB+VWAP signal -> daily
+trade-counter check -> run all entry filters, reject on any failure
+with the full reason list kept for audit -> find the nearest traded
+SPXW strike -> fetch option bars across the dynamic window ->
+simulate the exit -> record the trade with its own `hold_cap_used`,
+`vix`, and `filters_passed` audit string.
+
+Syntax-checked (`ast.parse`), clean -- not yet run.
+
+**Methodology, locked in the module docstring itself:** run once,
+unchanged, on 2025-01-01..2025-12-31 ("train" -- look at the result,
+tune nothing afterward), then once, unchanged, on 2026-01-01..2026-11-05
+("test" -- the genuine out-of-sample check). No parameter edits
+between the two runs. Comparing train vs test IS the point of the
+exercise; if 2025 looks good and 2026 falls apart, that tells us the
+design was fit to 2025's single outlier again, just with more knobs.
+
+STATUS: built, not yet executed. Sent to the Controller to run on his
+own machine (same Alpaca-env-var pattern as `alpaca_backtest.py`).
+
+NEXT: Controller runs the 2025 "train" pass first, pastes the summary
+back here (or the CSV); then the 2026 "test" pass with no code changes
+in between; then we record and compare both before any decision about
+promoting this out of scratchpad.
