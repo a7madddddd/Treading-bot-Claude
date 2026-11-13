@@ -4759,3 +4759,32 @@ Controller's own validation framework from this discussion: lock the
 full parameter spec (no more changes), then run a genuine train/test
 split -- tune nothing further after fixing on 2025, verify unchanged
 on 2026 -- rather than the mixed-together runs done so far.
+
+### Time cap made dynamic 2026-11-13 -- corrected a miscommunication
+
+The Controller caught that two different time windows had gotten
+mixed together in Claude's recap: the opening-range DETECTION window
+(10-30 min, how long we watch to find the breakout levels) is not the
+same thing as the HOLD duration range he specified from the start
+("0 to 40" or "0 to 50" minutes -- meaning the trade can close any
+time in that range, not that it waits a fixed 40 minutes). Corrected
+and clarified in the session.
+
+The Controller then pushed further: even the 40-minute outer cap
+itself must not be one number locked forever from a single small
+backtest -- it should adapt to how fast THAT DAY is behaving. Built
+`DailyPaceTracker` in `advanced_exit.py`: compares today's first-15-
+minute SPY range (% of price) against a trailing 20-trading-day
+average of the same measure (never looking ahead -- only days already
+seen) and scales the cap inversely: a faster/wider-range day shortens
+the cap (down to a 25-minute floor), a slower/narrower day lengthens
+it (up to a 55-minute ceiling); a normal-paced day stays near the
+40-minute base. Uses data already computed for the entry signal itself
+-- no new source. Unit-tested: normal days held at 40, a 10x-wider
+day dropped to the 25-min floor, a near-flat day rose to the 55-min
+ceiling.
+
+This is explicitly complementary to, not a duplicate of, the existing
+per-trade armed/breakeven/stall logic: that adapts to how the
+INDIVIDUAL TRADE is moving; this adapts to how the DAY as a whole is
+moving.
