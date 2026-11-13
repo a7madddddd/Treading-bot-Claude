@@ -4833,3 +4833,51 @@ NEXT: Controller runs the 2025 "train" pass first, pastes the summary
 back here (or the CSV); then the 2026 "test" pass with no code changes
 in between; then we record and compare both before any decision about
 promoting this out of scratchpad.
+
+### First real train/test run, 2026-11-13 -- RESULT
+
+2025 ("train"): n=10 trades, win_rate 20%, expectancy -1.074$/contract,
+profit_factor 0.266.
+
+2026 ("test"): n=7 trades, win_rate 28.6%, expectancy +0.486$/contract,
+profit_factor 341.0 (artifact of avg_loss near zero, -0.002$ -- NOT a
+real edge signal; a ratio with a near-zero denominator is meaningless).
+
+**Risk/Safety Reviewer finding, not a Controller override:** neither
+number is usable evidence. n=7-10 trades from a full year is far too
+small a sample to confirm or reject anything, in either direction. The
+sign flip (negative then positive) is consistent with pure sampling
+noise at this n, not with the strategy "working now".
+
+**Root cause identified from the rejection log:** over 90% of all
+candidate days in both years were rejected by exactly one filter --
+`volume_confirmed` (bootstrap threshold, >=1.3x recent-20-bar average,
+never measured from this project's own data; see entry_filters.py
+docstring, which already flagged it as unvalidated).
+
+Controller's own diagnosis, stated directly: "90% of them are out...
+this actually mean our filter is not correct" -- and asked to measure
+the volume filter's real effect by running the same two ranges with it
+removed, not by tuning toward a better-looking number.
+
+Built `measure_no_volume_filter.py` (scratchpad only): identical
+pipeline to `final_backtest.py` -- same signal, same VIX/calendar/
+time-window filters, same sizing, same dynamic-cap exit -- with ONLY
+`volume_confirmed` removed. Every trade that volume *would* have
+rejected is tagged, so the report can show three numbers side by side:
+all trades with volume off, the subset volume would have kept (same
+as the already-run `final_backtest.py` numbers), and the subset volume
+would have thrown out. This isolates one named hypothesis -- is the
+volume filter removing bad trades or just removing sample size -- it
+is not a parameter search.
+
+Syntax-checked, not yet run. Sent to the Controller to run on the same
+two ranges (2025-01-01..2025-12-31, 2026-01-01..2026-11-05).
+
+STATUS: measurement tool built, awaiting the Controller's run.
+NEXT: compare the "volume would have rejected" subset's own win rate/
+expectancy against the "volume would have passed" subset. If the
+rejected subset performs no worse (or better), the 1.3x threshold is
+actively hurting sample size for no protective benefit, and should be
+loosened or dropped -- a finding we would act on with evidence, not
+with a parameter search.
