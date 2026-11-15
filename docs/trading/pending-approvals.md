@@ -4986,3 +4986,48 @@ evidence this shape of rule helps; if the result is similar to the
 fixed-scratch version, the specific scratch mechanism matters less
 than suspected and the entry signal itself is still the dominant
 problem.
+
+### Pace-scratch RESULT -- first genuinely positive out-of-sample year, 2026-11-14/15
+
+2025 (n=37): total pnl -36.55 -> **-7.22** with pace-scratch (18
+lagging_pace, 16 time_cap, 1 stall, 2 breakeven_stop). Still negative,
+but an 80% reduction in loss, driven by avg_loss shrinking from -1.72
+to -0.49 -- the rule cuts losers smaller, at the cost of win_rate
+21.6% -> 16.2% (some would-be winners also cut early).
+
+2026 (n=38): total pnl -44.20 -> **+5.88** with pace-scratch.
+profit_factor 1.39 -- this time genuine, not a near-zero-denominator
+artifact (avg_loss -0.47, not -0.002; exits spread across 18
+lagging_pace / 17 time_cap / 2 stop_loss / 1 stall, not one trade
+dominating). win_rate 15.8%, avg_win 3.49 vs avg_loss -0.47 -- a
+small-number-of-big-winners-vs-many-small-losses shape, mathematically
+sound but sensitive to sample size at n=38.
+
+**This is the first positive result this project has produced that
+isn't traceable to a single outlier trade or a near-zero-denominator
+artifact.**
+
+Built `final_backtest_v2.py` (scratchpad only) consolidating: ORB+VWAP
+entry, VIX/calendar/time-window filters (volume_confirmed DROPPED --
+measured inconsistent, see above), 1 contract/3-trades-per-day sizing,
+day-pace dynamic cap, and the new pace-relative exit tree (target /
+armed-breakeven-stall / stop_loss / lagging_pace / time_cap).
+Syntax-checked, not yet run as the consolidated v2 file (its pieces
+were run separately as measurement scripts; this is the first run of
+the combined v2 spec itself). Sent to the Controller.
+
+**Honest caveat, stated in the module docstring:** lag_threshold=0.5
+was fixed before either year was run (not tuned to the numbers), but
+both years were already seen diagnostically while finding this fix --
+this is not a clean never-before-seen test for this specific rule. The
+real held-out test for v2 is live paper-trading performance going
+forward, not another replay of 2025/2026.
+
+STATUS: v2 built, awaiting the Controller's confirmation run on both
+ranges (should reproduce the measurement-script numbers above exactly,
+since it's the same logic consolidated).
+NEXT: once confirmed, this becomes the candidate design for a formal
+CHANGE/WHY/EXPECTED BENEFIT/RISK/FILES AFFECTED/TEST PLAN/BACKTEST PLAN
+proposal -- still requires explicit Controller approval before any of
+it enters the actual repo or touches paper-trading execution, per
+01-roles-and-authority.md and 05-change-tracking.md.
