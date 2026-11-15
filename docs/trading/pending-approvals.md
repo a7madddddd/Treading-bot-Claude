@@ -5031,3 +5031,50 @@ CHANGE/WHY/EXPECTED BENEFIT/RISK/FILES AFFECTED/TEST PLAN/BACKTEST PLAN
 proposal -- still requires explicit Controller approval before any of
 it enters the actual repo or touches paper-trading execution, per
 01-roles-and-authority.md and 05-change-tracking.md.
+
+### v2 confirmed; two new findings, 2026-11-15
+
+Controller ran `final_backtest_v2.py` on both ranges -- matched the
+measurement-script numbers exactly (2025 n=37/-7.22, 2026 n=38/+5.88).
+v2 design confirmed consistent.
+
+**Finding 1 -- Alpaca latency measured, not a concern.** Controller
+asked whether Alpaca's own per-request response time could be a
+problem for live trading (separate question from the backtest's
+40-60-minute total runtime, which is just 260 sequential simulated
+days, not a live-trading quantity). Built
+`measure_alpaca_latency.py` -- 20 independent single calls each to
+the SPY-bars and option-bars endpoints, 2s apart (live-trading style,
+not a tight loop). Result: SPY bars median 1.07s/max 1.88s, option
+bars median 1.01s/max 2.19s. Single-digit-second latency -- confirms
+the backtest's long runtime is purely from replaying a year of history
+sequentially, not an Alpaca speed problem for live decisions.
+
+**Finding 2 -- the daily trade cap was never actually reachable, by
+code, not assumption.** Controller asked how many real trade
+opportunities exist per day, given some trades resolve in just a few
+minutes; re-reading `signal.py` to answer this surfaced a real gap:
+`compute_orb_vwap_signal()` returns at the FIRST qualifying breakout
+and stops scanning the rest of the day (line 129, a `return` inside
+the loop). `sizing.py`'s `MAX_TRADES_PER_DAY = 3` has therefore never
+been reachable in ANY backtest run this session has done -- the
+signal source itself never offers a second candidate, so that cap sat
+unused the entire time.
+
+Built `measure_breakout_opportunities.py` (scratchpad only, no new
+network calls beyond what's already used): counts how many genuinely
+DISTINCT ORB+VWAP breakout opportunities occur per day (price must
+return inside the ORB range before a further breakout counts as a new
+one, so noisy back-and-forth prints at the border aren't over-counted
+as separate opportunities), plus the time gap between same-day
+opportunities (relevant to whether a 2nd/3rd trade would ever overlap
+the first one's hold window). Syntax-checked, not yet run. Sent to the
+Controller.
+
+STATUS: built, awaiting the Controller's run on both ranges.
+NEXT: the per-day distribution decides whether (and to what cap)
+`signal.py` should keep scanning after the first breakout -- a number
+picked FROM this measurement, not from "maybe 50-100/day" (which
+would directly contradict the overtrading caution already logged from
+November's professional-practice research) or from the currently
+unused "3" (which was never evidence-based either).
