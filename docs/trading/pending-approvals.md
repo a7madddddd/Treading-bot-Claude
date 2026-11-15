@@ -5078,3 +5078,42 @@ picked FROM this measurement, not from "maybe 50-100/day" (which
 would directly contradict the overtrading caution already logged from
 November's professional-practice research) or from the currently
 unused "3" (which was never evidence-based either).
+
+### Opportunity-count RESULT + Controller decision: explore multiple concurrent positions, 2026-11-15
+
+2025: mean 7.67 opportunities/day (max 34), 0% zero-opportunity days,
+median gap between same-day opportunities 9 minutes. 2026: mean 7.43/
+day (max 36), median gap 10 minutes.
+
+Critical read: the median 9-10 minute gap is far shorter than the
+25-55 minute dynamic hold cap, so most additional opportunities land
+WHILE the first trade is still open. Taking more than one signal/day
+in practice means either (a) sequential-only (wait for the current
+trade to close, likely still only 1-2 trades/day given the gap vs
+hold-time mismatch), or (b) allowing genuinely overlapping positions
+with their own capital-exposure question.
+
+**Controller decision: Option B -- explore multiple concurrent
+positions -- but explicitly asked to "study and develop that
+correctly" first, not implement directly.** Per
+03-research-and-workflow.md's research-first rule (do not start coding
+a new capability before Inspect/Research/Plan), built a MEASUREMENT
+tool, not an implementation: `measure_multi_position.py` (scratchpad
+only). Takes every filtered opportunity in a day (not just the first),
+runs each through the same validated v2 filters/exit logic, allows
+them to overlap freely (no cap, no sizing decision yet), and reports:
+aggregate pnl if every opportunity were taken, the REAL max concurrent
+open positions observed (the actual capital-exposure number, not a
+guess), and the direction mix on multi-opportunity days (same-direction
+stacking = correlated risk, not diversification -- directly relevant
+to whether more positions actually reduces risk).
+
+Syntax-checked, not yet run. Sent to the Controller.
+
+STATUS: measurement tool built, awaiting the Controller's run on both
+ranges.
+NEXT: the max-concurrent-positions number and the direction-mix result
+together decide the shape of any position-sizing/risk-limit proposal
+-- which, per 01-roles-and-authority.md, is squarely a risk-limit
+change requiring explicit Controller approval before anything beyond
+this measurement stage.
