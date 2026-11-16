@@ -7813,3 +7813,35 @@ and relying on `AlpacaBrokerClient`'s own price re-check / limit-order
 behavior at submission time, rather than a live, current-moment
 strike confirmation. Flagged here so it is not silently assumed away
 when that design is written.
+
+### VERIFICATION SUCCEEDED -- first real SPX option order accepted by Alpaca, 2026-11-16
+
+After the OPRA signature and the timing fix, `scripts/spx0dte_verify_order.py`
+succeeded end to end on the real paper account:
+
+```
+Found: strike=7300  symbol=SPXW261116C07300000
+Last observed price: 124.86
+SUCCESS -- Alpaca accepted the order.
+  broker_order_id = 557283b2-682e-4b66-824a-0cdb4ca69770
+  status          = pending_new
+```
+
+**This confirms the FACT stated analytically earlier in this decision
+is now also confirmed empirically: `AlpacaBrokerClient.submit_order()`,
+completely unmodified, accepts a real OCC SPXW option symbol.** D-0095-A's
+open item 2 is closed.
+
+Side observation, not a bug: the found strike (7300) was 665 points
+from the estimated level (6635) -- `APPROX_SPY_TO_SPX_RATIO = 8.97`
+has drifted further since it was last calibrated (already known to
+drift over time, per D-0095's own strike-search design notes). The
+coarse-then-fine search tolerated it and still found a real traded
+strike, exactly as designed, but the ratio itself is due for a fresh
+measurement before relying on it to narrow a search quickly in a live
+loop.
+
+**Remaining open items for D-0095-A (unchanged from before):** no
+exit/close order submission, no unattended running process, and the
+15-minute options-data-delay-vs-"now" timing gap noted above for
+whatever process is built to run this live.

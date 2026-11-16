@@ -5238,7 +5238,7 @@ any order can actually be placed -- wiring this module's candidates
 into the existing Telegram approval flow and `src/execution`. No live
 or paper order submission exists yet from this module.
 
-## P-098 — SPX 0DTE execution wiring (D-0095-A) — built, real paper-order test still open
+## P-098 — SPX 0DTE execution wiring (D-0095-A) — built and VERIFIED on the real paper account
 
 Controller approved the execution-wiring CHANGE proposal: a fully
 separate path (own Telegram bot, own SQLite file, zero edits to any
@@ -5254,20 +5254,40 @@ Controller created the second bot via @BotFather:
 `spx0dte_controller_bot`. Added `SPX_TELEGRAM_BOT_TOKEN` /
 `SPX_TELEGRAM_ADMIN_USER_IDS` names (no values) to `.env.example`.
 
-**STATUS: code built and unit-tested; NOT yet verified against the
-real paper account.**
+**STATUS: VERIFIED on the real paper account, 2026-11-16.**
 
-OPEN ITEMS:
-1. Controller still needs to send his Telegram user id to the new bot
-   and set the real `.env` values on whichever machine will run this
-   (his own machine, or the Oracle VM -- not yet decided).
-2. One real manual test: submit a single small paper order through
-   `spx0dte.execution.submit_entry_order()` to confirm Alpaca actually
-   accepts an OCC option symbol through this exact path -- the "digits
-   aren't cased characters" finding behind reusing `submit_order()`
-   unchanged is analytical (read from the code), not yet confirmed
-   against the live API.
-3. No unattended running process yet -- `orchestration.py`'s functions
+Deployed to the Oracle VM (`/home/opc/Treading-bot-Claude`, same
+`.env` the existing engine sources). Two real-environment issues
+found and fixed along the way, both now recorded in D-0095-A:
+1. `get_spy_minute_bars` needed `feed=iex` (SIP needs a paid
+   subscription for recent data).
+2. Alpaca required the account's Options Agreement signed before any
+   options market data was servable at all ("OPRA agreement is not
+   signed") -- an account-level step, not a code fix; Controller
+   reviewed the actual agreement PDF (standard OCC/FINRA boilerplate)
+   and signed it.
+3. `find_nearest_traded_strike`'s own +/-20 minute search window was
+   landing partly inside the 15-minute options-data-delay restriction
+   even after an initial 16-minute offset -- widened to 40 minutes so
+   the whole window clears it.
+
+`scripts/spx0dte_verify_order.py` then succeeded end to end:
+Alpaca accepted a real SPXW call order (`status: pending_new`),
+confirming `AlpacaBrokerClient.submit_order()` works unmodified for
+options, exactly as the analytical "digits aren't cased characters"
+finding predicted.
+
+REMAINING OPEN ITEMS (unchanged in kind, all explicitly deferred, not
+forgotten):
+1. No unattended running process yet -- `orchestration.py`'s functions
    exist to be called, nothing calls them on a loop/schedule yet.
-4. Exit/close order submission is explicitly out of scope for this
+2. Exit/close order submission is explicitly out of scope for this
    item -- a separate future decision.
+3. A live signal's `entry_time` is always "now", which the strike
+   search cannot dodge the way the manual test did (looking into the
+   past) -- needs its own design answer before any unattended loop is
+   built (see D-0095-A's "Material finding for future live wiring").
+4. `APPROX_SPY_TO_SPX_RATIO` (8.97) appears to have drifted further
+   (a found strike was 665 points from the estimate during
+   verification) -- due for a fresh measurement, though the
+   coarse-then-fine search already tolerates this by design.
