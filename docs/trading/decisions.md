@@ -7845,3 +7845,39 @@ loop.
 exit/close order submission, no unattended running process, and the
 15-minute options-data-delay-vs-"now" timing gap noted above for
 whatever process is built to run this live.
+
+### Hardcoded ratio removed, replaced with a self-measuring provider, 2026-11-16
+
+Controller's direct challenge, after seeing the +11.82% drift: "why
+did you hard code something? ... we didn't want to hard code some
+things." Correct, and owned directly -- `APPROX_SPY_TO_SPX_RATIO` was
+a genuine measurement when first set (during the earlier research
+phase) but was carried into the repo as a static module constant,
+exactly the failure mode `.claude/rules/03-research-and-workflow.md`
+already warns about: a number that started as a real measurement and
+quietly became a permanent guess.
+
+**Fixed by removing the constant entirely**, not by updating its
+value (updating it would only repeat the same mistake on a longer
+clock). New module `src/spx0dte/ratio_calibration.py`:
+
+- `measure_ratio_now()` -- one real measurement: median of
+  SP500(FRED)/SPY(Alpaca) close ratios over matched trading days.
+  Raises `RatioCalibrationError` if nothing matches -- never guesses.
+- `RatioProvider` -- caches the LAST SUCCESSFULLY MEASURED ratio and
+  only re-measures when older than `max_age` (default 24h). On a
+  measurement failure, falls back to that last REAL measurement, not
+  to any hardcoded value -- except the documented, one-time
+  `BOOTSTRAP_RATIO` (10.03, itself the just-measured real value, not
+  a guess) for the single case of a fresh process whose very first
+  measurement attempt fails before any real one has ever succeeded.
+
+Updated `scripts/spx0dte_verify_order.py` to call
+`RatioProvider.get_ratio()` instead of importing a constant.
+`scripts/spx0dte_recalibrate_ratio.py` repurposed from "update this
+constant by hand" to a read-only diagnostic view of the same
+measurement the live code now makes automatically -- no manual update
+step exists anymore to forget.
+
+8 new tests (mocked measurement, no real network calls). Full suite:
+1974 passed, zero regressions.

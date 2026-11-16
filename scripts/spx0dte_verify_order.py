@@ -34,8 +34,9 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "src"))
 
 from execution.alpaca_broker_client import AlpacaBrokerClient  # noqa: E402
-from spx0dte.alpaca_client import AlpacaOptionsClient, APPROX_SPY_TO_SPX_RATIO  # noqa: E402
+from spx0dte.alpaca_client import AlpacaOptionsClient  # noqa: E402
 from spx0dte.execution import submit_entry_order  # noqa: E402
+from spx0dte.ratio_calibration import RatioProvider  # noqa: E402
 
 
 def main() -> None:
@@ -50,8 +51,14 @@ def main() -> None:
         print("FATAL: ALPACA_API_KEY_ID / ALPACA_API_SECRET_KEY not set -- did you `source .env`?")
         sys.exit(1)
 
+    fred_api_key = os.environ.get("FRED_API_KEY", "")
+    if not fred_api_key:
+        print("FATAL: FRED_API_KEY not set -- needed to measure the SPY:SPX ratio from real data.")
+        sys.exit(1)
+
     broker = AlpacaBrokerClient(base_url=base_url, key_id=key_id, secret_key=secret_key)
     options_client = AlpacaOptionsClient(key_id=key_id, secret_key=secret_key)
+    ratio_provider = RatioProvider(client=options_client, fred_api_key=fred_api_key)
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     print(f"Fetching today's ({today}) SPY bars to estimate the SPX level...")
@@ -60,8 +67,11 @@ def main() -> None:
         print("FATAL: no SPY bars for today (market closed? run during US market hours).")
         sys.exit(1)
     last_spy_price = spy_bars[-1]["c"]
-    approx_spx = last_spy_price * APPROX_SPY_TO_SPX_RATIO
-    print(f"Last SPY price: {last_spy_price:.2f}  ->  approx SPX: {approx_spx:.0f}")
+
+    print("Measuring the current SPY:SPX ratio from real data (FRED SP500 vs Alpaca SPY)...")
+    ratio = ratio_provider.get_ratio()
+    approx_spx = last_spy_price * ratio
+    print(f"Last SPY price: {last_spy_price:.2f}  x  measured ratio {ratio:.4f}  ->  approx SPX: {approx_spx:.0f}")
 
     # Alpaca's free Basic tier restricts OPTIONS data to 15+ minutes
     # old -- there is no free real-time feed for options the way

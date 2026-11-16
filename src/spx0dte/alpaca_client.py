@@ -12,9 +12,13 @@ candidate-generation path, not by the Engine's live pricing.
 SPXW is the correct 0DTE option root -- plain "SPX" returns no data on
 Alpaca's options endpoints (verified empirically, D-0095). Alpaca does
 not serve SPX/VIX index-level bars at all (only SPY, a tradable
-security, returns real stock-bar data) -- the SPY:SPX ratio below is
-an ESTIMATE used only to narrow a strike search, never trusted as an
-absolute conversion (see find_nearest_traded_strike).
+security, returns real stock-bar data) -- callers of
+find_nearest_traded_strike supply a SPY:SPX ratio to seed the search,
+measured from real data by `ratio_calibration.RatioProvider` rather
+than a constant in this file (a hardcoded ratio here drifted +11.82%
+within weeks before this was caught -- see D-0095-A's follow-up
+decision entry). The ratio is an ESTIMATE used only to narrow a strike
+search, never trusted as an absolute conversion.
 
 Stdlib only (urllib), per this project's existing dependency policy,
 following the same transport pattern as marketdata.alpaca_source.
@@ -34,11 +38,6 @@ HttpResponse = Tuple[int, bytes]
 HttpTransport = Callable[..., HttpResponse]
 
 DATA_BASE_URL = "https://data.alpaca.markets"
-
-# Measured to drift materially over time (~8.97 in Nov 2026 vs ~10.04
-# in Jan 2024) -- used only as a COARSE starting point for the strike
-# search below, never as an absolute conversion.
-APPROX_SPY_TO_SPX_RATIO = 8.97
 
 _COARSE_STRIKE_RANGE = 1500
 _COARSE_STRIKE_STEP = 100
