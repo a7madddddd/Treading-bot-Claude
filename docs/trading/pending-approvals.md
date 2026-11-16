@@ -5117,3 +5117,48 @@ together decide the shape of any position-sizing/risk-limit proposal
 -- which, per 01-roles-and-authority.md, is squarely a risk-limit
 change requiring explicit Controller approval before anything beyond
 this measurement stage.
+
+### Multi-position RESULT -- large sample, consistent positive expectancy, 2026-11-16
+
+2025: n=254, total_pnl +77.91, expectancy +0.307/contract, profit_factor
+1.76, win_rate 18.1%, max_concurrent_open_positions=5, direction mix
+58 same-direction / 166 mixed-direction days.
+
+2026: n=235, total_pnl +69.08, expectancy +0.294/contract, profit_factor
+1.49, win_rate 15.7%, max_concurrent=3, mix 51 same / 134 mixed.
+
+This is the largest and most consistent positive result this project
+has produced -- similar expectancy magnitude across two independent
+years at n=235-254 (vs n=37-38 single-position), capital exposure
+bounded (max 3-5 concurrent, not runaway), and most multi-opportunity
+days show MIXED direction (genuine diversification, not one-sided
+stacking).
+
+### Position sizing -- Controller asked for dynamic, not a fixed pick between 5 vs 3
+
+Controller's instruction: don't choose between the two observed
+max-concurrency numbers by hand -- find the number that is itself
+"the interactive one", i.e. measured/adaptive, the same way
+DailyPaceTracker made the time cap adaptive instead of a fixed 40.
+
+Design (parallels DailyPaceTracker exactly): `ConcurrencyBudgetTracker`
+keeps a trailing 20-trading-day history of each day's own observed max
+concurrent positions; today's risk budget = ceiling of the trailing
+average, clamped [1, 8]. Sequential, no look-ahead -- today's budget
+uses only prior days, today's own max concurrency is recorded only
+after today's trades are processed. Per-trade size =
+`max(1, round(budget_today / concurrent_open_count_at_this_trades_entry))`
+-- total capital exposure stays roughly constant as more positions
+open, instead of growing linearly.
+
+Built `measure_dynamic_sizing.py` (reads the existing multi_2025.csv/
+multi_2026.csv CSVs already produced -- no new network calls, no new
+backtest run) to compute the REAL portfolio-level pnl under this
+sizing scheme (pnl_per_contract x assigned size, summed), not just the
+already-known per-contract expectancy. Syntax-checked, not yet run.
+Sent to the Controller.
+
+STATUS: built, awaiting the Controller's run on the existing CSVs.
+NEXT: compare portfolio pnl under dynamic sizing against the uniform
+1-contract baseline (already known: +77.91 / +69.08) -- this becomes
+part of the formal CHANGE proposal's sizing section once computed.
