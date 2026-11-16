@@ -7774,3 +7774,42 @@ instead of discovering this the same way twice.
 
 Full suite re-run after the fix: 1965 passed, zero regressions.
 Awaiting the Controller's re-run of the verification script on the VM.
+
+### Second real-API issue found on the VM: OPRA agreement, then a timing bug, 2026-11-16
+
+First VM attempt at `get_option_bars` returned `HTTP 403 ...
+"OPRA agreement is not signed"` -- an ACCOUNT-level gate, not a code
+bug: Alpaca requires the Options Agreement signed before any options
+market data (even delayed/free-tier) is servable, separately from the
+Options Trading Agreement that already enabled Level 3 trading on
+this account. Controller reviewed the actual agreement PDF (standard
+OCC risk disclosure + FINRA arbitration clause, nothing unusual) and
+signed it via the Alpaca dashboard.
+
+After signing, the SAME single-symbol manual test succeeded (no
+error, just an empty list for a strike with no real prints in that
+window) -- but the full `spx0dte_verify_order.py` still reported "no
+traded strike found" across the whole search. Root cause, found by
+re-reading the code: `find_nearest_traded_strike` searches a +/-20
+minute window AROUND the timestamp it is given
+(`_STRIKE_SEARCH_WINDOW_MINUTES`). The script's first fix (16 minutes
+back) left the window's own END only 4 minutes before the real "now"
+-- still inside the 15-minute options-data restriction -- and
+`_scan_strikes` silently swallows `AlpacaDataError` per strike while
+scanning, so every strike in range looked like "no data" with no
+visible error at all. Fixed: search around 40 minutes back, which
+keeps the ENTIRE +/-20 minute window safely past the 15-minute mark.
+
+**Material finding for future live wiring, not yet resolved:** a real
+live signal's `entry_time` is "now" by definition. Searching for its
+strike with Alpaca's free options-data tier will ALWAYS have part of
+its +/-20 minute window inside the 15-minute-restricted zone, because
+"now" itself is inside that zone. This manual verification script can
+dodge the problem by deliberately looking into the past; the actual
+live/unattended loop (D-0095-A's still-open item 3) cannot avoid it
+the same way and will need its own design answer -- most likely,
+accepting that the strike is found from a price ~15-20 minutes stale
+and relying on `AlpacaBrokerClient`'s own price re-check / limit-order
+behavior at submission time, rather than a live, current-moment
+strike confirmation. Flagged here so it is not silently assumed away
+when that design is written.

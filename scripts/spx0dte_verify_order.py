@@ -66,11 +66,19 @@ def main() -> None:
     # Alpaca's free Basic tier restricts OPTIONS data to 15+ minutes
     # old -- there is no free real-time feed for options the way
     # "feed=iex" gives stocks (see alpaca_client.get_spy_minute_bars's
-    # docstring for that stock-side fix). Searching/pricing around a
-    # moment 16 minutes ago, not "now", stays inside the free tier.
-    delayed_now = datetime.now(timezone.utc) - timedelta(minutes=16)
+    # docstring for that stock-side fix).
+    #
+    # find_nearest_traded_strike searches a +/-20 minute window AROUND
+    # the timestamp it's given (_STRIKE_SEARCH_WINDOW_MINUTES). A
+    # first attempt at only 16 minutes back left the window's own END
+    # only 4 minutes before "now" -- still inside the restricted zone,
+    # and _scan_strikes silently swallows AlpacaDataError per strike
+    # while scanning, so every strike in range looked like "no data"
+    # with no visible error. 40 minutes back keeps the ENTIRE +/-20
+    # window safely past the 15-minute mark.
+    delayed_now = datetime.now(timezone.utc) - timedelta(minutes=40)
     delayed_now_iso = delayed_now.strftime("%Y-%m-%dT%H:%M:%SZ")
-    print(f"Searching for a SPXW {call_put} strike near {approx_spx:.0f}, as of ~16 min ago (free-tier options delay)...")
+    print(f"Searching for a SPXW {call_put} strike near {approx_spx:.0f}, as of ~40 min ago (keeps the whole +/-20min search window past the free-tier options delay)...")
     found = options_client.find_nearest_traded_strike(today, approx_spx, call_put, around_time_iso=delayed_now_iso)
     if found is None:
         print("FATAL: no traded SPXW strike found near the estimate -- try the other side (call/put), or outside market hours nothing will have traded today.")
