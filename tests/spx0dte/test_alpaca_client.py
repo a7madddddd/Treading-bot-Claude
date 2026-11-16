@@ -42,6 +42,17 @@ class TestAlpacaOptionsClientGet(unittest.TestCase):
         self.assertEqual(len(bars), 1)
         self.assertEqual(bars[0]["c"], 500.0)
 
+    def test_successful_spy_daily_bars(self):
+        transport = FakeTransport([(200, {"bars": {"SPY": [
+            {"t": "2026-01-02T00:00:00Z", "c": 500.0},
+            {"t": "2026-01-05T00:00:00Z", "c": 505.0},
+        ]}})])
+        client = AlpacaOptionsClient(key_id="k", secret_key="s", http_transport=transport)
+        bars = client.get_spy_daily_bars("2026-01-01", "2026-01-06")
+        self.assertEqual(len(bars), 2)
+        self.assertIn("feed=iex", transport.calls[0][1])
+        self.assertIn("timeframe=1Day", transport.calls[0][1])
+
     def test_empty_bars_for_holiday(self):
         transport = FakeTransport([(200, {"bars": {}})])
         client = AlpacaOptionsClient(key_id="k", secret_key="s", http_transport=transport)
