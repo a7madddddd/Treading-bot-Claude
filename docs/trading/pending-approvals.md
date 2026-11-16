@@ -5162,3 +5162,46 @@ STATUS: built, awaiting the Controller's run on the existing CSVs.
 NEXT: compare portfolio pnl under dynamic sizing against the uniform
 1-contract baseline (already known: +77.91 / +69.08) -- this becomes
 part of the formal CHANGE proposal's sizing section once computed.
+
+### Dynamic-sizing bug found and fixed BEFORE running -- dead end identified analytically
+
+Before the Controller ran it, re-checked the formula by hand: a solo
+trade (concurrent=1) got size = budget_today (often 2), i.e. the
+scheme was INFLATING ordinary single trades whenever the trailing
+budget happened to be above 1, not just protecting against real
+concurrency. Example from the design: 2026-01-05, concurrent=1,
+budget=2 -> size=2 for a trade with nothing else open -- no protection
+reason for that, pure leverage increase.
+
+Fixed: `size = max(1, min(BASELINE_CONTRACTS, round(budget/concurrent)))`
+-- budget can only cap size DOWN during real concurrency, never
+inflate a solo trade above the approved baseline (1 contract).
+
+**Consequence, derived analytically before any run was needed:** with
+baseline=1 contract, min(1, anything) can never exceed 1, and a
+contract can't go below 1 -- so the corrected formula produces
+size=1 for every trade, always. Portfolio pnl under this fix is
+mathematically identical to the already-known uniform-1-contract
+baseline (+77.91 / +69.08). There is no room to shrink size further
+below the smallest tradable unit.
+
+**Real finding: at the current approved 1-contract baseline, "reduce
+size during concurrency" is a dead end by construction.** The only
+lever that can actually do something is a CAP on how many positions
+may be open at once (reject the extra signal, don't shrink it).
+
+Built `measure_concurrency_cap.py` (reads existing CSVs, no new
+network calls): sequential, causal simulation -- processes
+opportunities in entry-time order, accepts a new one only if fewer
+than `cap` already-accepted trades are still open, rejects it
+otherwise (a rejected trade occupies no slot and can't block later
+ones). Reports total_pnl/win_rate/profit_factor at every cap from 1 to
+8, so the Controller can see where raising the cap stops adding
+meaningful pnl -- the evidence-based cap, not a guessed round number.
+
+Syntax-checked, not yet run. Sent to the Controller.
+
+STATUS: built, awaiting the Controller's run on multi_2025.csv and
+multi_2026.csv.
+NEXT: the cap level where total_pnl plateaus becomes the proposed
+MAX_CONCURRENT_POSITIONS for the formal CHANGE document.
