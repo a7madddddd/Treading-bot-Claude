@@ -7734,10 +7734,15 @@ test suite. Full project suite re-run: 1965 passed, zero regressions.
    `spx0dte_controller_bot`) and provides its own Telegram user id to
    the bot, then sets `SPX_TELEGRAM_BOT_TOKEN` /
    `SPX_TELEGRAM_ADMIN_USER_IDS` in `.env` wherever this will run.
+   **Decided: runs on the Oracle VM** (same `/home/opc/Treading-bot-Claude/.env`
+   the existing engine already sources -- deploy/README.md's
+   `engine-run.sh` pattern, not a new file).
 2. One real manual test: a single small paper order submitted through
    `spx0dte.execution.submit_entry_order()` against the real paper
    account, to confirm Alpaca actually accepts an OCC options symbol
    through this path (the FACT above is analytical, not yet tested
-   against the real API).
+   against the real API). Built `scripts/spx0dte_verify_order.py` for
+   exactly this -- run once by hand on the VM, not part of the
+   automated suite.
 3. A separate decision for the exit/close side, and for turning this
    into an unattended running process.
