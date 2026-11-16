@@ -31,15 +31,22 @@ instead.**
 - `docs/architecture/telegram-approval.md` — Telegram approval transport (D-0025)
 - `deploy/README.md` — the Oracle VM units, timers and their non-default settings
 
-## SPX 0DTE options module (D-0095)
+## SPX 0DTE options module (D-0095, D-0095-A)
 
 - `src/spx0dte/` — signal.py (ORB+VWAP, multi-opportunity), entry_filters.py,
   econ_calendar.py, exit_logic.py (day-pace cap + lagging_pace exit),
   sizing.py (1 contract, concurrency cap 2) — candidate generation and
-  backtest logic only; no live/paper order submission wired yet
-- `tests/spx0dte/` — unit tests for all of the above
-- `docs/trading/decisions.md` D-0095 — full design, every backtest
-  number, and every honest caveat behind it
+  backtest logic (D-0095)
+- `src/spx0dte/proposal.py`, `telegram_approval.py`, `sqlite_repository.py`,
+  `execution.py`, `orchestration.py` — entry-only execution wiring
+  (D-0095-A): separate Telegram bot (`SPX_TELEGRAM_BOT_TOKEN`), separate
+  `spx0dte.sqlite` file, reuses `execution.broker_client.BrokerClient`
+  unchanged. No exit/close submission yet, no unattended loop yet, no
+  real-paper-order test done yet — see D-0095-A "Not yet done"
+- `tests/spx0dte/` — unit tests for all of the above (all against fakes,
+  no real network/broker calls)
+- `docs/trading/decisions.md` D-0095 / D-0095-A — full design, every
+  backtest number, and every honest caveat behind it
 
 ## Scheduling, timezones and credentials
 

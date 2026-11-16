@@ -7636,3 +7636,108 @@ Controller decision needed before any live/paper order can actually be
 placed: approval of the execution-wiring plan (how a candidate from
 this module reaches the existing Telegram approval flow and
 `src/execution`), which is a separate CHANGE proposal.
+
+## D-0095-A — Execution wiring: entry-only, separate bot, separate SQLite file
+
+- **Date:** 2026-11-16
+- **Status:** APPROVED
+- **Approved by:** Controller ("Yes, approved — new separate bot, SQLite
+  is fine")
+- **Related:** D-0095, D-0025 (equity-ladder Telegram approval design)
+
+### Context
+
+D-0095 added candidate-generation and backtest logic only, with no
+path to an actual order. The Controller asked for the execution
+wiring next, with one explicit constraint: it must not affect the
+existing equity-ladder code or flow in any way.
+
+### FACT found while designing this, before writing any code
+
+1. `execution.alpaca_broker_client.AlpacaBrokerClient.submit_order()`
+   can be reused COMPLETELY UNCHANGED for an SPX option order. Its
+   only symbol check is `symbol.isupper()`; an OCC symbol such as
+   `SPXW261104C06900000` satisfies it because digits are not "cased"
+   characters in Python's `str.isupper()`. Confirmed by reading the
+   method, not by assumption.
+2. Sharing the EXISTING `TELEGRAM_BOT_TOKEN` with a second independent
+   `TelegramDecisionSource`-like poller would have been a real,
+   if indirect, effect on the existing stock-ladder flow:
+   `getUpdates`'s offset is tracked per bot token, not per consumer,
+   so two independent long-polling instances on the same token
+   intermittently steal each other's updates. This is the concrete
+   reason behind the Controller's approved "separate bot" requirement
+   -- not caution for its own sake.
+
+### Decision
+
+New, fully separate code, zero changes to any existing file:
+
+- `src/spx0dte/proposal.py` -- `OptionTradeProposal`, its own
+  approval-state lifecycle (mirrors `proposals.models.TradeProposal`'s
+  shape -- immutable transitions, 5-minute approval window -- without
+  importing or depending on it; an options trade has no ladder
+  triggers or share quantities to validate).
+- `src/spx0dte/telegram_approval.py` -- a second, independent bot
+  (`SPX_TELEGRAM_BOT_TOKEN` / `SPX_TELEGRAM_ADMIN_USER_IDS`, new names
+  added to `.env.example`), `spx_approve:`/`spx_reject:` callback
+  prefixes (distinct from the equity bot's `approve:`/`reject:` even
+  though the bots are already isolated -- belt-and-suspenders). Does
+  not import `notifications.telegram`, `notifications.telegram_decision`,
+  or `engine.decision_source`.
+- `src/spx0dte/sqlite_repository.py` -- a separate database file
+  (default `spx0dte.sqlite`, already covered by the repo's existing
+  `*.sqlite` gitignore pattern), self-contained
+  `CREATE TABLE IF NOT EXISTS` bootstrap, no dependency on
+  `persistence.db` or its migrations.
+- `src/spx0dte/execution.py` -- calls
+  `execution.broker_client.BrokerClient.submit_order()` (imported,
+  unmodified) with `side="buy"`, the OCC symbol, and
+  `client_order_id=proposal_id` for the same broker-side idempotency
+  the equity-ladder flow relies on. The paper-only guardrail already
+  inside `AlpacaBrokerClient` applies automatically -- nothing new to
+  enforce here.
+- `src/spx0dte/orchestration.py` -- thin sequencing only (build
+  proposal -> persist -> notify -> poll decisions -> on a still-valid
+  APPROVE, submit), following the exact
+  "owns no business rule of its own" pattern already used by
+  `orchestration.trade_proposal_service` for the equity-ladder flow.
+
+**Scope is ENTRY only.** Selling to close an open position
+(exit/order submission for `exit_logic.simulate_exit`'s outcome) is
+explicitly NOT built -- stated in `execution.py`'s own docstring as
+deferred, separate future work, not silently expanded into this
+decision.
+
+### Tests and verification
+
+40 new tests (`tests/spx0dte/test_proposal.py`,
+`test_sqlite_repository.py`, `test_telegram_approval.py`,
+`test_execution.py`, `test_orchestration.py`), all passing against
+fakes (`FakeBroker` implementing the real `BrokerClient` ABC, a fake
+Telegram HTTP transport) -- no real network or broker call in the
+test suite. Full project suite re-run: 1965 passed, zero regressions.
+
+**Not yet done, explicitly deferred:**
+- No real end-to-end test against the actual paper account yet (one
+  small manual test order is the agreed next verification step before
+  relying on this for real, per the earlier CHANGE proposal's test
+  plan).
+- No scheduled/always-running process wiring this into a live loop --
+  `orchestration.py`'s functions exist to be called, not yet called by
+  anything that runs unattended.
+- Exit/close submission (see Scope above).
+
+### Next
+
+1. Controller creates the second Telegram bot via @BotFather (done --
+   `spx0dte_controller_bot`) and provides its own Telegram user id to
+   the bot, then sets `SPX_TELEGRAM_BOT_TOKEN` /
+   `SPX_TELEGRAM_ADMIN_USER_IDS` in `.env` wherever this will run.
+2. One real manual test: a single small paper order submitted through
+   `spx0dte.execution.submit_entry_order()` against the real paper
+   account, to confirm Alpaca actually accepts an OCC options symbol
+   through this path (the FACT above is analytical, not yet tested
+   against the real API).
+3. A separate decision for the exit/close side, and for turning this
+   into an unattended running process.

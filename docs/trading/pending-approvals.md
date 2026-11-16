@@ -5237,3 +5237,37 @@ new pending item here): a separate CHANGE proposal is required before
 any order can actually be placed -- wiring this module's candidates
 into the existing Telegram approval flow and `src/execution`. No live
 or paper order submission exists yet from this module.
+
+## P-098 — SPX 0DTE execution wiring (D-0095-A) — built, real paper-order test still open
+
+Controller approved the execution-wiring CHANGE proposal: a fully
+separate path (own Telegram bot, own SQLite file, zero edits to any
+existing file) reusing `AlpacaBrokerClient.submit_order()` unchanged.
+Full design and reasoning: `docs/trading/decisions.md` D-0095-A.
+
+Built: `src/spx0dte/proposal.py`, `telegram_approval.py`,
+`sqlite_repository.py`, `execution.py`, `orchestration.py`. 40 new
+tests, all against fakes (no real network/broker call in the suite).
+Full project suite: 1965 passed, zero regressions.
+
+Controller created the second bot via @BotFather:
+`spx0dte_controller_bot`. Added `SPX_TELEGRAM_BOT_TOKEN` /
+`SPX_TELEGRAM_ADMIN_USER_IDS` names (no values) to `.env.example`.
+
+**STATUS: code built and unit-tested; NOT yet verified against the
+real paper account.**
+
+OPEN ITEMS:
+1. Controller still needs to send his Telegram user id to the new bot
+   and set the real `.env` values on whichever machine will run this
+   (his own machine, or the Oracle VM -- not yet decided).
+2. One real manual test: submit a single small paper order through
+   `spx0dte.execution.submit_entry_order()` to confirm Alpaca actually
+   accepts an OCC option symbol through this exact path -- the "digits
+   aren't cased characters" finding behind reusing `submit_order()`
+   unchanged is analytical (read from the code), not yet confirmed
+   against the live API.
+3. No unattended running process yet -- `orchestration.py`'s functions
+   exist to be called, nothing calls them on a loop/schedule yet.
+4. Exit/close order submission is explicitly out of scope for this
+   item -- a separate future decision.
