@@ -7495,3 +7495,144 @@ sent and set this from data.
 
 Full suite: 1869 passed (no test hardcoded the old default; tests
 override the instance attribute directly).
+
+## D-0095 — SPX 0DTE module approved: ORB+VWAP multi-opportunity entry, pace-relative exit, concurrency cap 2
+
+- **Date:** 2026-11-16
+- **Status:** APPROVED
+- **Approved by:** Controller ("Yes, approved — write the code into the repo")
+- **Related:** P-097 (the full research/measurement trail), D-0042 (FRED
+  free-source reuse)
+
+### Context
+
+P-097 tracked the research for a new capability: a same-day
+(0DTE) SPX options module, held roughly 25-55 minutes per trade. The
+Controller required every number in the design to come from measured
+backtest data, never a guess, and explicitly rejected two earlier
+designs along the way: a strategy whose entire profitability came from
+one outlier trade (2025-04-07's tariff-crash volatility), and a fixed
+15-minute "scratch" exit that could not distinguish a trade resolving
+in 3 minutes from one resolving in 15.
+
+### Decision
+
+Approved for implementation (paper trading only, per
+.claude/rules/02-safety-guardrails.md -- this decision changes no
+live-order behavior):
+
+1. **Entry signal** (`src/spx0dte/signal.py`): Opening Range Breakout
+   (first 15 minutes) confirmed by a VWAP-position filter (TWAP proxy,
+   since the SPY/SPX feed carries no volume). Scans for EVERY distinct
+   breakout opportunity in the session, not just the first -- the
+   predecessor design stopped at the first breakout and never looked
+   again that day, which was a code limitation, not a strategy
+   decision, discovered while answering the Controller's
+   trades-per-day question.
+
+2. **Entry filters** (`src/spx0dte/entry_filters.py`): VIX range
+   (12-35, bootstrap), economic-calendar blackout (FRED + BLS + a
+   hardcoded verified FOMC list), and the 12:00-13:30 ET "lunch chop"
+   window (bootstrap). `volume_confirmed` (>=1.3x recent average) is
+   NOT wired in -- measured inconsistent across two independent years
+   and it shrank the sample to where single-trade artifacts dominated.
+
+3. **Exit logic** (`src/spx0dte/exit_logic.py`): target +80%, pre-arm
+   stop -40%, arm threshold +25%, 3-data-bar stall after arming,
+   breakeven stop after arming. The outer time cap is NOT a fixed 40
+   minutes: `DailyPaceTracker` scales it (floor 25, ceiling 55) against
+   a trailing 20-day average of the day's own opening-range pace. A
+   new pre-arm rule, `lagging_pace`, exits a trade whose
+   `best_gain_so_far / arm_pct` ratio has fallen behind its
+   `elapsed_minutes / hold_cap_minutes` ratio by more than
+   `lag_threshold=0.5` -- replacing an earlier fixed-clock scratch idea
+   the Controller rejected for the reason above.
+
+4. **Sizing and concurrency** (`src/spx0dte/sizing.py`):
+   `CONTRACTS_PER_TRADE = 1` (unchanged). `MAX_CONCURRENT_POSITIONS = 2`
+   -- a third simultaneous signal is REJECTED, not taken at a smaller
+   size (a dynamic-size-reduction scheme was explored and rejected
+   analytically: at a 1-contract baseline there is no room to shrink
+   further, so the only real lever is capping admission).
+
+5. **Data source** (`src/spx0dte/alpaca_client.py`): Alpaca's existing
+   free Basic-tier options-bars endpoint (`/v1beta1/options/bars`),
+   reusing the project's already-approved Alpaca paper account and
+   `.env.example` credentials -- no new registration. SPXW is the
+   correct 0DTE root (plain "SPX" returns no data). The SPY:SPX ratio
+   drifts materially over time and is used only to seed a two-phase
+   (coarse then fine) strike search, never as an absolute conversion.
+
+### Backtest evidence (the measurement trail behind each number above)
+
+All runs on real Alpaca SPXW data, fill = last TRADE price (no bid/ask
+spread modeled -- live execution will be less precise than these
+numbers).
+
+- **v1 (single opportunity/day, fixed 40-min cap, with volume filter):**
+  2025 n=10 total_pnl=-36.55; 2026 n=7 total_pnl=-44.20. Diagnosis: 85%
+  of all losses came from `time_cap` exits where 84% of trades never
+  reached the arm threshold -- theta bleed on a signal that didn't
+  move, not a sharp adverse move.
+- **Volume filter measured in isolation:** inconsistent across years
+  (the "would-reject" subset was NOT worse in 2025, but was worse in
+  2026) -- dropped.
+- **`lagging_pace` measured in isolation:** 2025 total_pnl -36.55 ->
+  -7.22 (n=37); 2026 total_pnl -44.20 -> +5.88 (n=38, profit_factor
+  1.39, genuine -- avg_loss -0.47, not a near-zero-denominator
+  artifact).
+- **All opportunities/day, uncapped concurrency:** 2025 n=254
+  total_pnl=+77.91, profit_factor=1.76, max_concurrent_observed=5,
+  166/224 multi-opportunity days mixed-direction (not one-sided
+  stacking). 2026 n=235 total_pnl=+69.08, profit_factor=1.49,
+  max_concurrent_observed=3.
+- **Concurrency cap swept 1-8 (causal, sequential simulation):** the
+  pnl jump from cap 1 to cap 2 is large in both years (2025: 69.00 ->
+  80.90; 2026: 20.01 -> 69.08); cap 3+ adds nothing further (2026
+  identical to cap 2; 2025 slightly WORSE than cap 2, 77.91 vs 80.90)
+  -- cap=2 is the evidence-based choice, not a guessed round number.
+
+### Honest caveats, stated to the Controller before approval
+
+1. Both 2025 and 2026 were used diagnostically while designing
+   `lagging_pace` and the concurrency cap -- this is not a clean,
+   never-before-seen out-of-sample test for those two specific rules.
+   The real held-out test is live paper-trading performance going
+   forward.
+2. n=254/235 is far larger than the single-opportunity design's
+   n=7-10, but still not a large sample by general statistical
+   standards.
+3. No bid/ask spread is modeled; live fills will be worse than the
+   backtest's last-trade-price fills.
+4. Win rate is low (15-18%) by design -- the edge depends on a few
+   large wins (avg_win ~3.5-3.9) outrunning many small, early-cut
+   losses (avg_loss ~0.5-0.7), which is sensitive to sample size.
+
+### Implementation
+
+New package `src/spx0dte/` (signal.py, entry_filters.py, econ_calendar.py,
+exit_logic.py, sizing.py, alpaca_client.py), tests in `tests/spx0dte/`
+(49 tests, all passing; full suite 1925 passed, no regressions).
+Stdlib-only networking (urllib), following `marketdata.alpaca_source`'s
+existing transport pattern -- no new third-party dependency.
+
+### Not yet done (explicitly deferred, not forgotten)
+
+- No live/paper order submission wiring yet -- this decision adds the
+  candidate-generation and backtest logic only, per the Controller's
+  own instruction to write the approved design into the repo first.
+  Wiring into `src/execution` / the Telegram approval flow is a
+  separate decision.
+- GEX/dealer-positioning filter: designed in research, not
+  backtestable (no historical options-chain open-interest via any free
+  source found), explicitly deferred.
+- `cross_market_confirmed` (QQQ/IWM direction agreement): implemented
+  in entry_filters.py, not wired into `run_all_filters` -- never
+  measured against real data in this round.
+
+### Next
+
+Controller decision needed before any live/paper order can actually be
+placed: approval of the execution-wiring plan (how a candidate from
+this module reaches the existing Telegram approval flow and
+`src/execution`), which is a separate CHANGE proposal.

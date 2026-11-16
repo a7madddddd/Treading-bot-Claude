@@ -5205,3 +5205,35 @@ STATUS: built, awaiting the Controller's run on multi_2025.csv and
 multi_2026.csv.
 NEXT: the cap level where total_pnl plateaus becomes the proposed
 MAX_CONCURRENT_POSITIONS for the formal CHANGE document.
+
+### Concurrency-cap RESULT + formal CHANGE proposal + Controller approval, 2026-11-16
+
+Cap swept 1-8 on both years: the big jump is cap 1 -> cap 2 in both
+(2025: 69.00 -> 80.90; 2026: 20.01 -> 69.08); cap 3+ adds nothing
+further (2026 flat at 69.08; 2025 actually slightly worse than cap 2,
+77.91 vs 80.90). **MAX_CONCURRENT_POSITIONS = 2**, evidence-based.
+
+Presented the full CHANGE/WHY/EXPECTED BENEFIT/RISK/FILES
+AFFECTED/TEST PLAN/BACKTEST PLAN proposal to the Controller in chat
+(bidi-safe Arabic). **Controller approved: "Yes, approved — write the
+code into the repo."**
+
+**P-097 RESOLVED as of this approval -- the asset-class design
+question this item opened is answered and recorded as D-0095.**
+
+Implemented in the same session: new package `src/spx0dte/`
+(signal.py -- multi-opportunity ORB+VWAP, entry_filters.py --
+VIX/calendar/time-window, econ_calendar.py, exit_logic.py --
+DailyPaceTracker + lagging_pace exit tree, sizing.py --
+ConcurrentPositionTracker cap=2, alpaca_client.py -- stdlib urllib,
+matching marketdata.alpaca_source's transport pattern, no new
+dependency). Tests in `tests/spx0dte/`, 49 passing. Full project suite
+re-run: 1925 passed, zero regressions. Full decision record, every
+backtest number, and every honest caveat: `docs/trading/decisions.md`
+D-0095.
+
+NEXT (deferred, tracked in D-0095's own "Not yet done" section, not a
+new pending item here): a separate CHANGE proposal is required before
+any order can actually be placed -- wiring this module's candidates
+into the existing Telegram approval flow and `src/execution`. No live
+or paper order submission exists yet from this module.

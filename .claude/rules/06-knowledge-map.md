@@ -31,6 +31,16 @@ instead.**
 - `docs/architecture/telegram-approval.md` — Telegram approval transport (D-0025)
 - `deploy/README.md` — the Oracle VM units, timers and their non-default settings
 
+## SPX 0DTE options module (D-0095)
+
+- `src/spx0dte/` — signal.py (ORB+VWAP, multi-opportunity), entry_filters.py,
+  econ_calendar.py, exit_logic.py (day-pace cap + lagging_pace exit),
+  sizing.py (1 contract, concurrency cap 2) — candidate generation and
+  backtest logic only; no live/paper order submission wired yet
+- `tests/spx0dte/` — unit tests for all of the above
+- `docs/trading/decisions.md` D-0095 — full design, every backtest
+  number, and every honest caveat behind it
+
 ## Scheduling, timezones and credentials
 
 - `docs/trading/routine-policy-alignment.md` — per-routine status vs approved policy
