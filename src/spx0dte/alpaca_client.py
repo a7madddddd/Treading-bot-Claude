@@ -88,9 +88,20 @@ class AlpacaOptionsClient:
     def get_spy_minute_bars(self, date: str) -> List[dict]:
         """SPY 1-minute bars for `date` (YYYY-MM-DD), market hours
         only. Returns an empty list on a weekend/holiday (no data),
-        raises AlpacaDataError on a genuine fetch failure."""
+        raises AlpacaDataError on a genuine fetch failure.
+
+        `feed=iex` is required for RECENT/today's data: Alpaca's
+        default feed is SIP, which this account's free Basic tier
+        cannot query for data less than 15 minutes old -- same free-
+        tier restriction already documented in
+        marketdata.alpaca_source (which defaults to "iex" for the
+        identical reason). A past, already-completed trading day
+        (the backtest's own usage) does not hit this restriction, so
+        it went unnoticed until the first live/today call
+        (D-0095-A's manual verification, 2026-11-16: HTTP 403
+        "subscription does not permit querying recent SIP data")."""
         qs = urllib.parse.urlencode({
-            "symbols": "SPY", "timeframe": "1Min",
+            "symbols": "SPY", "timeframe": "1Min", "feed": "iex",
             "start": f"{date}T00:00:00Z", "end": f"{date}T23:59:59Z", "limit": 1000,
         })
         body = self._get(f"/v2/stocks/bars?{qs}")

@@ -7746,3 +7746,31 @@ test suite. Full project suite re-run: 1965 passed, zero regressions.
    automated suite.
 3. A separate decision for the exit/close side, and for turning this
    into an unattended running process.
+
+### Real-API bug found and fixed on first VM run, 2026-11-16
+
+First run of `scripts/spx0dte_verify_order.py` on the VM (real .env,
+real Alpaca account) failed immediately: `get_spy_minute_bars` raised
+`HTTP 403 ... "subscription does not permit querying recent SIP
+data"`. Cause: `/v2/stocks/bars` defaults to the SIP feed, which this
+account's free Basic tier cannot query for data under 15 minutes old.
+The backtest never hit this because every date it queried was already
+a completed past trading day; this was the first call for TODAY's
+live data. `marketdata.alpaca_source.AlpacaMarketDataSource` already
+defaults to `feed=iex` for the identical reason, documented in its
+own file -- `spx0dte/alpaca_client.py` had simply never carried that
+same fix because it had never been exercised live before.
+
+Fixed: added `feed=iex` to `get_spy_minute_bars`'s request.
+
+Anticipated the same class of issue for OPTIONS data before it could
+fail the same way: options bars on the free tier have NO real-time
+feed option at all (confirmed in the research behind D-0095 itself --
+"only a 15-minute recency restriction", unconditional, not a feed
+choice to switch). Updated `scripts/spx0dte_verify_order.py` to search
+and price around a moment 16 minutes in the past, not "now", so the
+live verification test stays inside the free tier's actual limits
+instead of discovering this the same way twice.
+
+Full suite re-run after the fix: 1965 passed, zero regressions.
+Awaiting the Controller's re-run of the verification script on the VM.
