@@ -23,8 +23,13 @@ from typing import List, Optional
 
 from execution.broker_client import BrokerClient
 
+from spx0dte.alpaca_client import AlpacaOptionsClient
 from spx0dte.execution import SubmissionResult, submit_entry_order
+from spx0dte.live_pricing import (
+    LivePricingUnavailableError, get_live_entry_quote, reprice_known_symbol,
+)
 from spx0dte.proposal import OptionTradeProposal, ProposalApprovalState
+from spx0dte.ratio_calibration import RatioProvider
 from spx0dte.sqlite_repository import SpxProposalRepository
 from spx0dte.telegram_approval import ControllerDecision, DecisionKind, send_proposal_message
 
@@ -43,6 +48,26 @@ def build_proposal(
         occ_symbol=occ_symbol, entry_time=entry_time, hold_cap_minutes=hold_cap_minutes,
         estimated_premium=estimated_premium, vix=vix, filters_passed=filters_passed,
         created_at=now,
+    )
+
+
+def build_live_proposal(
+    client: AlpacaOptionsClient, ratio_provider: RatioProvider,
+    *, date: str, direction: str, entry_time: datetime, hold_cap_minutes: float,
+    vix: Optional[float], filters_passed: str, now: datetime,
+) -> OptionTradeProposal:
+    """Builds a proposal using a LIVE strike search + Option B reprice
+    (`live_pricing.get_live_entry_quote`) instead of a caller-supplied
+    strike/price -- the path a real live/unattended loop uses. Raises
+    `live_pricing.LivePricingUnavailableError` if no live quote could
+    be produced; the caller decides whether that means "skip this
+    candidate for now" or "retry shortly", this function does not
+    guess either way."""
+    quote = get_live_entry_quote(client, ratio_provider, direction, now=now)
+    return build_proposal(
+        date=date, direction=direction, strike=quote.strike, occ_symbol=quote.occ_symbol,
+        entry_time=entry_time, hold_cap_minutes=hold_cap_minutes,
+        estimated_premium=quote.bias_corrected_price, vix=vix, filters_passed=filters_passed, now=now,
     )
 
 
@@ -82,13 +107,27 @@ def create_and_notify(
 
 def process_decisions(
     repo: SpxProposalRepository, decisions: List[ControllerDecision],
-    broker: BrokerClient, *, quantity: int, now: Optional[datetime] = None,
+    broker: BrokerClient, *, quantity: int,
+    options_client: Optional[AlpacaOptionsClient] = None,
+    ratio_provider: Optional[RatioProvider] = None,
+    now: Optional[datetime] = None,
 ) -> List[SubmissionResult]:
     """Applies each decision to its proposal and, for an APPROVE still
     inside the 5-minute window, submits a buy order. Returns one
     SubmissionResult per decision that reached submission (a REJECT,
     an unknown proposal_id, or an already-decided proposal produces no
-    SubmissionResult -- nothing was submitted)."""
+    SubmissionResult -- nothing was submitted).
+
+    If `options_client`/`ratio_provider` are given, the limit price is
+    RE-PRICED live at submission time via
+    `live_pricing.reprice_known_symbol` (D-0007's own "re-check the
+    price before submitting" principle -- a proposal's
+    `estimated_premium` can be several minutes stale by the time the
+    Controller decides). Falls back to the proposal's own
+    `estimated_premium` if either is omitted (e.g. in a test, or a
+    caller that hasn't wired live pricing yet) or if re-pricing fails
+    -- a failed re-price is not a reason to silently skip an approved
+    trade, but IS recorded as a note so it is visible, not hidden."""
     now = now or datetime.now(timezone.utc)
     results: List[SubmissionResult] = []
 
@@ -109,9 +148,20 @@ def process_decisions(
         if not decided.is_approval_still_valid(now=now):
             continue  # expired between decision and this processing pass
 
+        limit_price = decided.estimated_premium
+        if options_client is not None and ratio_provider is not None:
+            try:
+                quote = reprice_known_symbol(
+                    options_client, ratio_provider, occ_symbol=decided.occ_symbol,
+                    strike=decided.strike, direction=decided.direction, now=now,
+                )
+                limit_price = quote.bias_corrected_price
+            except LivePricingUnavailableError:
+                pass  # fall back to estimated_premium, already assigned above
+
         result = submit_entry_order(
             broker, client_order_id=decided.proposal_id, occ_symbol=decided.occ_symbol,
-            quantity=quantity, limit_price=decided.estimated_premium,
+            quantity=quantity, limit_price=limit_price,
         )
         results.append(result)
 

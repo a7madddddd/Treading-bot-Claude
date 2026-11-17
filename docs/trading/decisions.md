@@ -7936,3 +7936,77 @@ Full suite after greeks.py: 1991 passed, zero regressions.
 is not assumed: no accuracy number is claimed, and greeks.py is NOT
 wired into any order-pricing path, until spx0dte_validate_greeks.py
 has been run on real data and the Controller has seen the result.**
+
+### VALIDATION RESULT -- Option B's real accuracy measured, 2026-11-17
+
+`spx0dte_validate_greeks.py` run on the VM, 2026-10-01 to 2026-11-13,
+128 real samples (near-ATM calls and puts, ~18-minute stale-to-live
+gap, past completed sessions so the measurement itself isn't affected
+by the 15-minute recency restriction it is measuring around):
+
+```
+mean error:        +0.2637
+median error:      +0.3339
+mean abs error:    0.8548
+median abs error:  0.5089
+mean abs error %:   6.1%
+median abs error %: 3.8%
+```
+
+**Assessment:** usable, with two caveats both visible in the numbers
+themselves, not asserted:
+
+1. A small, CONSISTENT positive bias (mean and median error both
+   positive, not scattered around zero) -- the model systematically
+   overestimates the live price by roughly 3.8% (median). Plausible
+   mechanism: implied volatility tends to drift down somewhat through
+   the session as the day resolves, and this model holds it constant
+   over the gap.
+2. Mean (6.1%) exceeds median (3.8%) by a meaningful margin, meaning
+   a right-skewed tail of larger errors exists (likely far-cheaper,
+   more sensitive contracts) alongside a tighter typical case.
+
+**Decision: wire it in as a bias-corrected REFERENCE price for the
+limit order, not a blind execution price.** The measured median bias
+(3.8%) is applied as a correction (divide the raw estimate by
+1.038), not as an arbitrary "safety margin" -- it corrects a
+measured, directional error, which is different from padding a
+number for comfort. The tail-risk caveat (point 2) is not solved by
+this correction and stays as a known, recorded limitation rather than
+being papered over.
+
+### Option B wired into orchestration, 2026-11-17
+
+Built `src/spx0dte/live_pricing.py`:
+- `get_live_entry_quote()` -- full path for a NEW candidate: live
+  SPY price (iex) x measured ratio -> strike search in a safely-stale
+  (40 min back) window -> `greeks.reprice_from_stale_quote()` ->
+  `MEASURED_BIAS_PCT`-corrected price.
+- `reprice_known_symbol()` -- re-prices an ALREADY-APPROVED symbol at
+  submission time without re-searching for a strike (the Controller
+  approved a specific contract; re-pricing must not silently swap
+  it for a different one).
+
+Wired into `orchestration.py`:
+- `build_live_proposal()` -- builds an `OptionTradeProposal` from a
+  live quote instead of a caller-supplied strike/price.
+- `process_decisions()` gained optional `options_client`/
+  `ratio_provider` parameters: when given, the limit price is
+  RE-PRICED live at submission time (D-0007's own "re-check the
+  price before submitting" principle -- a proposal's
+  `estimated_premium` can be several minutes stale by the time the
+  Controller decides) instead of trusting the proposal-time estimate.
+  Omitting them keeps the old behavior exactly (backward compatible,
+  existing tests unchanged). A failed re-price falls back to
+  `estimated_premium` rather than blocking an approved trade, and is
+  not silent -- `LivePricingUnavailableError` is caught, not ignored
+  blindly, at exactly one point.
+
+14 new tests (`test_greeks.py`, `test_live_pricing.py`, plus
+additions to `test_orchestration.py`), all against fakes/mocks -- no
+real network call in the suite. Full project suite: 2002 passed,
+zero regressions.
+
+**Still open:** no unattended loop calls any of this yet (the "no
+unattended running process" item from D-0095-A's original open-items
+list is unchanged); no exit/close pricing or submission exists.

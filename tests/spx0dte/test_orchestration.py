@@ -4,8 +4,9 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from execution.broker_client import BrokerClient, BrokerOrderState
+from spx0dte.greeks import OptionType, black_scholes_price
 from spx0dte.orchestration import (
-    build_proposal, create_and_notify, expire_stale_pending, process_decisions,
+    build_live_proposal, build_proposal, create_and_notify, expire_stale_pending, process_decisions,
 )
 from spx0dte.proposal import ProposalApprovalState
 from spx0dte.sqlite_repository import SpxProposalRepository
@@ -17,7 +18,9 @@ class FakeBroker(BrokerClient):
         self.calls = []
 
     def submit_order(self, *, client_order_id, symbol, side, quantity, limit_price):
-        self.calls.append(dict(client_order_id=client_order_id, symbol=symbol, quantity=quantity))
+        self.calls.append(dict(
+            client_order_id=client_order_id, symbol=symbol, quantity=quantity, limit_price=limit_price,
+        ))
         return BrokerOrderState(
             broker_order_id=f"B-{client_order_id}", status="accepted",
             is_terminal=False, filled_qty=0, filled_avg_price=None,
@@ -133,6 +136,106 @@ class TestOrchestration(unittest.TestCase):
         count = expire_stale_pending(self.repo, older_than=self.now - timedelta(minutes=1))
         self.assertEqual(count, 0)
         self.assertEqual(self.repo.get(proposal.proposal_id).approval_state, ProposalApprovalState.PENDING)
+
+
+class FakeRatioProvider:
+    def __init__(self, ratio: float):
+        self._ratio = ratio
+
+    def get_ratio(self, *, now=None) -> float:
+        return self._ratio
+
+
+class FakeOptionsClient:
+    def __init__(self, *, spy_bars, found_strike, option_bars):
+        self._spy_bars = spy_bars
+        self._found_strike = found_strike
+        self._option_bars = option_bars
+
+    def get_spy_minute_bars(self, date):
+        return self._spy_bars
+
+    def find_nearest_traded_strike(self, date, approx_spx_level, call_put, around_time_iso):
+        return self._found_strike
+
+    def get_option_bars(self, symbol, start_iso, end_iso, limit=50):
+        return self._option_bars
+
+
+def _bar(t, c: float) -> dict:
+    return {"t": t.strftime("%Y-%m-%dT%H:%M:%SZ"), "c": c}
+
+
+class TestLivePricingIntegration(unittest.TestCase):
+    """Covers the live_pricing wiring added to orchestration.py:
+    build_live_proposal() and process_decisions()'s optional re-price
+    at submission time."""
+
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        self.repo = SpxProposalRepository(self.path)
+        self.now = datetime(2026, 11, 17, 15, 0, tzinfo=timezone.utc)
+        self.ratio_provider = FakeRatioProvider(10.0)
+        self.K = 5900
+
+        self.spy_bars = [_bar(self.now - timedelta(minutes=m), 590.0) for m in range(0, 120, 1)][::-1]
+        expiry = self.now.replace(hour=21, minute=0, second=0, microsecond=0)
+        stale_time = self.now - timedelta(minutes=40)
+        stale_T = max((expiry - stale_time).total_seconds(), 1) / 86400 / 365
+        stale_price = black_scholes_price(5900, self.K, stale_T, 0.045, 0.15, OptionType.CALL)
+
+        self.client = FakeOptionsClient(
+            spy_bars=self.spy_bars, found_strike=(self.K, "SPXW261117C05900000"),
+            option_bars=[_bar(stale_time, stale_price)],
+        )
+
+    def tearDown(self):
+        os.remove(self.path)
+
+    def test_build_live_proposal_uses_live_quote(self):
+        proposal = build_live_proposal(
+            self.client, self.ratio_provider, date="2026-11-17", direction="call",
+            entry_time=self.now, hold_cap_minutes=40.0, vix=18.0,
+            filters_passed="VIX OK", now=self.now,
+        )
+        self.assertEqual(proposal.strike, self.K)
+        self.assertEqual(proposal.occ_symbol, "SPXW261117C05900000")
+        self.assertGreater(proposal.estimated_premium, 0)
+
+    def test_process_decisions_reprices_live_when_wired(self):
+        proposal = build_proposal(
+            date="2026-11-17", direction="call", strike=self.K, occ_symbol="SPXW261117C05900000",
+            entry_time=self.now, hold_cap_minutes=40.0, estimated_premium=1.50, vix=18.0,
+            filters_passed="VIX OK", now=self.now,
+        )
+        self.repo.save(proposal)
+        broker = FakeBroker()
+        decision = ControllerDecision(proposal_id=proposal.proposal_id, kind=DecisionKind.APPROVE, decided_by="111")
+
+        process_decisions(
+            self.repo, [decision], broker, quantity=1,
+            options_client=self.client, ratio_provider=self.ratio_provider,
+            now=self.now,
+        )
+
+        self.assertEqual(len(broker.calls), 1)
+        # Re-priced live, not the stale proposal-time estimate of 1.50.
+        self.assertNotAlmostEqual(broker.calls[0]["limit_price"], 1.50, places=2)
+
+    def test_process_decisions_falls_back_without_live_pricing_args(self):
+        proposal = build_proposal(
+            date="2026-11-17", direction="call", strike=self.K, occ_symbol="SPXW261117C05900000",
+            entry_time=self.now, hold_cap_minutes=40.0, estimated_premium=1.50, vix=18.0,
+            filters_passed="VIX OK", now=self.now,
+        )
+        self.repo.save(proposal)
+        broker = FakeBroker()
+        decision = ControllerDecision(proposal_id=proposal.proposal_id, kind=DecisionKind.APPROVE, decided_by="111")
+
+        process_decisions(self.repo, [decision], broker, quantity=1, now=self.now)
+
+        self.assertAlmostEqual(broker.calls[0]["limit_price"], 1.50, places=2)
 
 
 if __name__ == "__main__":
