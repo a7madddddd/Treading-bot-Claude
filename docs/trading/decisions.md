@@ -7881,3 +7881,58 @@ step exists anymore to forget.
 
 8 new tests (mocked measurement, no real network calls). Full suite:
 1974 passed, zero regressions.
+
+### "Option B" for the live-timing problem: Black-Scholes reprice, not yet validated, 2026-11-17
+
+Of the three options presented for the live-entry-time-vs-15-minute-
+options-delay problem (trade on stale data as-is; reprice from a
+stale quote using Black-Scholes with a live underlying; a safety-
+margin band-aid on the stale price), Controller chose Option B, then
+asked directly why Alpaca's free tier has this delay at all. Answer
+given and recorded here for completeness: it is an OPRA (Options
+Price Reporting Authority) licensing restriction, not an Alpaca
+policy choice -- real-time options data is a paid, licensed product
+across the whole US market-data industry; the free tier gets the
+15-minute-delayed version. Signing the Options Agreement (the earlier
+"OPRA agreement is not signed" fix) was a legal acknowledgment
+required even for the delayed free data, separate from and not a
+substitute for a paid real-time data subscription.
+
+Controller also asked, correctly, how accurate Option B's Black-
+Scholes repricing actually is. Honest answer given: UNKNOWN, and
+deliberately not claimed -- 0DTE options are exactly the case where
+Black-Scholes is most sensitive to small errors (theta/gamma both
+large near expiry), and the only validation this project had done
+before now was one single worked example, not a comparison against
+real market prices.
+
+Built, in order:
+- `src/spx0dte/greeks.py`: ported the scratchpad Black-Scholes
+  calculator (`black_scholes_greeks`, `black_scholes_price`), plus
+  two NEW functions needed for Option B that did not exist in the
+  scratchpad version: `implied_volatility()` (bisection solver -- back
+  out sigma from an observed price, raises `ImpliedVolatilityError`
+  rather than guessing when the price is inconsistent with any
+  volatility in range) and `reprice_from_stale_quote()` (the actual
+  mechanism: solve sigma from a STALE quote, re-price with that same
+  sigma at the LIVE underlying price and LIVE time-to-expiry -- the
+  assumption being that implied vol moves more slowly than raw price
+  over ~15-20 minutes, not yet measured). 17 tests, including a
+  regression check against the scratchpad's own worked example
+  (ATM call, 2h to expiry, IV 15% -> delta=0.502, theta=-$32.37/day).
+- `scripts/spx0dte_validate_greeks.py`: NOT part of the automated
+  suite -- measures Option B's REAL accuracy against real historical
+  option prices (past, already-completed sessions, so free of the
+  15-minute-recency restriction on the measurement itself). For many
+  (date, near-ATM strike, call/put) samples, takes two real observed
+  prices ~18 minutes apart, backs out sigma from the first, re-prices
+  for the second's live underlying/time-to-expiry, and compares
+  against the second's REAL observed price -- reporting mean/median
+  absolute and percentage error.
+
+Full suite after greeks.py: 1991 passed, zero regressions.
+
+**Explicitly not yet done, stated in greeks.py's own docstring so it
+is not assumed: no accuracy number is claimed, and greeks.py is NOT
+wired into any order-pricing path, until spx0dte_validate_greeks.py
+has been run on real data and the Controller has seen the result.**
