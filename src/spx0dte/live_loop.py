@@ -25,28 +25,40 @@ hidden.
 
 Concurrency bookkeeping uses each candidate's PLANNED exit time
 (entry_time + that day's dynamic hold cap) to reserve a slot in
-`ConcurrentPositionTracker`, since no automated exit/close exists yet
-(a separate, explicitly deferred item) -- a real exit via target/
-stop/stall would free the slot earlier than this, making the
-bookkeeping conservative (slightly UNDER-admits), never permissive.
+`ConcurrentPositionTracker` -- a real exit via target/stop/stall now
+DOES free the slot earlier when it happens (see
+`monitor_open_positions` below), but the slot is still reserved
+pessimistically at open time since the real exit moment isn't known
+in advance.
+
+Exit/close (D-0095-A item 4, 2026-11-17): `monitor_open_positions`
+re-prices every open position each tick (via `live_pricing`, the
+same Option B mechanism used for entries) and feeds that estimate into
+a per-position `live_exit.LiveExitTracker`. A protective exit needs
+no Controller approval (`.claude/rules/01-roles-and-authority.md`) --
+`orchestration.close_position` submits and records the close
+directly, same tick.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import List, Optional, Set
+from typing import Dict, List, Optional, Set
 
 from execution.broker_client import BrokerClient
 
 from spx0dte.alpaca_client import AlpacaDataError, AlpacaOptionsClient
 from spx0dte.entry_filters import run_all_filters
 from spx0dte.exit_logic import DailyPaceTracker, session_pace_width_pct
-from spx0dte.live_pricing import LivePricingUnavailableError
-from spx0dte.orchestration import build_live_proposal, create_and_notify, expire_stale_pending, process_decisions
+from spx0dte.live_exit import LiveExitTracker
+from spx0dte.live_pricing import LivePricingUnavailableError, reprice_known_symbol
+from spx0dte.orchestration import (
+    build_live_proposal, close_position, create_and_notify, expire_stale_pending, process_decisions,
+)
 from spx0dte.ratio_calibration import RatioProvider
 from spx0dte.signal import find_breakout_opportunities
 from spx0dte.sizing import ConcurrentPositionTracker
-from spx0dte.sqlite_repository import SpxProposalRepository
+from spx0dte.sqlite_repository import SpxPositionRepository, SpxProposalRepository
 from spx0dte.telegram_approval import ControllerDecision
 
 STALE_PROPOSAL_MAX_AGE = timedelta(minutes=30)
@@ -79,6 +91,12 @@ class LiveSessionState:
     current_date: Optional[str] = None
     dynamic_cap_today: Optional[float] = None
     processed_entry_keys: Set[str] = field(default_factory=set)
+    exit_trackers: Dict[str, LiveExitTracker] = field(default_factory=dict)
+    """proposal_id -> its LiveExitTracker. In-memory only -- a process
+    restart loses each tracker's running_max/armed state, but a fresh
+    tracker re-evaluates from the position's own recorded entry_price
+    forward, which is a graceful (if slightly less precise)
+    degradation, not a crash or a lost position."""
 
 
 @dataclass(frozen=True)
@@ -92,12 +110,60 @@ class TickResult:
     decisions_processed: int
     orders_submitted: int
     proposals_expired: int
+    positions_monitored: int
+    positions_closed: int
     notes: List[str]
+
+
+def monitor_open_positions(
+    *, now: datetime, options_client: AlpacaOptionsClient, broker: BrokerClient,
+    ratio_provider: RatioProvider, position_repo: SpxPositionRepository,
+    state: LiveSessionState,
+) -> tuple:
+    """Re-prices every open position (Option B, same mechanism as a
+    new entry) and feeds the estimate into that position's
+    LiveExitTracker. On an exit trigger, closes it immediately via
+    `orchestration.close_position` -- no Controller approval needed
+    for a protective exit. Returns (positions_monitored, positions_closed, notes)."""
+    notes: List[str] = []
+    closed_count = 0
+    open_positions = position_repo.list_open()
+
+    for position in open_positions:
+        tracker = state.exit_trackers.get(position.proposal_id)
+        if tracker is None:
+            tracker = LiveExitTracker(
+                entry_price=position.entry_price, entry_time=position.entry_time,
+                hold_cap_minutes=position.hold_cap_minutes,
+            )
+            state.exit_trackers[position.proposal_id] = tracker
+
+        try:
+            quote = reprice_known_symbol(
+                options_client, ratio_provider, occ_symbol=position.occ_symbol,
+                strike=position.strike, direction=position.direction, now=now,
+            )
+        except LivePricingUnavailableError as e:
+            notes.append(f"{position.proposal_id}: could not re-price for exit monitoring: {e}")
+            continue
+
+        reason = tracker.update(quote.bias_corrected_price, now)
+        if reason is not None:
+            close_position(
+                position_repo, position, broker,
+                exit_price=quote.bias_corrected_price, exit_reason=reason, now=now,
+            )
+            state.exit_trackers.pop(position.proposal_id, None)
+            closed_count += 1
+            notes.append(f"{position.proposal_id}: closed ({reason}) at {quote.bias_corrected_price:.2f}")
+
+    return len(open_positions), closed_count, notes
 
 
 def run_one_tick(
     *, now: datetime, options_client: AlpacaOptionsClient, broker: BrokerClient,
     ratio_provider: RatioProvider, repo: SpxProposalRepository,
+    position_repo: SpxPositionRepository,
     pending_decisions: List[ControllerDecision],
     bot_token: str, chat_id: str, quantity: int,
     state: LiveSessionState,
@@ -118,7 +184,8 @@ def run_one_tick(
             date=today, dynamic_cap=state.dynamic_cap_today, new_opportunities_seen=0,
             proposals_created=0, proposals_rejected_by_filter=0,
             proposals_rejected_by_concurrency=0, decisions_processed=0,
-            orders_submitted=0, proposals_expired=0, notes=[f"SPY fetch failed: {e}"],
+            orders_submitted=0, proposals_expired=0, positions_monitored=0,
+            positions_closed=0, notes=[f"SPY fetch failed: {e}"],
         )
 
     if state.current_date != today:
@@ -174,10 +241,17 @@ def run_one_tick(
 
     submission_results = process_decisions(
         repo, pending_decisions, broker, quantity=quantity,
-        options_client=options_client, ratio_provider=ratio_provider, now=now,
+        options_client=options_client, ratio_provider=ratio_provider,
+        position_repo=position_repo, now=now,
     )
 
     expired = expire_stale_pending(repo, older_than=now - STALE_PROPOSAL_MAX_AGE)
+
+    positions_monitored, positions_closed, exit_notes = monitor_open_positions(
+        now=now, options_client=options_client, broker=broker, ratio_provider=ratio_provider,
+        position_repo=position_repo, state=state,
+    )
+    notes.extend(exit_notes)
 
     return TickResult(
         date=today, dynamic_cap=state.dynamic_cap_today,
@@ -187,5 +261,7 @@ def run_one_tick(
         proposals_rejected_by_concurrency=rejected_by_concurrency,
         decisions_processed=len(pending_decisions),
         orders_submitted=len(submission_results),
-        proposals_expired=expired, notes=notes,
+        proposals_expired=expired,
+        positions_monitored=positions_monitored, positions_closed=positions_closed,
+        notes=notes,
     )

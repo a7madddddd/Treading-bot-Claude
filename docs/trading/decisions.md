@@ -8064,3 +8064,70 @@ regressions.
 
 **Remaining open item: exit/close order submission (item 4 of 4) --
 this runner only ever opens positions.**
+
+### Exit/close submission built -- all 4 original open items now closed, 2026-11-17
+
+Per `.claude/rules/01-roles-and-authority.md`: a protective exit needs
+no per-trade Controller approval once the exit RULE itself is
+approved (the target/stop/stall/lagging_pace/time_cap tree was
+approved and extensively backtested under D-0095) -- this item wires
+that rule into real order submission, automatically, same as the
+equity-ladder flow's own already-approved Floor/Trailing-Floor
+behavior.
+
+New pieces:
+- `src/spx0dte/execution.py`: added `submit_exit_order()` -- a SELL
+  through the same unmodified `BrokerClient.submit_order()` path,
+  with its own `client_order_id` (`f"{proposal_id}-exit"`, distinct
+  from the entry's, since the broker's idempotency is per-id and a
+  close must never collide with or be deduplicated against the entry
+  that opened the position).
+- `src/spx0dte/position.py`: `OpenPosition`, same immutable-transition
+  shape as `OptionTradeProposal` (open -> closed once, via
+  `with_exit()`).
+- `src/spx0dte/sqlite_repository.py`: `SpxPositionRepository`, a
+  second table (`spx_positions`) in the SAME db file as
+  `SpxProposalRepository` -- a position always exists in reference to
+  an already-persisted proposal, so sharing the file was the natural
+  choice, not a new separate-file decision.
+- `src/spx0dte/live_exit.py`: `LiveExitTracker` -- mirrors
+  `exit_logic.simulate_exit`'s exact rules and constants (imported,
+  never re-guessed) but applied ONE live-priced estimate at a time
+  (via `live_pricing`, the same Option B mechanism used for entries),
+  since no batch of real bars exists for an OPEN position on the free
+  tier. Deliberately a SEPARATE implementation from `simulate_exit`
+  rather than a refactor of it -- `simulate_exit` is already proven
+  and heavily used by every backtest script; duplicating ~20 lines of
+  decision logic is safer than restructuring it to serve two calling
+  shapes. HONEST CAVEAT stated in its own docstring: because this
+  feeds model ESTIMATES rather than real observed prices, its live
+  behavior is not guaranteed to match `simulate_exit`'s own backtested
+  statistics -- it is the best approximation available under the
+  free tier's data constraint, not a guarantee.
+- `orchestration.py`: `process_decisions()` now creates an
+  `OpenPosition` on a successful entry submission when given a
+  `position_repo` (backward compatible -- omitting it keeps the old
+  behavior exactly); new `close_position()` submits the exit and
+  persists the close in one call.
+- `live_loop.py`: new `monitor_open_positions()`, called every tick
+  after decision processing -- re-prices every open position, feeds
+  each into its own `LiveExitTracker` (kept in `LiveSessionState.
+  exit_trackers`, in-memory only -- a process restart loses a
+  tracker's running_max/armed state, a graceful degradation, not a
+  lost position, since a fresh tracker still re-evaluates forward
+  from the position's own recorded entry_price), and closes on any
+  trigger.
+- `scripts/run_spx0dte_session.py`: constructs a `SpxPositionRepository`
+  (same db file) and passes it through.
+
+19 new tests (`test_position.py`, `test_live_exit.py`, additions to
+`test_sqlite_repository.py`/`test_orchestration.py`/`test_live_loop.py`),
+all against fakes/mocks. Full suite: 2039 passed, zero regressions.
+
+**All 4 of D-0095-A's original open items are now built and tested.**
+Still not done, stated plainly: no polling for the entry order's
+ACTUAL fill price (positions are opened at the submitted limit price,
+not a confirmed fill -- a reasonable approximation since the exit
+tracker is self-consistent against whichever baseline it starts
+from, but not the same as a confirmed fill); not yet deployed/started
+on the VM; no live intraday VIX source.

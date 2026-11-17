@@ -11,14 +11,15 @@ The paper-only guardrail (`_APPROVED_PAPER_HOST`) already in
 `AlpacaBrokerClient` applies to this call exactly as it does to every
 equity order -- no new safety work needed, and none skipped.
 
-NOT yet built (explicitly deferred, not silently expanded into this
-change): automatic exit/sell-to-close submission once a position is
-open. This module only ever BUYS to open a single approved entry; the
-already-designed exit logic (spx0dte.exit_logic.simulate_exit) has no
-order-submission wiring yet -- that is separate future work requiring
-its own review, since D-0095's "already-approved protective exits may
-execute automatically" principle has not yet been extended to this
-module's exits.
+`submit_exit_order()` (added 2026-11-17, D-0095-A item 4) closes an
+open position -- a SELL, same unmodified `submit_order()` path. Per
+`.claude/rules/01-roles-and-authority.md`: "Already-approved protective
+exits ... may execute automatically in paper trading when their
+trigger is reached" -- unlike an entry, a close needs no per-trade
+Controller approval, because the exit RULE itself (target/stop/stall/
+lagging_pace/time_cap) was already approved and extensively
+backtested under D-0095. `live_exit.LiveExitTracker` decides WHEN to
+call this; this function only submits.
 """
 from __future__ import annotations
 
@@ -57,6 +58,30 @@ def submit_entry_order(
             client_order_id=client_order_id,
             symbol=occ_symbol,
             side="buy",
+            quantity=quantity,
+            limit_price=limit_price,
+        )
+        return SubmissionResult(success=True, order_state=state, error=None)
+    except BrokerSubmissionAmbiguousError as ex:
+        return SubmissionResult(success=False, order_state=None, error=f"ambiguous: {ex}")
+    except BrokerClientError as ex:
+        return SubmissionResult(success=False, order_state=None, error=str(ex))
+
+
+def submit_exit_order(
+    broker: BrokerClient, *, client_order_id: str, occ_symbol: str,
+    quantity: int, limit_price: float,
+) -> SubmissionResult:
+    """Submits a single SELL order to close an open SPX 0DTE option
+    position. `client_order_id` should be a NEW id distinct from the
+    entry's (e.g. f"{proposal_id}-exit") -- the broker's idempotency
+    is per client_order_id, and a close is a different order from the
+    entry that must not collide with or be deduplicated against it."""
+    try:
+        state = broker.submit_order(
+            client_order_id=client_order_id,
+            symbol=occ_symbol,
+            side="sell",
             quantity=quantity,
             limit_price=limit_price,
         )

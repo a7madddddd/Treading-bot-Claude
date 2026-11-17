@@ -54,6 +54,12 @@ instead.**
   `deploy/spx0dte-session.service` — the unattended loop (a SEPARATE
   systemd unit from `trading-engine.service`, own bot, own SQLite file).
   Not yet deployed/started on the VM
+- `src/spx0dte/position.py`, `live_exit.py` — exit/close submission:
+  `OpenPosition` tracking + `LiveExitTracker` (mirrors
+  `exit_logic.simulate_exit`'s rules, fed live re-priced estimates).
+  Automatic, no Controller approval needed (protective exit, per
+  `.claude/rules/01-roles-and-authority.md`). All 4 of D-0095-A's
+  original open items are now built and tested
 - `tests/spx0dte/` — unit tests for all of the above (all against fakes,
   no real network/broker calls)
 - `docs/trading/decisions.md` D-0095 / D-0095-A — full design, every

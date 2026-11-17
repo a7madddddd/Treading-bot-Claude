@@ -24,13 +24,14 @@ from typing import List, Optional
 from execution.broker_client import BrokerClient
 
 from spx0dte.alpaca_client import AlpacaOptionsClient
-from spx0dte.execution import SubmissionResult, submit_entry_order
+from spx0dte.execution import SubmissionResult, submit_entry_order, submit_exit_order
 from spx0dte.live_pricing import (
     LivePricingUnavailableError, get_live_entry_quote, reprice_known_symbol,
 )
+from spx0dte.position import OpenPosition
 from spx0dte.proposal import OptionTradeProposal, ProposalApprovalState
 from spx0dte.ratio_calibration import RatioProvider
-from spx0dte.sqlite_repository import SpxProposalRepository
+from spx0dte.sqlite_repository import SpxPositionRepository, SpxProposalRepository
 from spx0dte.telegram_approval import ControllerDecision, DecisionKind, send_proposal_message
 
 
@@ -110,6 +111,7 @@ def process_decisions(
     broker: BrokerClient, *, quantity: int,
     options_client: Optional[AlpacaOptionsClient] = None,
     ratio_provider: Optional[RatioProvider] = None,
+    position_repo: Optional[SpxPositionRepository] = None,
     now: Optional[datetime] = None,
 ) -> List[SubmissionResult]:
     """Applies each decision to its proposal and, for an APPROVE still
@@ -127,7 +129,17 @@ def process_decisions(
     `estimated_premium` if either is omitted (e.g. in a test, or a
     caller that hasn't wired live pricing yet) or if re-pricing fails
     -- a failed re-price is not a reason to silently skip an approved
-    trade, but IS recorded as a note so it is visible, not hidden."""
+    trade, but IS recorded as a note so it is visible, not hidden.
+
+    If `position_repo` is given and submission succeeds, an
+    `OpenPosition` is created and persisted (D-0095-A item 4) so
+    `live_loop.monitor_open_positions` has something to track for an
+    eventual exit/close. The entry price recorded is the submitted
+    `limit_price` (a provisional estimate, not a confirmed fill) --
+    this module does not yet poll the broker for the actual fill
+    price; a future refinement could, but a provisional entry price is
+    enough for the exit tracker's OWN estimates to be self-consistent
+    (it compares against this SAME baseline throughout the trade)."""
     now = now or datetime.now(timezone.utc)
     results: List[SubmissionResult] = []
 
@@ -165,7 +177,40 @@ def process_decisions(
         )
         results.append(result)
 
+        if result.success and position_repo is not None:
+            position_repo.save(OpenPosition(
+                proposal_id=decided.proposal_id, occ_symbol=decided.occ_symbol,
+                direction=decided.direction, quantity=quantity, strike=decided.strike,
+                date=decided.date, entry_time=now, entry_price=limit_price,
+                hold_cap_minutes=decided.hold_cap_minutes,
+            ))
+
     return results
+
+
+def close_position(
+    position_repo: SpxPositionRepository, position: OpenPosition, broker: BrokerClient,
+    *, exit_price: float, exit_reason: str, now: datetime,
+) -> SubmissionResult:
+    """Submits the SELL order that closes `position` and persists the
+    closed state -- called by `live_loop.monitor_open_positions` once
+    `live_exit.LiveExitTracker` signals an exit trigger. Per
+    `.claude/rules/01-roles-and-authority.md`, a protective exit needs
+    no Controller approval (the exit RULE was already approved under
+    D-0095); this function only submits and records, it does not ask.
+
+    The position row is marked closed regardless of submission
+    success -- an order the broker rejected is still a position this
+    tracker must stop monitoring (the caller is responsible for
+    surfacing a failed close prominently; silently retrying forever
+    is not this function's job)."""
+    client_order_id = f"{position.proposal_id}-exit"
+    result = submit_exit_order(
+        broker, client_order_id=client_order_id, occ_symbol=position.occ_symbol,
+        quantity=position.quantity, limit_price=exit_price,
+    )
+    position_repo.save(position.with_exit(exit_time=now, exit_price=exit_price, exit_reason=exit_reason))
+    return result
 
 
 def expire_stale_pending(repo: SpxProposalRepository, *, older_than: datetime) -> int:

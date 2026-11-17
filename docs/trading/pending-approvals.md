@@ -5312,9 +5312,31 @@ yet. This is the last piece before the module could respon­sibly run
 unattended for a full session without the Controller manually closing
 every position.
 
-Also carried forward, not fixed, not forgotten:
+**UPDATE 2026-11-17 -- item 4 of 4 (exit/close) now built, closing
+out the full original open-items list:**
+
+`live_exit.LiveExitTracker` (mirrors `exit_logic.simulate_exit`'s
+rules, fed live re-priced estimates instead of real bars) +
+`orchestration.close_position()` (SELL through the same unmodified
+`BrokerClient.submit_order()`, no Controller approval needed for a
+protective exit per `.claude/rules/01-roles-and-authority.md`) +
+`live_loop.monitor_open_positions()` (called every tick). Position
+tracking via a new `SpxPositionRepository` (same db file as
+proposals). 19 new tests, full suite 2039 passed, zero regressions.
+Full details: `docs/trading/decisions.md` D-0095-A's latest entry.
+
+**All 4 of the original open items are now built and tested.**
+
+Still carried forward, not fixed, not forgotten:
 - No live intraday VIX source -- the VIX entry filter runs effectively
   disabled (`vix_level=None`, its own documented graceful-skip
   behavior) until one is found.
-- Not yet deployed/started on the VM -- the systemd unit exists in the
-  repo but has not been installed or enabled there yet.
+- Not yet deployed/started on the VM -- the systemd units exist in the
+  repo (`trading-engine.service`'s sibling, `spx0dte-session.service`)
+  but have not been installed or enabled there yet.
+- No polling for the entry order's actual fill price -- positions are
+  opened at the submitted limit price, not a confirmed fill.
+- `scripts/spx0dte_verify_order.py`'s original one-time manual test
+  (D-0095-A, 2026-11-16) verified a single entry order; the full
+  entry-approve-exit chain has not yet had an end-to-end real-VM
+  dry run.

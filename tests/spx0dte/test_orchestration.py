@@ -6,10 +6,11 @@ from datetime import datetime, timedelta, timezone
 from execution.broker_client import BrokerClient, BrokerOrderState
 from spx0dte.greeks import OptionType, black_scholes_price
 from spx0dte.orchestration import (
-    build_live_proposal, build_proposal, create_and_notify, expire_stale_pending, process_decisions,
+    build_live_proposal, build_proposal, close_position, create_and_notify,
+    expire_stale_pending, process_decisions,
 )
 from spx0dte.proposal import ProposalApprovalState
-from spx0dte.sqlite_repository import SpxProposalRepository
+from spx0dte.sqlite_repository import SpxPositionRepository, SpxProposalRepository
 from spx0dte.telegram_approval import ControllerDecision, DecisionKind
 
 
@@ -236,6 +237,83 @@ class TestLivePricingIntegration(unittest.TestCase):
         process_decisions(self.repo, [decision], broker, quantity=1, now=self.now)
 
         self.assertAlmostEqual(broker.calls[0]["limit_price"], 1.50, places=2)
+
+
+class TestPositionWiring(unittest.TestCase):
+    """D-0095-A item 4: process_decisions creates an OpenPosition on a
+    successful submission when given a position_repo, and
+    close_position() submits the exit and persists the close."""
+
+    def setUp(self):
+        fd, self.proposal_path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        self.repo = SpxProposalRepository(self.proposal_path)
+        self.position_repo = SpxPositionRepository(self.proposal_path)  # same file, shared schema
+        self.now = datetime(2026, 11, 17, 15, 0, tzinfo=timezone.utc)
+
+    def tearDown(self):
+        os.remove(self.proposal_path)
+
+    def test_approve_creates_an_open_position(self):
+        proposal = build_proposal(
+            date="2026-11-17", direction="call", strike=5900, occ_symbol="SPXW261117C05900000",
+            entry_time=self.now, hold_cap_minutes=40.0, estimated_premium=1.50, vix=18.0,
+            filters_passed="VIX OK", now=self.now,
+        )
+        self.repo.save(proposal)
+        broker = FakeBroker()
+        decision = ControllerDecision(proposal_id=proposal.proposal_id, kind=DecisionKind.APPROVE, decided_by="111")
+
+        process_decisions(
+            self.repo, [decision], broker, quantity=1, position_repo=self.position_repo, now=self.now,
+        )
+
+        positions = self.position_repo.list_open()
+        self.assertEqual(len(positions), 1)
+        self.assertEqual(positions[0].occ_symbol, "SPXW261117C05900000")
+        self.assertAlmostEqual(positions[0].entry_price, 1.50, places=2)
+
+    def test_reject_creates_no_position(self):
+        proposal = build_proposal(
+            date="2026-11-17", direction="call", strike=5900, occ_symbol="SPXW261117C05900000",
+            entry_time=self.now, hold_cap_minutes=40.0, estimated_premium=1.50, vix=18.0,
+            filters_passed="VIX OK", now=self.now,
+        )
+        self.repo.save(proposal)
+        broker = FakeBroker()
+        decision = ControllerDecision(proposal_id=proposal.proposal_id, kind=DecisionKind.REJECT, decided_by="111")
+
+        process_decisions(
+            self.repo, [decision], broker, quantity=1, position_repo=self.position_repo, now=self.now,
+        )
+        self.assertEqual(self.position_repo.list_open(), [])
+
+    def test_close_position_submits_sell_and_persists(self):
+        proposal = build_proposal(
+            date="2026-11-17", direction="call", strike=5900, occ_symbol="SPXW261117C05900000",
+            entry_time=self.now, hold_cap_minutes=40.0, estimated_premium=1.50, vix=18.0,
+            filters_passed="VIX OK", now=self.now,
+        )
+        self.repo.save(proposal)
+        broker = FakeBroker()
+        decision = ControllerDecision(proposal_id=proposal.proposal_id, kind=DecisionKind.APPROVE, decided_by="111")
+        process_decisions(
+            self.repo, [decision], broker, quantity=1, position_repo=self.position_repo, now=self.now,
+        )
+        position = self.position_repo.list_open()[0]
+
+        result = close_position(
+            self.position_repo, position, broker, exit_price=2.70, exit_reason="target",
+            now=self.now + timedelta(minutes=20),
+        )
+
+        self.assertTrue(result.success)
+        sell_calls = [c for c in broker.calls if c["client_order_id"].endswith("-exit")]
+        self.assertEqual(len(sell_calls), 1)
+        self.assertEqual(self.position_repo.list_open(), [])  # no longer open
+        closed = self.position_repo.get(position.proposal_id)
+        self.assertTrue(closed.is_closed)
+        self.assertEqual(closed.exit_reason, "target")
 
 
 if __name__ == "__main__":

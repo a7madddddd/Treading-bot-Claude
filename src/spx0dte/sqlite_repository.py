@@ -15,6 +15,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Iterator, Optional
 
+from spx0dte.position import OpenPosition
 from spx0dte.proposal import OptionTradeProposal, ProposalApprovalState
 
 _SCHEMA = """
@@ -35,6 +36,22 @@ CREATE TABLE IF NOT EXISTS spx_proposals (
     decided_at TEXT,
     approval_expires_at TEXT,
     expired_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS spx_positions (
+    proposal_id TEXT PRIMARY KEY,
+    occ_symbol TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    quantity INTEGER NOT NULL,
+    strike INTEGER NOT NULL,
+    date TEXT NOT NULL,
+    entry_time TEXT NOT NULL,
+    entry_price REAL NOT NULL,
+    hold_cap_minutes REAL NOT NULL,
+    is_closed INTEGER NOT NULL,
+    exit_time TEXT,
+    exit_price REAL,
+    exit_reason TEXT
 );
 """
 
@@ -105,6 +122,104 @@ class SpxProposalRepository:
             )
             rows = cur.fetchall()
         return [_from_row(r) for r in rows]
+
+
+class SpxPositionRepository:
+    """Separate class, same db file as SpxProposalRepository (shares
+    `_SCHEMA`'s bootstrap) -- a position always exists in reference to
+    an already-persisted proposal, but is its own table/lifecycle
+    (open -> closed once), not a column bolted onto `spx_proposals`."""
+
+    def __init__(self, db_path: str = "spx0dte.sqlite"):
+        self._db_path = db_path
+        with self._connect() as conn:
+            conn.executescript(_SCHEMA)
+
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        conn = sqlite3.connect(self._db_path, timeout=30.0)
+        try:
+            conn.execute("PRAGMA busy_timeout = 30000")
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def save(self, position: OpenPosition) -> None:
+        row = _position_to_row(position)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO spx_positions (
+                    proposal_id, occ_symbol, direction, quantity, strike, date,
+                    entry_time, entry_price, hold_cap_minutes,
+                    is_closed, exit_time, exit_price, exit_reason
+                ) VALUES (
+                    :proposal_id, :occ_symbol, :direction, :quantity, :strike, :date,
+                    :entry_time, :entry_price, :hold_cap_minutes,
+                    :is_closed, :exit_time, :exit_price, :exit_reason
+                )
+                ON CONFLICT(proposal_id) DO UPDATE SET
+                    is_closed=excluded.is_closed,
+                    exit_time=excluded.exit_time,
+                    exit_price=excluded.exit_price,
+                    exit_reason=excluded.exit_reason
+                """,
+                row,
+            )
+
+    def get(self, proposal_id: str) -> Optional[OpenPosition]:
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.execute("SELECT * FROM spx_positions WHERE proposal_id = ?", (proposal_id,))
+            row = cur.fetchone()
+        return _position_from_row(row) if row is not None else None
+
+    def list_open(self) -> list:
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.execute("SELECT * FROM spx_positions WHERE is_closed = 0 ORDER BY entry_time")
+            rows = cur.fetchall()
+        return [_position_from_row(r) for r in rows]
+
+
+def _position_to_row(p: OpenPosition) -> dict:
+    return {
+        "proposal_id": p.proposal_id,
+        "occ_symbol": p.occ_symbol,
+        "direction": p.direction,
+        "quantity": p.quantity,
+        "strike": p.strike,
+        "date": p.date,
+        "entry_time": p.entry_time.isoformat(),
+        "entry_price": p.entry_price,
+        "hold_cap_minutes": p.hold_cap_minutes,
+        "is_closed": 1 if p.is_closed else 0,
+        "exit_time": _dt(p.exit_time),
+        "exit_price": p.exit_price,
+        "exit_reason": p.exit_reason,
+    }
+
+
+def _position_from_row(row: sqlite3.Row) -> OpenPosition:
+    return OpenPosition(
+        proposal_id=row["proposal_id"],
+        occ_symbol=row["occ_symbol"],
+        direction=row["direction"],
+        quantity=row["quantity"],
+        strike=row["strike"],
+        date=row["date"],
+        entry_time=datetime.fromisoformat(row["entry_time"]),
+        entry_price=row["entry_price"],
+        hold_cap_minutes=row["hold_cap_minutes"],
+        is_closed=bool(row["is_closed"]),
+        exit_time=_parse_dt(row["exit_time"]),
+        exit_price=row["exit_price"],
+        exit_reason=row["exit_reason"],
+    )
 
 
 def _dt(value: Optional[datetime]) -> Optional[str]:

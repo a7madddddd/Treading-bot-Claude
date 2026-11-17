@@ -6,20 +6,21 @@ loop: candidate detection (signal + entry_filters) -> live pricing
 (live_pricing, "Option B") -> Telegram proposal (a SEPARATE bot from
 the equity-ladder flow's, see telegram_approval.py's own docstring for
 why) -> Controller decision -> re-priced order submission
-(AlpacaBrokerClient, unmodified). Paper trading only -- no live orders
-anywhere in this file; AlpacaBrokerClient's own paper-only guardrail
-(D-0002) applies unchanged.
+(AlpacaBrokerClient, unmodified) -> position tracking and automatic
+protective exit (live_exit.LiveExitTracker + orchestration.close_position,
+no Controller approval needed for a close, per
+.claude/rules/01-roles-and-authority.md). Paper trading only -- no live
+orders anywhere in this file; AlpacaBrokerClient's own paper-only
+guardrail (D-0002) applies unchanged.
 
 Each tick's actual sequencing lives in `spx0dte.live_loop.run_one_tick`,
 tested independently against fakes (tests/spx0dte/test_live_loop.py).
 This script is a thin runner: construct real clients from env vars,
 call run_one_tick in a real sleep loop, log and notify.
 
-KNOWN GAPS, carried over from D-0095-A, not fixed by this script:
+KNOWN GAP, carried over from D-0095-A, not fixed by this script:
   - No live intraday VIX source -- entry_filters' VIX check runs with
     vix_level=None (its own documented "skip, don't reject" behavior).
-  - No exit/close order submission -- this runner only ever opens
-    positions; closing them is a separate, not-yet-built decision.
 
 Usage (on the Oracle VM, same .env the equity-ladder engine sources):
     cd ~/Treading-bot-Claude && set -a && source .env && set +a && \\
@@ -53,7 +54,7 @@ from spx0dte.alpaca_client import AlpacaOptionsClient  # noqa: E402
 from spx0dte.live_loop import LiveSessionState, run_one_tick  # noqa: E402
 from spx0dte.ratio_calibration import RatioProvider  # noqa: E402
 from spx0dte.sizing import CONTRACTS_PER_TRADE  # noqa: E402
-from spx0dte.sqlite_repository import SpxProposalRepository  # noqa: E402
+from spx0dte.sqlite_repository import SpxPositionRepository, SpxProposalRepository  # noqa: E402
 from spx0dte.telegram_approval import SpxTelegramDecisionSource, send_message  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -97,6 +98,7 @@ def main() -> int:
     options_client = AlpacaOptionsClient(key_id=key_id, secret_key=secret_key)
     ratio_provider = RatioProvider(client=options_client, fred_api_key=fred_key)
     repo = SpxProposalRepository(args.db_path)
+    position_repo = SpxPositionRepository(args.db_path)  # same file, shared schema
 
     decision_source = SpxTelegramDecisionSource.from_env()
 
@@ -133,17 +135,17 @@ def main() -> int:
             try:
                 result = run_one_tick(
                     now=now, options_client=options_client, broker=broker,
-                    ratio_provider=ratio_provider, repo=repo,
+                    ratio_provider=ratio_provider, repo=repo, position_repo=position_repo,
                     pending_decisions=pending_decisions, bot_token=bot_token,
                     chat_id=chat_id, quantity=args.quantity, state=state,
                 )
                 logger.info(
                     "tick: cap=%s new=%d created=%d filter_rej=%d conc_rej=%d "
-                    "decisions=%d submitted=%d expired=%d notes=%s",
+                    "decisions=%d submitted=%d expired=%d monitored=%d closed=%d notes=%s",
                     result.dynamic_cap, result.new_opportunities_seen, result.proposals_created,
                     result.proposals_rejected_by_filter, result.proposals_rejected_by_concurrency,
                     result.decisions_processed, result.orders_submitted, result.proposals_expired,
-                    result.notes,
+                    result.positions_monitored, result.positions_closed, result.notes,
                 )
             except Exception as exc:  # noqa: BLE001 -- a tick must never kill the loop silently
                 logger.exception("tick failed: %s", exc)
