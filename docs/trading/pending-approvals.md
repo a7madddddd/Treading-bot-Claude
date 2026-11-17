@@ -5360,6 +5360,20 @@ that debunked the volume filter. 1 new test, full suite 2040 passed.
 Not yet run against real data -- needs the VM/network/credentials.
 Full details: `docs/trading/decisions.md` D-0095-A's latest entry.
 
+**UPDATE 2026-11-17 -- RESULT IN, CONTROLLER DECISION NEEDED:**
+Controller ran the tool on the VM, 2025-06-01 to 2025-12-31 (153
+weekdays, 0 skips). Cross-market confirmation shows real
+discriminating power -- opposite of the volume-filter finding:
+- would-have-REJECTED subset: n=579, profit_factor=0.895 (net loser)
+- would-have-PASSED subset: n=338, profit_factor=2.1282 (strong winner)
+
+RECOMMENDATION: wire `cross_market_confirmed` into
+`entry_filters.run_all_filters`. **This changes which signals reach
+execution, so it is NOT pushed/applied without explicit Controller
+approval** (push policy, `.claude/rules/05-change-tracking.md`).
+Full numbers and reasoning: `docs/trading/decisions.md` D-0095-A,
+"Cross-market confirmation measurement RESULT".
+
 Still carried forward, not fixed, not forgotten:
 - No live intraday VIX source -- the VIX entry filter runs effectively
   disabled (`vix_level=None`, its own documented graceful-skip

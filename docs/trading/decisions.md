@@ -8188,3 +8188,46 @@ NEXT: Controller runs it on the VM over a real historical range;
 result decides whether cross-market confirmation gets wired into
 `entry_filters.run_all_filters` or logged as another measured-but-
 not-useful filter, same disposition as volume.
+
+### Cross-market confirmation measurement RESULT -- real discriminating power found, 2026-11-17
+
+Controller ran `scripts/spx0dte_measure_cross_market.py` on the VM,
+2025-06-01 to 2025-12-31 (153 weekdays, 0 fetch/data skips):
+
+```
+would_have_REJECTED by cross-market: n=579  total_pnl=-84.71  win_rate=27.81%  expectancy=-0.1463  profit_factor=0.895
+would_have_PASSED   by cross-market: n=338  total_pnl=+356.33 win_rate=42.01%  expectancy=+1.0542  profit_factor=2.1282
+```
+
+**FACT.** The subset cross-market confirmation would have rejected
+is a net LOSER on its own (profit_factor 0.895, i.e. for every
+$1.00 of losses it only returned $0.895 of gains -- expectancy
+-$0.1463/trade). The subset it would have passed is a strong winner
+(profit_factor 2.1282, expectancy +$1.0542/trade, nearly 2.4x the
+unconditional per-trade number anywhere else measured in D-0095).
+This is the OPPOSITE finding from the volume filter (D-0095), where
+the rejected subset performed about the same as the passed subset --
+here the two subsets are clearly different populations: n=579 vs
+n=338 is not a thin single-trade-dominated sample either, so this is
+not the same "too few trades to trust" caveat that sank an earlier
+pass at `volume_confirmed`.
+
+**RECOMMENDATION.** Wire `cross_market_confirmed` into
+`entry_filters.run_all_filters`. This is a real filter-pipeline
+change -- it changes which signals reach execution, so it requires
+explicit Controller approval before being wired in, per
+`.claude/rules/01-roles-and-authority.md` and the push policy in
+`.claude/rules/05-change-tracking.md` (a trading-behavior change is
+never pushed/applied before approval, even though the measurement
+tool itself was already pushed).
+
+**What would change this recommendation:** a second independent
+period (e.g. a different 6-12 month window, or out-of-sample data
+once more accumulates) showing the gap close or reverse -- same
+discipline D-0095 already applied to the SPY:SPX ATR band and to
+`volume_confirmed` itself, both of which were narrowed/dropped only
+after a SECOND independent measurement disagreed with the first.
+One period alone, however clean, is a FACT about that period, not
+yet a generalizable one.
+
+STATUS: measured, NOT yet wired in -- awaiting Controller approval.
