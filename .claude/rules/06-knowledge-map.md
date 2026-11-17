@@ -59,7 +59,16 @@ instead.**
   `exit_logic.simulate_exit`'s rules, fed live re-priced estimates).
   Automatic, no Controller approval needed (protective exit, per
   `.claude/rules/01-roles-and-authority.md`). All 4 of D-0095-A's
-  original open items are now built and tested
+  original open items are now built and tested. VERIFIED on the VM
+  with a 2-hour real-market dry run, 2026-11-17 (signal/pricing path
+  only; no trade fired)
+- `scripts/spx0dte_measure_cross_market.py` — measures whether
+  `entry_filters.cross_market_confirmed` (QQQ/IWM agreement) has real
+  discriminating power, same "tag, don't enforce, compare subsets"
+  method that debunked the volume filter in D-0095. Built, not yet
+  run. First of three Controller-selected improvement workstreams
+  (signal quality / risk+sizing / market context) before permanent
+  deployment
 - `tests/spx0dte/` — unit tests for all of the above (all against fakes,
   no real network/broker calls)
 - `docs/trading/decisions.md` D-0095 / D-0095-A — full design, every

@@ -42,6 +42,14 @@ class TestAlpacaOptionsClientGet(unittest.TestCase):
         self.assertEqual(len(bars), 1)
         self.assertEqual(bars[0]["c"], 500.0)
 
+    def test_successful_stock_minute_bars_for_other_symbols(self):
+        transport = FakeTransport([(200, {"bars": {"QQQ": [{"t": "2026-01-02T14:30:00Z", "c": 400.0}]}})])
+        client = AlpacaOptionsClient(key_id="k", secret_key="s", http_transport=transport)
+        bars = client.get_stock_minute_bars("QQQ", "2026-01-02")
+        self.assertEqual(len(bars), 1)
+        self.assertEqual(bars[0]["c"], 400.0)
+        self.assertIn("symbols=QQQ", transport.calls[0][1])
+
     def test_successful_spy_daily_bars(self):
         transport = FakeTransport([(200, {"bars": {"SPY": [
             {"t": "2026-01-02T00:00:00Z", "c": 500.0},

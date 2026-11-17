@@ -85,9 +85,20 @@ class AlpacaOptionsClient:
     # ---- public API -----------------------------------------------------
 
     def get_spy_minute_bars(self, date: str) -> List[dict]:
-        """SPY 1-minute bars for `date` (YYYY-MM-DD), market hours
-        only. Returns an empty list on a weekend/holiday (no data),
-        raises AlpacaDataError on a genuine fetch failure.
+        """SPY 1-minute bars for `date` (YYYY-MM-DD). Thin wrapper
+        around `get_stock_minute_bars` -- kept as its own method
+        since SPY is the ORB+VWAP signal's own underlying and every
+        existing caller already names it explicitly; new callers that
+        need a different symbol (e.g. QQQ/IWM for cross-market
+        confirmation measurement) should call `get_stock_minute_bars`
+        directly rather than adding more SPY-shaped wrappers."""
+        return self.get_stock_minute_bars("SPY", date)
+
+    def get_stock_minute_bars(self, symbol: str, date: str) -> List[dict]:
+        """1-minute bars for any stock `symbol` (e.g. "SPY", "QQQ",
+        "IWM") on `date` (YYYY-MM-DD), market hours only. Returns an
+        empty list on a weekend/holiday (no data), raises
+        AlpacaDataError on a genuine fetch failure.
 
         `feed=iex` is required for RECENT/today's data: Alpaca's
         default feed is SIP, which this account's free Basic tier
@@ -100,12 +111,11 @@ class AlpacaOptionsClient:
         (D-0095-A's manual verification, 2026-11-16: HTTP 403
         "subscription does not permit querying recent SIP data")."""
         qs = urllib.parse.urlencode({
-            "symbols": "SPY", "timeframe": "1Min", "feed": "iex",
+            "symbols": symbol, "timeframe": "1Min", "feed": "iex",
             "start": f"{date}T00:00:00Z", "end": f"{date}T23:59:59Z", "limit": 1000,
         })
         body = self._get(f"/v2/stocks/bars?{qs}")
-        bars = body.get("bars", {}).get("SPY", [])
-        return bars
+        return body.get("bars", {}).get(symbol, [])
 
     def get_spy_daily_bars(self, start_date: str, end_date: str) -> List[dict]:
         """SPY 1-day bars between `start_date`/`end_date` (YYYY-MM-DD,

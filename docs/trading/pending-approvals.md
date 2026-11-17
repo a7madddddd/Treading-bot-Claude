@@ -5327,16 +5327,49 @@ Full details: `docs/trading/decisions.md` D-0095-A's latest entry.
 
 **All 4 of the original open items are now built and tested.**
 
+**UPDATE 2026-11-17 -- manual 2-hour real-market dry run on the VM:**
+Controller ran `run_spx0dte_session.py` by hand in the background
+(`nohup ... & disown`) during real market hours. Market-open/closed
+gating, the startup Telegram notice, and 2 hours of error-free ticks
+all confirmed working; day-pace cap locked normally; no breakout fired
+in this particular window (expected given the backtested rate, not a
+bug). Still not exercised live: a proposal actually going through
+Approve -> submission -> exit.
+
+Controller reviewed the result and explicitly said this version is
+too simple to run unattended against real, experienced market
+participants, and asked to develop it further before any permanent
+deployment. Chose, via `AskUserQuestion`, to improve ALL THREE of:
+signal quality, risk/sizing management, and broader market context --
+agreed to start with signal quality since it was cheapest to act on
+first (a filter already built but never measured).
+
+**UPDATE 2026-11-17 -- cross-market-confirmation measurement tool
+built (signal-quality workstream, item 1):**
+`entry_filters.cross_market_confirmed` was built under D-0095 but
+never measured against real data -- same situation `volume_confirmed`
+was in before being measured and dropped. Added
+`AlpacaOptionsClient.get_stock_minute_bars(symbol, date)` (generic
+version; `get_spy_minute_bars` now a thin wrapper, no behavior change)
+so QQQ/IWM bars can be fetched. Built
+`scripts/spx0dte_measure_cross_market.py`: runs the locked pipeline,
+tags each trade with what cross-market confirmation would have
+decided without enforcing it, reports the would-reject vs would-pass
+subsets' pnl/win-rate/profit-factor separately -- same methodology
+that debunked the volume filter. 1 new test, full suite 2040 passed.
+Not yet run against real data -- needs the VM/network/credentials.
+Full details: `docs/trading/decisions.md` D-0095-A's latest entry.
+
 Still carried forward, not fixed, not forgotten:
 - No live intraday VIX source -- the VIX entry filter runs effectively
   disabled (`vix_level=None`, its own documented graceful-skip
   behavior) until one is found.
-- Not yet deployed/started on the VM -- the systemd units exist in the
-  repo (`trading-engine.service`'s sibling, `spx0dte-session.service`)
-  but have not been installed or enabled there yet.
+- Not yet deployed/started on the VM as a systemd unit -- only run
+  manually via `nohup` so far.
 - No polling for the entry order's actual fill price -- positions are
   opened at the submitted limit price, not a confirmed fill.
-- `scripts/spx0dte_verify_order.py`'s original one-time manual test
-  (D-0095-A, 2026-11-16) verified a single entry order; the full
-  entry-approve-exit chain has not yet had an end-to-end real-VM
-  dry run.
+- The full entry-approve-exit chain has not yet had an end-to-end
+  real-VM dry run (only entry-side and signal-detection paths
+  exercised live so far).
+- Risk/sizing and market-context improvements (both Controller-
+  selected priorities) not yet started.

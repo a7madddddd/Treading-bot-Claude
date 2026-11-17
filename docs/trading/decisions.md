@@ -8131,3 +8131,60 @@ not a confirmed fill -- a reasonable approximation since the exit
 tracker is self-consistent against whichever baseline it starts
 from, but not the same as a confirmed fill); not yet deployed/started
 on the VM; no live intraday VIX source.
+
+### Manual real-market dry run on the VM, 2026-11-17 -- clean, no signal fired
+
+Controller ran `scripts/run_spx0dte_session.py` by hand on the VM
+(not yet the systemd unit), in the background via `nohup ... & disown`
+(the shell tool used for the test has no `tmux`/`screen` installed,
+and a foreground run died on an SSH disconnect once already).
+Confirmed working end to end during real market hours:
+- Alpaca `is_market_open()` correctly gated the loop (slept through
+  pre-market, started ticking once the market opened).
+- The startup Telegram notice (`send_message`) reached the
+  Controller's phone -- confirms the separate SPX bot is correctly
+  configured and reachable.
+- 2 continuous hours of real ticks, zero exceptions, day-pace cap
+  correctly locked at the base 40.0 minutes (a normal-paced day) and
+  held for the rest of the run.
+- No breakout opportunity fired during this particular 2-hour window
+  (`new=0` every tick) -- consistent with the backtest's own
+  measured rate (~1-2 real trades/day after filters, not a signal
+  every tick), not a bug.
+
+**Still open:** no proposal has yet been seen through Approve ->
+submission -> exit in a real run -- only the pipeline up to signal
+detection has been exercised live so far.
+
+### Cross-market confirmation measurement tool built, 2026-11-17
+
+Controller, after reviewing the three improvement directions
+(signal quality / risk+sizing / market context) and picking all
+three, asked to start with measuring `entry_filters.
+cross_market_confirmed` -- built under D-0095 but never measured
+against real data, the exact situation `volume_confirmed` was in
+before being measured and dropped.
+
+Added `AlpacaOptionsClient.get_stock_minute_bars(symbol, date)` (a
+generic version of `get_spy_minute_bars`, which now wraps it for
+"SPY" -- no behavior change for existing callers, confirmed by the
+unchanged existing tests plus one new test for the generic path).
+Needed because cross-market confirmation requires QQQ/IWM bars,
+which the SPY-only method couldn't fetch.
+
+Built `scripts/spx0dte_measure_cross_market.py`: runs the exact
+locked pipeline (signal -> filters minus cross-market -> `exit_logic.
+simulate_exit` with the day-pace cap) on real historical (past,
+already-completed) days, tagging each trade with what cross-market
+confirmation WOULD have decided without enforcing it -- same
+methodology as the volume-filter measurement that led to D-0095's
+"drop it" finding. Reports the would-reject vs would-pass subsets'
+pnl/win-rate/profit-factor separately.
+
+1 new test (`get_stock_minute_bars`). Full suite: 2040 passed, zero
+regressions. Syntax-checked, not yet run. Sent to the Controller.
+
+NEXT: Controller runs it on the VM over a real historical range;
+result decides whether cross-market confirmation gets wired into
+`entry_filters.run_all_filters` or logged as another measured-but-
+not-useful filter, same disposition as volume.
