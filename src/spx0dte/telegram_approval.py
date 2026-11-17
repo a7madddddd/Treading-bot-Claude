@@ -106,6 +106,23 @@ def _urllib_post_json(url: str, payload: dict, timeout: float) -> Tuple[int, byt
         return exc.code, resp_body
 
 
+def send_message(*, bot_token: str, chat_id: str, text: str, timeout: float = 10.0) -> bool:
+    """Sends a plain text message, no inline keyboard -- for
+    operational notices (session start/stop, a tick-loop error) that
+    aren't a proposal. Same never-raises contract as
+    send_proposal_message."""
+    url = f"{_TELEGRAM_API_BASE}/bot{bot_token}/sendMessage"
+    try:
+        status, _ = _urllib_post_json(url, {"chat_id": chat_id, "text": text}, timeout)
+    except (urllib.error.URLError, socket.timeout, ConnectionError, TimeoutError) as ex:
+        logger.warning("SPX Telegram send failed (network error): %s", ex)
+        return False
+    if not (200 <= status < 300):
+        logger.warning("SPX Telegram send failed: HTTP %s", status)
+        return False
+    return True
+
+
 def send_proposal_message(
     *, bot_token: str, chat_id: str, text: str, proposal_id: str,
     timeout: float = 10.0,

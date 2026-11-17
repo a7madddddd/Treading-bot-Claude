@@ -8010,3 +8010,57 @@ zero regressions.
 **Still open:** no unattended loop calls any of this yet (the "no
 unattended running process" item from D-0095-A's original open-items
 list is unchanged); no exit/close pricing or submission exists.
+
+### Unattended loop built (item 3 of 4), 2026-11-17
+
+New `src/spx0dte/live_loop.py`: `run_one_tick()` holds the actual
+sequencing (lock in the day's pace cap once per day, detect new
+breakout opportunities via `signal.find_breakout_opportunities`,
+dedupe against ones already seen that day, run filters, check
+`ConcurrentPositionTracker` admission, build+notify a live-priced
+proposal via `orchestration.build_live_proposal`, apply any pending
+Controller decisions with live re-pricing via
+`orchestration.process_decisions`, expire stale pending proposals) --
+testable without a real clock/network/Telegram, same split already
+used by `TelegramDecisionSource._process_one_batch` vs `._run`.
+
+Two gaps carried forward explicitly, not fixed here:
+1. No live intraday VIX source exists -- `entry_filters.
+   vix_in_tradeable_range` is called with `vix_level=None`, which its
+   own design already treats as "skip this filter, don't reject"
+   (FRED's VIXCLS series is daily-only, same limitation ratio
+   calibration already works around for SP500 -- but there, daily is
+   enough; a trading filter needs intraday).
+2. Concurrency bookkeeping uses each candidate's PLANNED exit time
+   (entry + that day's dynamic cap) to reserve a `ConcurrentPositionTracker`
+   slot, since no automated exit/close exists yet (item 4, still
+   open) -- a real exit via target/stop/stall would free the slot
+   earlier, making this conservative (under-admits), never permissive.
+
+`scripts/run_spx0dte_session.py`: thin runner (construct real clients
+from env, call `run_one_tick` in a real sleep loop, log, notify
+session start/stop/errors via a new `telegram_approval.send_message`
+helper for plain operational notices). SIGINT/SIGTERM stop gracefully
+after the current tick. `--max-hours 87600` (effectively unlimited,
+same convention as `run_paper_session.py`) because the loop already
+sleeps through closed-market hours rather than exiting -- systemd's
+`Restart=always` is the real restart mechanism, not the cap.
+
+`deploy/spx0dte-run.sh` / `deploy/spx0dte-session.service`: a SEPARATE
+systemd user unit from `trading-engine.service`, mirroring its own
+documented SELinux/logging/restart reasoning exactly rather than
+re-deriving it. Deliberately two independent units (not two threads
+in one process) so a crash or restart in one can never touch the
+other -- consistent with the separate-bot-token reasoning already
+recorded for why these two flows must stay isolated.
+
+Added `SPX_TELEGRAM_CHAT_ID` to `.env.example` (name only) -- the
+runner needs a destination chat id, which `.env.example` didn't yet
+have alongside the token/admin-ids added earlier.
+
+6 new tests (`test_live_loop.py`) plus 2 for the new `send_message`
+helper, all against fakes/mocks. Full suite: 2010 passed, zero
+regressions.
+
+**Remaining open item: exit/close order submission (item 4 of 4) --
+this runner only ever opens positions.**

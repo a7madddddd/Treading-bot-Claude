@@ -41,8 +41,19 @@ instead.**
   `execution.py`, `orchestration.py` — entry-only execution wiring
   (D-0095-A): separate Telegram bot (`SPX_TELEGRAM_BOT_TOKEN`), separate
   `spx0dte.sqlite` file, reuses `execution.broker_client.BrokerClient`
-  unchanged. No exit/close submission yet, no unattended loop yet, no
-  real-paper-order test done yet — see D-0095-A "Not yet done"
+  unchanged. VERIFIED against the real paper account (D-0095-A,
+  2026-11-16). No exit/close submission yet — see D-0095-A "Not yet done"
+- `src/spx0dte/ratio_calibration.py` — self-measuring SPY:SPX ratio
+  (FRED SP500 vs Alpaca SPY), replaces a hardcoded constant that drifted
+  +11.82%
+- `src/spx0dte/greeks.py`, `live_pricing.py` — "Option B" for the
+  live-entry-vs-15-minute-options-delay problem: Black-Scholes reprice
+  from a stale quote, validated against 128 real samples (median 3.8%
+  error) before being wired in
+- `src/spx0dte/live_loop.py`, `scripts/run_spx0dte_session.py`,
+  `deploy/spx0dte-session.service` — the unattended loop (a SEPARATE
+  systemd unit from `trading-engine.service`, own bot, own SQLite file).
+  Not yet deployed/started on the VM
 - `tests/spx0dte/` — unit tests for all of the above (all against fakes,
   no real network/broker calls)
 - `docs/trading/decisions.md` D-0095 / D-0095-A — full design, every

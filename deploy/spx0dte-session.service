@@ -1,0 +1,49 @@
+# SPX 0DTE unattended session (D-0095-A, item 3: the unattended loop).
+#
+# THIS IS A USER UNIT. Install to ~/.config/systemd/user/, NOT to
+# /etc/systemd/system/. See deploy/README.md and trading-engine.service
+# for the full SELinux reasoning (init_t vs user_home_t) -- identical
+# here, not repeated.
+#
+# A SEPARATE unit from trading-engine.service, on purpose: this
+# process uses its own Telegram bot (SPX_TELEGRAM_BOT_TOKEN) and its
+# own SQLite file (spx0dte.sqlite) specifically so the two never
+# interact -- see telegram_approval.py's module docstring for why
+# sharing a bot token between two independent long-pollers would
+# corrupt both (the getUpdates offset is per-token, not per-consumer).
+# Running them as two independent systemd units, not threads inside
+# one process, keeps a crash or restart in one from ever touching the
+# other.
+
+[Unit]
+Description=SPX 0DTE unattended session (D-0095-A)
+After=network-online.target
+Wants=network-online.target
+
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Treading-bot-Claude
+ExecStart=%h/Treading-bot-Claude/deploy/spx0dte-run.sh
+
+# Restart=always, not on-failure -- same reasoning as
+# trading-engine.service: a --max-hours cap expiry exits status 0,
+# which Restart=on-failure would treat as success and never restart.
+Restart=always
+
+# No engine-lock-style stale-heartbeat concern exists for this
+# process (it holds no cross-restart lock file), so there is no
+# equivalent of trading-engine.service's RestartSec=310 wait-out
+# requirement. A short restart delay is enough to avoid a tight crash
+# loop without leaving a real outage unattended for minutes.
+RestartSec=30
+
+# Logging to a FILE, not the journal -- same reasoning as
+# trading-engine.service (the journal is unreadable on this VM).
+#   tail -f ~/Treading-bot-Claude/logs/spx0dte.log
+StandardOutput=append:%h/Treading-bot-Claude/logs/spx0dte.log
+StandardError=append:%h/Treading-bot-Claude/logs/spx0dte.log
+
+[Install]
+WantedBy=default.target

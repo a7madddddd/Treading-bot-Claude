@@ -3,7 +3,7 @@ import unittest
 
 from spx0dte.telegram_approval import (
     ControllerDecision, DecisionKind, SpxTelegramDecisionSource,
-    TelegramConfigError, send_proposal_message,
+    TelegramConfigError, send_message, send_proposal_message,
 )
 
 
@@ -44,6 +44,32 @@ class TestSendProposalMessage(unittest.TestCase):
         mod._urllib_post_json = poster
         try:
             ok = send_proposal_message(bot_token="t", chat_id="123", text="hi", proposal_id="SPX-1")
+        finally:
+            mod._urllib_post_json = orig
+        self.assertFalse(ok)
+
+
+class TestSendMessage(unittest.TestCase):
+    def test_success_no_inline_keyboard(self):
+        poster = FakePost(status=200)
+        import spx0dte.telegram_approval as mod
+        orig = mod._urllib_post_json
+        mod._urllib_post_json = poster
+        try:
+            ok = send_message(bot_token="t", chat_id="123", text="session started")
+        finally:
+            mod._urllib_post_json = orig
+        self.assertTrue(ok)
+        _, payload, _ = poster.calls[0]
+        self.assertNotIn("reply_markup", payload)
+
+    def test_failure_status_returns_false(self):
+        poster = FakePost(status=500)
+        import spx0dte.telegram_approval as mod
+        orig = mod._urllib_post_json
+        mod._urllib_post_json = poster
+        try:
+            ok = send_message(bot_token="t", chat_id="123", text="x")
         finally:
             mod._urllib_post_json = orig
         self.assertFalse(ok)

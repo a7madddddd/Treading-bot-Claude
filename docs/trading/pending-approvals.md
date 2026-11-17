@@ -5277,17 +5277,44 @@ confirming `AlpacaBrokerClient.submit_order()` works unmodified for
 options, exactly as the analytical "digits aren't cased characters"
 finding predicted.
 
-REMAINING OPEN ITEMS (unchanged in kind, all explicitly deferred, not
-forgotten):
-1. No unattended running process yet -- `orchestration.py`'s functions
-   exist to be called, nothing calls them on a loop/schedule yet.
-2. Exit/close order submission is explicitly out of scope for this
-   item -- a separate future decision.
-3. A live signal's `entry_time` is always "now", which the strike
-   search cannot dodge the way the manual test did (looking into the
-   past) -- needs its own design answer before any unattended loop is
-   built (see D-0095-A's "Material finding for future live wiring").
-4. `APPROX_SPY_TO_SPX_RATIO` (8.97) appears to have drifted further
-   (a found strike was 665 points from the estimate during
-   verification) -- due for a fresh measurement, though the
-   coarse-then-fine search already tolerates this by design.
+**UPDATE 2026-11-17 -- 3 of the 4 original open items closed, in order:**
+
+1. ~~`APPROX_SPY_TO_SPX_RATIO` hardcoded, drifted +11.82%~~ -- REMOVED
+   entirely (not just updated), replaced by `ratio_calibration.RatioProvider`,
+   which measures from real data (FRED SP500 vs Alpaca SPY) and
+   caches/falls-back to the last real measurement, never a hardcoded
+   guess (one documented bootstrap exception).
+2. ~~live signal's `entry_time` is always "now" vs the 15-minute
+   options-data delay~~ -- SOLVED via "Option B": `greeks.py`
+   (Black-Scholes + implied-volatility solver) +
+   `live_pricing.get_live_entry_quote()`/`reprice_known_symbol()`
+   (live SPY price, stale-quote-derived implied vol, re-priced at the
+   live moment). Validated against 128 real historical samples before
+   being trusted: median 3.8% error, with a measured directional bias
+   corrected in the wiring (`MEASURED_BIAS_PCT`), not an arbitrary
+   safety margin.
+3. ~~no unattended running process~~ -- BUILT: `live_loop.py` +
+   `scripts/run_spx0dte_session.py` + a separate systemd unit
+   (`deploy/spx0dte-session.service`, its own bot token, its own
+   SQLite file, never sharing state with `trading-engine.service`).
+
+Full chain now exists end to end: live candidate detection -> live
+pricing -> Telegram proposal -> Controller decision -> re-priced
+order submission. Full details and every number: `docs/trading/decisions.md`
+D-0095-A's later entries (2026-11-17).
+
+**REMAINING OPEN ITEM (4 of 4):**
+Exit/close order submission is explicitly out of scope for everything
+built so far -- the live loop only ever OPENS positions. A real exit
+via target/stop/stall/time-cap (already designed in `exit_logic.py`
+and validated extensively in backtest) has no order-submission path
+yet. This is the last piece before the module could respon­sibly run
+unattended for a full session without the Controller manually closing
+every position.
+
+Also carried forward, not fixed, not forgotten:
+- No live intraday VIX source -- the VIX entry filter runs effectively
+  disabled (`vix_level=None`, its own documented graceful-skip
+  behavior) until one is found.
+- Not yet deployed/started on the VM -- the systemd unit exists in the
+  repo but has not been installed or enabled there yet.
