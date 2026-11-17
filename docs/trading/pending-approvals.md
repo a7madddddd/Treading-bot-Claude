@@ -5374,6 +5374,13 @@ approval** (push policy, `.claude/rules/05-change-tracking.md`).
 Full numbers and reasoning: `docs/trading/decisions.md` D-0095-A,
 "Cross-market confirmation measurement RESULT".
 
+**CONTROLLER DECISION 2026-11-17: second independent period required
+before activation.** Chosen window: 2024-12-01 to 2025-05-31
+(non-overlapping with the already-measured 2025-06-01..2025-12-31).
+Run command and the decision rule for the combined result:
+`docs/trading/decisions.md` D-0095-A, "second independent measurement
+period required before activation". STATUS: awaiting that run.
+
 Still carried forward, not fixed, not forgotten:
 - No live intraday VIX source -- the VIX entry filter runs effectively
   disabled (`vix_level=None`, its own documented graceful-skip

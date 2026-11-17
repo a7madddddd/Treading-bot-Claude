@@ -8231,3 +8231,29 @@ One period alone, however clean, is a FACT about that period, not
 yet a generalizable one.
 
 STATUS: measured, NOT yet wired in -- awaiting Controller approval.
+
+### Controller decision, 2026-11-17: second independent measurement period required before activation
+
+Controller declined to wire in `cross_market_confirmed` on this one
+period alone and asked for an independent second measurement first --
+same discipline already applied to the SPY:SPX ATR band (D-0065) and
+to `volume_confirmed`, both only narrowed/dropped after a second
+period disagreed with (or confirmed) the first.
+
+Chosen second window: **2024-12-01 to 2025-05-31** (6 months,
+immediately PRECEDING the already-measured 2025-06-01..2025-12-31
+window, zero date overlap with it). Run with the same tool, no code
+change needed (`--start`/`--end` already parameterized):
+
+    cd ~/Treading-bot-Claude && set -a && source .env && set +a && \
+    PYTHONPATH=src python3.11 scripts/spx0dte_measure_cross_market.py --start 2024-12-01 --end 2025-05-31
+
+DECISION RULE for the combined result (both periods now measured):
+- Both periods show the rejected subset performing clearly worse
+  (same direction as 2025 H2) -> wire `cross_market_confirmed` into
+  `entry_filters.run_all_filters`, record a dated APPLY entry here.
+- The two periods disagree, or the second period shows no real gap
+  -> do NOT wire it in; record the disagreement here as a finding,
+  same disposition `volume_confirmed` got.
+
+STATUS: awaiting the second measurement run.
