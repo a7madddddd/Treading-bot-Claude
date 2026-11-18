@@ -18,6 +18,43 @@ Uses only PAST, already-completed trading days (no live/recency
 restriction concern) -- this is historical measurement, not a live
 run.
 
+### BUG FOUND AND FIXED, 2026-11-17 -- the first run of this script
+had a real lookahead problem, found while reviewing the code to
+answer a Controller question, not by a test failing.
+
+`get_stock_minute_bars` fetches a WHOLE trading day's bars once per
+date and the loop below reused that same array, unmodified, for
+EVERY opportunity found that day. `cross_market_confirmed`'s own
+bias check uses the LAST bar of whatever array it is given
+(`bars[-1]["c"]`) as "the current price" -- so for an opportunity at
+10:15am, the first run was comparing it against QQQ/IWM's 4:00pm
+closing price, information that did not exist yet at 10:15am. This
+is look-ahead bias: the first run's reported profit_factor numbers
+(0.895 vs 2.1282, then 0.5493 vs 2.3142) may be contaminated by it,
+and should not be trusted as-is.
+
+This does NOT affect the live loop (`live_loop.run_one_tick`):
+fetching "today" bars from a live account only ever returns bars up
+to the real current moment, since future bars don't exist yet --
+the bug is specific to reusing a full HISTORICAL day's bars across
+every opportunity in this offline script.
+
+Fixed here by truncating qqq_bars/iwm_bars to only the bars at or
+before each opportunity's own `entry_time` (`_bars_up_to`) before
+calling `cross_market_confirmed` -- i.e. "Method 3" from the
+Controller's own request: synchronize the comparison window to the
+moment of the signal, not to the end of the day.
+
+Also adds a second, independent probe ("Method 2"): among trades the
+(now correctly time-synchronized) filter would PASS, how strong was
+the QQQ/IWM confirmation -- measured as the move away from the
+opening-range midpoint, normalized by that day's own opening-range
+width (a volatility proxy that needs no extra data source)? Trades
+are split into data-derived TERCILES of that strength (not an
+arbitrary chosen cutoff), so the comparison is "does a stronger
+confirmation predict a better trade" rather than "pick a threshold
+and see if it works."
+
 Run on the VM where the real .env is loaded:
 
   cd ~/Treading-bot-Claude && set -a && source .env && set +a && \\
@@ -42,6 +79,41 @@ from spx0dte.signal import find_breakout_opportunities  # noqa: E402
 
 def _bars_to_signal_series(bars: list) -> list:
     return [{"datetime": b["t"], "spx": b["c"]} for b in bars]
+
+
+def _parse_bar_time(bar: dict) -> datetime:
+    return datetime.fromisoformat(bar["t"].replace("Z", "+00:00"))
+
+
+def _bars_up_to(bars: list, cutoff: datetime) -> list:
+    """Only bars at or before `cutoff` -- the fix for the lookahead
+    bug: a historical day's bars include times after any given
+    opportunity, and nothing in this module may use them for that
+    opportunity's own filter decision."""
+    return [b for b in bars if _parse_bar_time(b) <= cutoff]
+
+
+def _confirmation_strength(qqq_bars: list, iwm_bars: list, opening_range_minutes: int = 15) -> float:
+    """Average, across QQQ and IWM, of how far the latest (already
+    time-synchronized) price sits from that symbol's own
+    opening-range midpoint, normalized by that day's opening-range
+    width -- e.g. 1.0 means the move was as wide as the whole first
+    15 minutes' range. Returns 0.0 if either symbol's range is zero
+    or data is too thin (caller should not use this on a trade with
+    `cm.passed is False`, since sign isn't checked here)."""
+    def _strength(bars: list) -> float:
+        if len(bars) < 2:
+            return 0.0
+        orb_bars = bars[:max(1, opening_range_minutes)]
+        hi = max(b["c"] for b in orb_bars)
+        lo = min(b["c"] for b in orb_bars)
+        width = hi - lo
+        if width <= 0:
+            return 0.0
+        mid = (hi + lo) / 2
+        return abs(bars[-1]["c"] - mid) / width
+
+    return (_strength(qqq_bars) + _strength(iwm_bars)) / 2
 
 
 def daterange(start: str, end: str):
@@ -92,6 +164,8 @@ def main() -> None:
 
     would_reject_pnls: list = []
     would_pass_pnls: list = []
+    # (pnl, confirmation_strength) for the would-pass subset, for the Method-2 tercile probe
+    would_pass_with_strength: list = []
     skip_notes = 0
 
     for i, date in enumerate(dates):
@@ -154,9 +228,14 @@ def main() -> None:
 
             pnl = result.exit_price - entry_price
 
-            cm = cross_market_confirmed(entry.direction, qqq_bars, iwm_bars)
+            # Fix for the lookahead bug: only bars up to this opportunity's
+            # own entry_time, never the rest of the historical day.
+            qqq_sync = _bars_up_to(qqq_bars, entry.entry_time)
+            iwm_sync = _bars_up_to(iwm_bars, entry.entry_time)
+            cm = cross_market_confirmed(entry.direction, qqq_sync, iwm_sync)
             if cm.passed:
                 would_pass_pnls.append(pnl)
+                would_pass_with_strength.append((pnl, _confirmation_strength(qqq_sync, iwm_sync)))
             else:
                 would_reject_pnls.append(pnl)
 
@@ -164,7 +243,7 @@ def main() -> None:
             print(f"  ...{i + 1}/{len(dates)} dates processed")
 
     print(f"\nFetch/data skips: {skip_notes}")
-    print("\n=== RESULT ===")
+    print("\n=== RESULT (time-synchronized, lookahead bug fixed) ===")
     summarize("would_have_REJECTED by cross-market", would_reject_pnls)
     summarize("would_have_PASSED by cross-market", would_pass_pnls)
     print(
@@ -173,6 +252,26 @@ def main() -> None:
         "\nconclusion as the volume filter) -- record either way in"
         "\ndocs/trading/decisions.md before deciding whether to wire it in."
     )
+
+    print("\n=== METHOD 2 PROBE: does confirmation STRENGTH predict better, among the would-PASS subset? ===")
+    if len(would_pass_with_strength) < 9:
+        print(f"  n={len(would_pass_with_strength)} too thin to split into terciles -- skipped.")
+    else:
+        ranked = sorted(would_pass_with_strength, key=lambda pair: pair[1])
+        third = len(ranked) // 3
+        weak = [pnl for pnl, _ in ranked[:third]]
+        mid = [pnl for pnl, _ in ranked[third:2 * third]]
+        strong = [pnl for pnl, _ in ranked[2 * third:]]
+        summarize("weakest tercile of confirmation strength", weak)
+        summarize("middle tercile of confirmation strength", mid)
+        summarize("strongest tercile of confirmation strength", strong)
+        print(
+            "\nIf profit_factor climbs weak -> mid -> strong, confirmation"
+            "\nSTRENGTH (not just sign) adds real information -- evidence for"
+            "\na magnitude-based version of this filter. If it's flat or"
+            "\nnoisy, the sign-only version already captures the signal and"
+            "\na magnitude threshold would only be added complexity."
+        )
 
 
 if __name__ == "__main__":

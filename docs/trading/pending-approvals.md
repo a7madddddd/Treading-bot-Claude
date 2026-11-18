@@ -5379,7 +5379,35 @@ before activation.** Chosen window: 2024-12-01 to 2025-05-31
 (non-overlapping with the already-measured 2025-06-01..2025-12-31).
 Run command and the decision rule for the combined result:
 `docs/trading/decisions.md` D-0095-A, "second independent measurement
-period required before activation". STATUS: awaiting that run.
+period required before activation".
+
+**SUPERSEDED BELOW -- do not treat as resolved.** Second period
+agreed with the first (rejected subset profit_factor 0.5493 vs
+passed subset 2.3142, n=443/256), the wiring code was written, but
+it was **never pushed** (still pending explicit Controller push
+approval) -- and that held, because a review of the methodology
+found a real lookahead bug in the measurement itself.
+
+**REOPENED 2026-11-17 -- LOOKAHEAD BUG FOUND, STATUS: NOT APPLIED.**
+The measurement script compared each opportunity against QQQ/IWM's
+END-OF-DAY close instead of their price at the opportunity's own
+entry time -- information from the future. Both measured results
+above may be contaminated and are not trustworthy evidence on their
+own. Does NOT affect the live loop (only fetches up-to-now bars).
+Fix applied to the script (time-synchronized comparison, "Method 3";
+plus a data-derived confirmation-strength tercile probe, "Method
+2") -- not yet re-run. The code wiring in `entry_filters.py` /
+`live_loop.py` stays uncommitted and unpushed pending a CORRECTED
+re-measurement of both periods. Full details:
+`docs/trading/decisions.md` D-0095-A, "CRITICAL CORRECTION... APPLIED
+status put on hold". Run commands for the corrected script are in
+that entry.
+
+**P-098 ITEM STILL OPEN** (signal-quality workstream, 1 of 3
+Controller-selected priorities). Still open from that same list:
+risk/sizing management, broader market context (live VIX, GEX
+reconsideration) -- see the 2026-11-17 "three priorities" update
+above.
 
 Still carried forward, not fixed, not forgotten:
 - No live intraday VIX source -- the VIX entry filter runs effectively

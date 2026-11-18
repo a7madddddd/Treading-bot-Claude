@@ -8257,3 +8257,107 @@ DECISION RULE for the combined result (both periods now measured):
   same disposition `volume_confirmed` got.
 
 STATUS: awaiting the second measurement run.
+
+### Second measurement RESULT -- agrees with the first; cross-market filter APPLIED, 2026-11-17
+
+Controller ran the tool on the VM, 2024-12-01 to 2025-05-31 (130
+weekdays, 0 fetch/data skips):
+
+```
+would_have_REJECTED by cross-market: n=443 total_pnl=-508.25 win_rate=28.89% expectancy=-1.1473 profit_factor=0.5493
+would_have_PASSED   by cross-market: n=256 total_pnl=+531.57 win_rate=53.52% expectancy=+2.0764 profit_factor=2.3142
+```
+
+**FACT.** Same direction as the first period (2025 H2), and the gap
+is WIDER, not narrower: the rejected subset's profit_factor dropped
+from 0.895 to 0.5493 (a worse loser), while the passed subset's
+expectancy rose from +1.0542 to +2.0764/trade. Two independent,
+non-overlapping 6-month windows (n=579/338 and n=443/256, neither a
+thin single-trade sample) both show the same real separation. This
+satisfies the Controller's own decision rule recorded above.
+
+**APPLIED.** Wired `cross_market_confirmed` into
+`entry_filters.run_all_filters` via new optional
+`direction`/`qqq_bars`/`iwm_bars` parameters (default `None`, which
+skips the filter gracefully -- same convention as `vix_level=None` --
+so `scripts/spx0dte_measure_cross_market.py`'s own "all filters
+except cross-market" call is unaffected and needed no change).
+`live_loop.run_one_tick` now fetches QQQ/IWM minute bars each tick
+(via the already-generalized `get_stock_minute_bars`) and passes them
+through; a QQQ/IWM fetch failure degrades gracefully (filter skipped
+for that tick, logged in `TickResult.notes`), never aborts the tick.
+
+Files changed: `src/spx0dte/entry_filters.py`, `src/spx0dte/live_loop.py`.
+2 new/changed tests (`test_entry_filters.py` adds a 4-filter case;
+`test_live_loop.py`'s fake client gains `get_stock_minute_bars`
+returning `[]`, which keeps every existing live-loop test's behavior
+unchanged -- empty bars make the filter skip, same as omitting it).
+Full suite: 2041 passed, zero regressions.
+
+This is the project's SECOND filter-measurement outcome after
+`volume_confirmed`, and the opposite one: where volume showed no real
+difference across two periods and was left out, cross-market showed a
+clear, reproduced difference across two periods and was wired in --
+the same discipline producing different, evidence-driven outcomes
+depending on what the data actually says.
+
+### CRITICAL CORRECTION, 2026-11-17 -- the measurement above had a lookahead bug; APPLIED status put on hold
+
+Found while answering a Controller question about the filter's
+methodology, not by a failing test. `scripts/spx0dte_measure_cross_market.py`
+fetched each day's QQQ/IWM bars ONCE (the whole historical day) and
+reused that same unmodified array for every opportunity found that
+day. `cross_market_confirmed`'s bias check uses the LAST bar of
+whatever array it receives (`bars[-1]["c"]`) as "the current price" --
+so a 10:15am opportunity was being confirmed against QQQ/IWM's
+**4:00pm closing price**, information that did not exist at 10:15am.
+This is textbook lookahead bias.
+
+**Both measured results above (0.895 vs 2.1282, then 0.5493 vs 2.3142)
+may be contaminated by this and cannot be trusted as the evidence
+that justified activation.** They are not retracted from the record
+(append-only), but they are no longer treated as sufficient grounds
+for the filter being live.
+
+**Does NOT affect the live loop.** `live_loop.run_one_tick` fetches
+"today" bars from the real account, which only ever contain bars up
+to the real current moment -- there is no future data to leak. The
+bug is specific to reusing a full HISTORICAL day's array across every
+opportunity in the offline measurement script.
+
+**Fix applied to the script** (not yet re-run): `_bars_up_to(bars, cutoff)`
+truncates qqq_bars/iwm_bars to only bars at or before each
+opportunity's own `entry_time` before calling `cross_market_confirmed`
+-- i.e. the Controller's own "Method 3" (synchronize the comparison
+window to the moment of the signal). Also added a second probe
+("Method 2"): among the would-PASS subset, `_confirmation_strength()`
+measures how far QQQ/IWM moved from their opening-range midpoint,
+normalized by that day's own opening-range width (no new data
+source needed), and the subset is split into DATA-DERIVED terciles
+(weak/mid/strong), not an arbitrary chosen cutoff, to see whether
+stronger confirmation predicts a better trade or whether sign alone
+already captures the signal.
+
+**STATUS CHANGED: `cross_market_confirmed` wiring in
+`entry_filters.run_all_filters` / `live_loop.py` stays UNCOMMITTED
+and UNPUSHED** (it already was, pending the Controller's own push
+approval) **until the corrected script is re-run on BOTH of the same
+two periods** (2025-06-01..2025-12-31 and 2024-12-01..2025-05-31) and
+the result is re-evaluated. If the corrected, time-synchronized
+result still shows the same separation, that is real (not
+look-ahead-inflated) evidence. If it does not, the filter is NOT
+activated and this becomes a third data point for how fragile a
+filter's apparent edge can be to a measurement mistake, alongside
+the ATR band and volume-filter precedents.
+
+Run command (same as before, same tool, now fixed):
+
+    cd ~/Treading-bot-Claude && set -a && source .env && set +a && \
+    PYTHONPATH=src python3.11 scripts/spx0dte_measure_cross_market.py --start 2025-06-01 --end 2025-12-31
+
+    cd ~/Treading-bot-Claude && set -a && source .env && set +a && \
+    PYTHONPATH=src python3.11 scripts/spx0dte_measure_cross_market.py --start 2024-12-01 --end 2025-05-31
+
+Full suite re-run after the fix: 2041 passed, zero regressions
+(fix is confined to the measurement script; no production code
+changed in this entry).
