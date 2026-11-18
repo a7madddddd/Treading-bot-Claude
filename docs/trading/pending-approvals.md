@@ -5458,3 +5458,24 @@ against real data. Full details: `docs/trading/decisions.md`,
 
 STATUS: built, awaiting the Controller's run on the VM. No
 trading-behavior change proposed yet.
+
+**UPDATE 2026-11-18 -- daily loss limit CHANGE built, pending push
+approval.** Controller ran the tool (148 trading days,
+2025-06-01..2025-12-31): worst day -$4,079 (-4.18% of a $97,593.76
+reference equity), 5th-percentile day -$1,543 (-1.58%). Controller
+confirmed the design: whole-account start-of-day equity as reference,
+2% threshold, blocks NEW entries only (does not force-close open
+positions). Also surfaced and recorded a real correction: every pnl
+figure in this module's history was a raw per-share price difference
+with no 100x contract multiplier applied -- see `docs/trading/decisions.md`
+D-0095-A "CORRECTION... not real dollars".
+
+Built `sizing.DailyLossLimitTracker` + `sizing.realized_pnl_dollars`,
+wired into `live_loop.run_one_tick`/`monitor_open_positions`. 11 new
+tests, full suite 2052 passed, zero regressions. Full details:
+`docs/trading/decisions.md` D-0095-A, "Daily loss limit built -- 2%
+of whole-account equity".
+
+**STATUS: implemented and tested, NOT PUSHED** -- this is a
+trading-behavior change (blocks new entries once triggered) and
+stays unpushed until the Controller explicitly approves the push.

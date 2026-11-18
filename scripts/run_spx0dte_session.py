@@ -140,10 +140,11 @@ def main() -> int:
                     chat_id=chat_id, quantity=args.quantity, state=state,
                 )
                 logger.info(
-                    "tick: cap=%s new=%d created=%d filter_rej=%d conc_rej=%d "
+                    "tick: cap=%s new=%d created=%d filter_rej=%d conc_rej=%d loss_limit_rej=%d "
                     "decisions=%d submitted=%d expired=%d monitored=%d closed=%d notes=%s",
                     result.dynamic_cap, result.new_opportunities_seen, result.proposals_created,
                     result.proposals_rejected_by_filter, result.proposals_rejected_by_concurrency,
+                    result.proposals_rejected_by_loss_limit,
                     result.decisions_processed, result.orders_submitted, result.proposals_expired,
                     result.positions_monitored, result.positions_closed, result.notes,
                 )

@@ -36,8 +36,9 @@ class FakeOptionsClient:
 
 
 class FakeBroker(BrokerClient):
-    def __init__(self):
+    def __init__(self, account_equity: float = 100_000.0):
         self.calls = []
+        self.account_equity = account_equity
 
     def submit_order(self, *, client_order_id, symbol, side, quantity, limit_price):
         self.calls.append(dict(client_order_id=client_order_id, symbol=symbol, side=side))
@@ -56,7 +57,7 @@ class FakeBroker(BrokerClient):
         raise NotImplementedError
 
     def get_account_equity(self):
-        raise NotImplementedError
+        return self.account_equity
 
     def is_market_open(self):
         raise NotImplementedError
@@ -161,6 +162,23 @@ class TestRunOneTick(unittest.TestCase):
         self.assertEqual(result.proposals_created, 0)
         self.assertIsNone(result.dynamic_cap)
 
+    def test_first_tick_locks_daily_loss_limit_equity(self):
+        self._tick()
+        self.assertEqual(self.state.loss_limit_tracker.locked_equity, self.broker.account_equity)
+        self.assertFalse(self.state.loss_limit_tracker.limit_reached())
+
+    def test_loss_limit_reached_rejects_new_opportunities(self):
+        # Lock the day first (as a normal tick would), then push realized
+        # losses past the 2% threshold before the opportunity is seen.
+        self.state.loss_limit_tracker.start_new_day(
+            self.now.strftime("%Y-%m-%d"), equity=self.broker.account_equity,
+        )
+        self.state.loss_limit_tracker.record_realized_pnl(-self.broker.account_equity * 0.03)
+
+        result = self._tick()
+        self.assertEqual(result.proposals_created, 0)
+        self.assertEqual(result.proposals_rejected_by_loss_limit, 1)
+
     def test_new_day_resets_processed_keys(self):
         self._tick()
         self.assertEqual(len(self.state.processed_entry_keys), 1)
@@ -234,6 +252,12 @@ class TestExitMonitoring(unittest.TestCase):
         self.assertEqual(self.position_repo.list_open(), [])
         sell_calls = [c for c in self.broker.calls if c["side"] == "sell"]
         self.assertEqual(len(sell_calls), 1)
+
+        # D-0095-A, 2026-11-18: the close's realized dollar pnl (with
+        # the contract multiplier applied, not the bare price diff)
+        # must reach the daily loss-limit tracker.
+        self.assertGreater(self.state.loss_limit_tracker.realized_pnl_today, 0.0)
+        self.assertGreaterEqual(abs(self.state.loss_limit_tracker.realized_pnl_today), 100 * 0.5)
 
     def test_still_open_position_not_closed(self):
         # Build the stale quote AND the position's recorded entry_price

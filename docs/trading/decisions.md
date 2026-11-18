@@ -8559,3 +8559,84 @@ numbers from the same run with this x100 correction in mind before
 drawing any conclusion from them either (the RATIOS there --
 profit_factor, pnl/trade -- are already correct as printed; only a
 bare dollar total needs the correction).
+
+## Daily loss limit built -- 2% of whole-account equity, 2026-11-18
+
+Controller confirmed, via the CHANGE proposal above: reference =
+whole account's start-of-day equity (no separate capital allocation
+exists yet between this module and the equity-ladder strategy);
+threshold = 2%; scope = block NEW entries only, already-open
+positions keep being managed by their own exit logic, never
+force-closed by this limit.
+
+### Implementation
+
+- **`src/spx0dte/sizing.py`**: `CONTRACT_MULTIPLIER = 100` (US listed-
+  options convention -- see the pnl-units correction above),
+  `realized_pnl_dollars(entry_price, exit_price, quantity)` (the one
+  correct way to convert a raw price difference into real dollars --
+  every caller that compares against a dollar/percent threshold must
+  use this, never the bare difference), `DAILY_LOSS_LIMIT_PCT = 0.02`,
+  `DailyLossLimitTracker` (locks equity once per day via
+  `start_new_day` -- idempotent within a day, same "lock once" pattern
+  as `exit_logic.DailyPaceTracker`; accumulates realized pnl via
+  `record_realized_pnl`; `limit_reached()` compares cumulative realized
+  pnl against `-locked_equity * limit_pct`).
+- **`src/spx0dte/live_loop.py`**: `LiveSessionState` gains a
+  `loss_limit_tracker` field. `run_one_tick` calls
+  `broker.get_account_equity()` once per day (at the same date-rollover
+  point `dynamic_cap_today` is reset) and locks it in; a fetch failure
+  (`BrokerClientError`) degrades gracefully -- the limit is simply not
+  locked that tick, logged in `TickResult.notes`, never a crash. Each
+  new opportunity is checked against `limit_reached()` AFTER the entry
+  filters and BEFORE the concurrency check; a rejection is counted in
+  the new `TickResult.proposals_rejected_by_loss_limit` field, not
+  silently dropped. `monitor_open_positions` now computes each real
+  close's dollar pnl via `realized_pnl_dollars` (fixing the same
+  no-multiplier gap the correction above describes) and feeds it into
+  the tracker the same tick the close happens.
+- **`scripts/run_spx0dte_session.py`**: tick log line now reports
+  `loss_limit_rej` alongside the existing filter/concurrency rejection
+  counts.
+
+### Tests
+
+9 new tests in `tests/spx0dte/test_sizing.py`
+(`TestRealizedPnlDollars`, `TestDailyLossLimitTracker`: default pct,
+invalid-pct rejection, not-reached-before-locked, reached once losses
+cross the threshold, a win partially offsetting losses below the
+threshold again, a new day resetting and relocking, same-day calls
+being idempotent, non-positive equity rejected). 2 new tests in
+`tests/spx0dte/test_live_loop.py` (`TestRunOneTick`: first tick locks
+the real equity from the broker; a pre-loaded over-the-limit day
+rejects a new opportunity with the right counter). `TestExitMonitoring`'s
+existing target-hit test extended to assert the close's realized pnl
+reached the tracker in real dollars (not the bare price difference).
+`FakeBroker.get_account_equity()` changed from `raise
+NotImplementedError` to a configurable fixed value, since this now
+runs on every tick's first-of-day path, not an untested method.
+
+Full suite: 2052 passed, zero regressions.
+
+### Honest caveats
+
+1. The daily-pnl distribution this percentage was derived from (148
+   trading days, 2025-06-01..2025-12-31) is a BACKTEST distribution
+   under the current filter/exit design -- it is not a guarantee that
+   real live trading's worst day stays within the same bound; it is
+   the best real evidence available, not a certainty.
+2. `--quantity` above the approved 1-contract baseline scales
+   `realized_pnl_dollars` linearly but does NOT change
+   `DAILY_LOSS_LIMIT_PCT` or the locked equity -- a larger quantity
+   reaches the same percentage limit faster, which is the intended
+   protective behavior, not an oversight.
+3. The limit halts NEW entries only, by Controller's own explicit
+   choice; a day already at the limit can still lose further (bounded
+   by whatever is already open) if open positions move against their
+   own stop before the stop triggers -- this is the Controller's
+   accepted trade-off (recorded here so it is a decision, not a
+   silent gap), not a system limitation discovered later.
+
+STATUS: implemented, tested, NOT YET PUSHED -- awaiting the
+Controller's explicit push approval per this project's push policy
+for any trading-behavior change.

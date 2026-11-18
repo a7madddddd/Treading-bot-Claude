@@ -38,6 +38,20 @@ a per-position `live_exit.LiveExitTracker`. A protective exit needs
 no Controller approval (`.claude/rules/01-roles-and-authority.md`) --
 `orchestration.close_position` submits and records the close
 directly, same tick.
+
+Daily loss limit (D-0095-A, 2026-11-18 -- Controller-approved: whole
+account, 2% of start-of-day equity, from `sizing.
+DailyLossLimitTracker`): locked once per day (same "lock once" pattern
+as `DailyPaceTracker`) via `broker.get_account_equity()`, right where
+the day rolls over. Every real close in `monitor_open_positions` feeds
+its realized dollar pnl (via `sizing.realized_pnl_dollars`, which
+applies the 100x contract multiplier the rest of this module's history
+did not -- see docs/trading/decisions.md D-0095-A "CORRECTION") into
+the tracker. Once the day's realized losses reach the limit, NEW
+opportunities are rejected (`proposals_rejected_by_loss_limit`) for
+the rest of that day -- already-open positions are NOT force-closed;
+they keep being managed by their own exit logic, a Controller-made
+design choice, not an assumption.
 """
 from __future__ import annotations
 
@@ -45,7 +59,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Set
 
-from execution.broker_client import BrokerClient
+from execution.broker_client import BrokerClient, BrokerClientError
 
 from spx0dte.alpaca_client import AlpacaDataError, AlpacaOptionsClient
 from spx0dte.entry_filters import run_all_filters
@@ -57,7 +71,7 @@ from spx0dte.orchestration import (
 )
 from spx0dte.ratio_calibration import RatioProvider
 from spx0dte.signal import find_breakout_opportunities
-from spx0dte.sizing import ConcurrentPositionTracker
+from spx0dte.sizing import ConcurrentPositionTracker, DailyLossLimitTracker, realized_pnl_dollars
 from spx0dte.sqlite_repository import SpxPositionRepository, SpxProposalRepository
 from spx0dte.telegram_approval import ControllerDecision
 
@@ -88,6 +102,7 @@ class LiveSessionState:
 
     pace_tracker: DailyPaceTracker = field(default_factory=DailyPaceTracker)
     position_tracker: ConcurrentPositionTracker = field(default_factory=ConcurrentPositionTracker)
+    loss_limit_tracker: DailyLossLimitTracker = field(default_factory=DailyLossLimitTracker)
     current_date: Optional[str] = None
     dynamic_cap_today: Optional[float] = None
     processed_entry_keys: Set[str] = field(default_factory=set)
@@ -110,6 +125,7 @@ class TickResult:
     decisions_processed: int
     orders_submitted: int
     proposals_expired: int
+    proposals_rejected_by_loss_limit: int
     positions_monitored: int
     positions_closed: int
     notes: List[str]
@@ -154,8 +170,13 @@ def monitor_open_positions(
                 exit_price=quote.bias_corrected_price, exit_reason=reason, now=now,
             )
             state.exit_trackers.pop(position.proposal_id, None)
+            pnl = realized_pnl_dollars(position.entry_price, quote.bias_corrected_price, position.quantity)
+            state.loss_limit_tracker.record_realized_pnl(pnl)
             closed_count += 1
-            notes.append(f"{position.proposal_id}: closed ({reason}) at {quote.bias_corrected_price:.2f}")
+            notes.append(
+                f"{position.proposal_id}: closed ({reason}) at {quote.bias_corrected_price:.2f}, "
+                f"realized ${pnl:+.2f}"
+            )
 
     return len(open_positions), closed_count, notes
 
@@ -184,14 +205,23 @@ def run_one_tick(
             date=today, dynamic_cap=state.dynamic_cap_today, new_opportunities_seen=0,
             proposals_created=0, proposals_rejected_by_filter=0,
             proposals_rejected_by_concurrency=0, decisions_processed=0,
-            orders_submitted=0, proposals_expired=0, positions_monitored=0,
-            positions_closed=0, notes=[f"SPY fetch failed: {e}"],
+            orders_submitted=0, proposals_expired=0, proposals_rejected_by_loss_limit=0,
+            positions_monitored=0, positions_closed=0, notes=[f"SPY fetch failed: {e}"],
         )
 
     if state.current_date != today:
         state.current_date = today
         state.dynamic_cap_today = None
         state.processed_entry_keys = set()
+        try:
+            equity = broker.get_account_equity()
+            state.loss_limit_tracker.start_new_day(today, equity)
+            notes.append(
+                f"daily loss limit locked for {today}: equity=${equity:,.2f}, "
+                f"limit={state.loss_limit_tracker.limit_pct:.1%}"
+            )
+        except BrokerClientError as e:
+            notes.append(f"could not fetch account equity -- daily loss limit NOT locked today: {e}")
 
     if state.dynamic_cap_today is None and len(spy_bars) >= 15:
         pace = session_pace_width_pct(spy_bars, minutes=15)
@@ -201,6 +231,7 @@ def run_one_tick(
     proposals_created = 0
     rejected_by_filter = 0
     rejected_by_concurrency = 0
+    rejected_by_loss_limit = 0
     new_opportunities_seen = 0
 
     if state.dynamic_cap_today is not None:
@@ -218,6 +249,10 @@ def run_one_tick(
             )
             if any(not r.passed for r in filter_results):
                 rejected_by_filter += 1
+                continue
+
+            if state.loss_limit_tracker.limit_reached():
+                rejected_by_loss_limit += 1
                 continue
 
             if not state.position_tracker.can_open(entry.entry_time):
@@ -262,6 +297,7 @@ def run_one_tick(
         decisions_processed=len(pending_decisions),
         orders_submitted=len(submission_results),
         proposals_expired=expired,
+        proposals_rejected_by_loss_limit=rejected_by_loss_limit,
         positions_monitored=positions_monitored, positions_closed=positions_closed,
         notes=notes,
     )
