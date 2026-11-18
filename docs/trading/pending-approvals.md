@@ -5438,3 +5438,23 @@ Still carried forward, not fixed, not forgotten:
   exercised live so far).
 - Risk/sizing and market-context improvements (both Controller-
   selected priorities) not yet started.
+
+## P-099 — Risk/sizing workstream: daily loss limit + trade-count/concurrency re-check
+
+**Opened 2026-11-18.** Controller priority 2 of 3 (risk/sizing
+management), started with the daily loss limit (currently `TBD` in
+`docs/trading/risk-management.md`) and a re-check of "number of open
+trades" -- both the concurrency cap (`MAX_CONCURRENT_POSITIONS = 2`)
+and a daily trade-count cap (`DailyTradeCounter`, currently unbounded).
+
+Built `scripts/spx0dte_measure_risk_sizing.py`: reports the real
+daily-pnl distribution, the trades-per-day distribution tagged by
+pnl-per-trade tercile, and a concurrency-cap resweep (1-8) using real
+exit times -- distributions only, no proposed numbers, per the
+Controller's own "calculate from recorded data" rule. Smoke-tested
+offline; full suite 2040 passed, zero regressions. Not yet run
+against real data. Full details: `docs/trading/decisions.md`,
+"Risk/sizing workstream started".
+
+STATUS: built, awaiting the Controller's run on the VM. No
+trading-behavior change proposed yet.

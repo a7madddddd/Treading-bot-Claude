@@ -8433,3 +8433,77 @@ now CLOSED with a negative result**, recorded with the same rigor as
 a positive one would have been. Next: items 2 and 3 of the
 Controller's three selected priorities (risk/sizing management;
 broader market context) remain open.
+
+## Risk/sizing workstream started -- daily loss limit + trade-count/concurrency re-check, 2026-11-18
+
+Controller started priority 2 of 3 (risk/sizing management), asked
+specifically for: (1) a daily loss limit -- currently `TBD` in
+`docs/trading/risk-management.md`, a documented total absence, not
+just an unoptimized value; and (2) a decision on "number of open
+trades", confirmed via `AskUserQuestion` to mean BOTH the concurrency
+cap (`MAX_CONCURRENT_POSITIONS = 2`, measured at D-0095 time) and a
+daily trade-count cap (`DailyTradeCounter` exists but is unbounded by
+default -- never used for risk in this module).
+
+### Current state, read from the code before proposing anything (per `.claude/rules/00-session-start.md` §0.b)
+
+- `src/spx0dte/sizing.py`: `CONTRACTS_PER_TRADE = 1` (fixed, not
+  scaled by equity/confidence/volatility); `MAX_CONCURRENT_POSITIONS = 2`
+  (evidence-based from a cap-1-to-8 sweep on 2025/2026 candidate data,
+  not a guess); dynamic size-reduction was explored and rejected
+  analytically (1-contract baseline leaves no room to shrink).
+  `DailyTradeCounter` exists, `max_per_day=10_000` default (effectively
+  unbounded), not wired into any filter decision.
+- `scripts/run_spx0dte_session.py --quantity` can override the 1-contract
+  default at the command line with no code change -- a soft control
+  gap worth naming, not yet a problem.
+- `docs/trading/risk-management.md` line 78: "Max daily loss stop (halt
+  new entries): **TBD**" -- true for the whole project, not only this
+  module.
+
+### Built: `scripts/spx0dte_measure_risk_sizing.py`
+
+Same locked pipeline (signal -> entry_filters -> `exit_logic.
+simulate_exit` with the day-pace cap) as every prior D-0095/D-0095-A
+measurement, run with concurrency UNCAPPED so every opportunity that
+passes the filters is recorded, then reports three things from that
+one list of real trades -- distributions, not proposed numbers, per
+the Controller's "calculate from recorded data" rule:
+
+1. **Daily pnl distribution** (worst day, 5th/25th percentile day,
+   median, mean, best day, mean losing day) -- the Controller picks a
+   daily-loss-stop level directly from real worst-case days.
+2. **Trades-per-day distribution**, tagged into terciles by that
+   day's trade count, reporting pnl-PER-TRADE in each tercile --
+   same "tag, don't enforce" method that debunked the volume filter
+   and (after the lookahead fix) the cross-market filter. If high-
+   count days show worse pnl/trade, that is evidence FOR a daily
+   trade-count cap; if flat, the concurrency cap already does the
+   real work.
+3. **Concurrency cap resweep, 1 to 8**, using each trade's REAL
+   `exit_time` from `simulate_exit`'s own result (not a planned-exit
+   estimate) -- an independent re-check of whether `cap=2` still
+   holds on this run's own data, not a re-display of the original
+   D-0095 numbers.
+
+Smoke-tested offline (no network) before being sent: `_percentile`
+checked against a known 1-10 array at p=0/0.5/1.0; `simulate_concurrency_cap`
+checked against 3 synthetic overlapping/non-overlapping trades,
+correctly admits 2 of 3 at cap=1 (rejects the overlapping one) and all
+3 at cap=2; all three report functions checked for a clean empty-input
+message rather than a crash. Full project suite after adding this
+file: 2040 passed, zero regressions (standalone script, not wired into
+any test, same pattern as the other `spx0dte_measure_*.py` tools).
+
+Syntax/lint-checked, NOT yet run against real data -- needs the VM.
+
+Run command:
+
+    cd ~/Treading-bot-Claude && set -a && source .env && set +a && \
+    PYTHONPATH=src python3.11 scripts/spx0dte_measure_risk_sizing.py --start 2025-06-01 --end 2025-12-31
+
+STATUS: built, awaiting the Controller's run. No trading-behavior
+change proposed yet -- this is measurement only; the actual daily
+loss limit, any trade-count cap, and any concurrency-cap change will
+each be a separate CHANGE proposal once the Controller has seen the
+real distributions.
