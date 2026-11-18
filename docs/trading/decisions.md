@@ -8794,5 +8794,52 @@ excludes `before_date` itself, respects `limit` keeping the most
 recent dates). 3 new tests for `sizing.percentile`. Full suite: 2064
 passed, zero regressions.
 
-STATUS: implemented, tested, NOT YET PUSHED -- presented for the
-Controller's push confirmation.
+STATUS: implemented, tested, Controller approved, PUSHED (commit `a7c48d2`).
+
+## Concurrency cap re-check: second independent period run, KEPT AT 2, 2026-11-18
+
+Controller ran `scripts/spx0dte_measure_risk_sizing.py` on the second
+independent period, 2024-12-01..2025-05-31 (130 weekdays, 699
+uncapped trades):
+
+```
+cap=1: n=451 total_pnl=+0.00  profit_factor=1.0
+cap=2: n=627 total_pnl=+27.48 profit_factor=1.0202
+cap=3: n=682 total_pnl=+31.99 profit_factor=1.0216  (global max this period)
+cap=4: n=696 total_pnl=+4.67  profit_factor=1.0031  (sharp dip)
+cap=5: n=699 total_pnl=+23.32 profit_factor=1.0152  (plateau -- full uncapped universe)
+```
+
+**FACT.** This period's overall edge is far weaker than the first
+(`profit_factor` near 1.0 throughout, vs ~1.24-1.27 in 2025 H2) --
+a market-regime difference, not a concurrency-cap effect.
+
+**Cross-period comparison, applying this project's own
+agreement rule:**
+- Both periods agree cleanly: cap=1 is worse than cap=2. This
+  confirms the cap belongs at 2 or higher, not removed or lowered.
+- The periods do NOT agree beyond that. 2025 H2 showed total_pnl
+  still climbing gently through cap=4-5 before plateauing. This
+  period's global maximum is at cap=3, and cap=4 dips sharply before
+  the eventual plateau sits BELOW the cap=3 peak -- raising the cap
+  did not clearly help here, and locally hurt.
+
+**DECISION: `MAX_CONCURRENT_POSITIONS` stays at 2.** No reproducible,
+cross-period-agreeing case for raising it to 3 or 4 -- one period's
+mild continued improvement is not confirmed by the other, which
+actually peaks lower and dips on the way to a higher cap. Per the
+same discipline applied to every other parameter in this project,
+the existing evidence-based value is kept, not adjusted on a single
+period's suggestion. No code change (the value was never edited
+pending this check).
+
+**Risk/sizing workstream (Controller priority 2 of 3) is now
+CLOSED:** daily loss limit built and applied (2% whole-account
+equity); daily trade-count cap measured and rejected in favor of a
+self-updating informational notice; concurrency cap re-checked and
+kept at 2. Full numbers for all three: this file, D-0095-A, 2026-11-18
+entries.
+
+NEXT: Controller priority 3 of 3 -- broader market context (live
+intraday VIX source; GEX/dealer-positioning reconsideration now that
+the account's Options Agreement is signed).

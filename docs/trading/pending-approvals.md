@@ -5518,12 +5518,24 @@ days of history exist. 11 new/changed tests, full suite 2064 passed.
 Full details: `docs/trading/decisions.md` D-0095-A, "Reworked to be
 fully self-updating".
 
-STATUS: implemented, tested, NOT YET PUSHED -- not a trading-behavior
-change, but touches `live_loop.py`, so held for the Controller's push
-confirmation.
+STATUS: implemented, tested, Controller approved, PUSHED (commit `a7c48d2`).
 
-**Risk/sizing workstream (priority 2 of 3), remaining items:**
-re-check whether the concurrency cap should move from 2 to 3-4 (needs
-a second independent period, same rule as everything else); once
-that's settled, priority 3 of 3 (broader market context: live VIX,
-GEX reconsideration) is next.
+**UPDATE 2026-11-18 -- concurrency cap re-checked, KEPT AT 2.** Second
+independent period (2024-12-01..2025-05-31) agrees with the first
+that cap=1 is worse than cap=2, but does not agree beyond that (this
+period's global max is at cap=3, with a dip at cap=4; the first
+period kept climbing gently to cap=4-5). No reproducible case to
+raise it. `MAX_CONCURRENT_POSITIONS` unchanged. Full numbers:
+`docs/trading/decisions.md` D-0095-A, "Concurrency cap re-check...
+KEPT AT 2".
+
+**P-099 RISK/SIZING WORKSTREAM CLOSED (priority 2 of 3):** daily loss
+limit (2% whole-account equity) built and applied; daily trade-count
+cap measured, rejected, replaced with a self-updating informational
+notice; concurrency cap re-checked and kept at 2.
+
+**NEXT: priority 3 of 3 -- broader market context.** Live intraday
+VIX source; GEX/dealer-positioning reconsideration now that the
+account's Options Agreement is signed (previously deferred in D-0095
+as "not backtestable without paid data" -- may be worth a fresh
+look).
