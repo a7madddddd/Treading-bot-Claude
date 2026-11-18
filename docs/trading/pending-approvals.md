@@ -5555,7 +5555,39 @@ Smoke-tested offline; full suite 2064 passed. Full details:
 `docs/trading/decisions.md` D-0095-A, "Live VIX source research
 started".
 
-STATUS: built, awaiting the Controller's run (both periods, per the
-cross-period-agreement rule). No trading-behavior change proposed
-yet. GEX/dealer-positioning reconsideration (also part of priority 3)
-not yet started.
+**UPDATE 2026-11-18 -- all three samples agree, VIXY-ratio wired in.**
+Period 1 (n=144): VIXY alone 3.1% mean error. Period 2 (n=119): 3.9%.
+Larger combined sample at Controller's request (n=630,
+2023-06-01..2025-12-31): 3.9% mean, **median improved to 2.1%**,
+confirming the pattern at scale. SPY-realized-volatility was measured
+alongside in all three runs and REJECTED (23-29% mean error);
+averaging it with VIXY was WORSE than VIXY alone every time.
+
+Built `src/spx0dte/vix_proxy.py` (`VixProxyProvider`, same
+"stale anchor + live relative move" shape as Option B / the
+SPY:SPX ratio provider) with a `MAX_PLAUSIBLE_RATIO` safety bound
+added specifically because of a real 387.2% single-day outlier seen
+in the large sample. Wired into `live_loop.run_one_tick` as an
+OPTIONAL parameter -- omitting it keeps the exact prior behavior.
+15 new tests, full suite 2079 passed. Full numbers:
+`docs/trading/decisions.md` D-0095-A, "RESULT across three
+independent samples".
+
+STATUS: implemented, tested, NOT YET PUSHED -- this un-disables a
+real entry filter (a genuine trading-behavior change), held for the
+Controller's explicit push approval.
+
+**UPDATE 2026-11-18 -- Controller chose to measure the 12-35 bounds
+first, not activate on the untested bootstrap range.** Built
+`scripts/spx0dte_measure_vix_filter.py` (same tag-and-compare method
+as every other filter measurement, lookahead-safe from the start).
+Smoke-tested; full suite 2079 passed. Full details:
+`docs/trading/decisions.md` D-0095-A, "Controller chose: measure the
+12-35 bootstrap bounds first".
+
+STATUS: built, awaiting the Controller's run on both independent
+periods. The already-built `vix_proxy` wiring stays unpushed until
+this result is in.
+
+GEX/dealer-positioning reconsideration (the other half of priority 3
+of 3) not yet started.

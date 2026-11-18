@@ -8921,8 +8921,125 @@ Run command:
     cd ~/Treading-bot-Claude && set -a && source .env && set +a && \
     PYTHONPATH=src python3.11 scripts/spx0dte_measure_vix_proxy.py --start 2025-06-01 --end 2025-12-31
 
-STATUS: built, awaiting the Controller's run. Per this project's
-cross-period-agreement rule, the second independent window
-(2024-12-01..2025-05-31) should also be run before wiring anything
-into `entry_filters.vix_in_tradeable_range` for real. No
-trading-behavior change proposed yet.
+STATUS: superseded below -- both periods run, plus a much larger
+combined sample, all agreeing; wired into production.
+
+### RESULT across three independent samples -- VIXY alone wins clearly, wired in, 2026-11-18
+
+**Period 1 (2025-06-01..2025-12-31, n=144):** VIXY alone
+mean_abs_err=3.1%, median=2.4%, signed_mean=-0.2%. SPY-realized-vol
+alone: mean=29.0%, median=22.4%, signed_mean=+6.2%. Average of both:
+14.2% (WORSE than VIXY alone -- the noisy realized-vol component
+drags the accurate VIXY estimate down).
+
+**Period 2 (2024-12-01..2025-05-31, n=119):** VIXY alone
+mean_abs_err=3.9%, median=2.8%, signed_mean=+0.1%. Same pattern:
+realized-vol alone far worse (mean 28.8%), averaging hurts (14.3%).
+
+**Larger combined sample, Controller's own request for more data
+before deciding (2023-06-01..2025-12-31, n=630):** VIXY alone
+mean_abs_err=3.9%, **median improved to 2.1%** -- confirms the
+smaller periods were not a fluke. signed_mean=+1.1% (still near
+zero). One real worst-case outlier of 387.2% observed in this larger
+sample -- a single anomalous day, not a sustained problem, but real
+enough to require a safety bound before trusting this in production
+(see below).
+
+**DECISION, same cross-period-agreement rule as every other
+parameter in this project:** all three independent samples agree
+cleanly. Combining the two candidates is actively worse than the
+better one alone -- corrected from an earlier (wrong) instinct to
+average them; the data overruled that instinct, as it should.
+**SPY-realized-volatility-ratio is REJECTED as a candidate.
+VIXY-ratio alone is the production design.**
+
+### Implementation
+
+- **`src/spx0dte/alpaca_client.py`**: generalized `get_spy_daily_bars`
+  into `get_stock_daily_bars(symbol, start, end)` (no behavior change
+  for existing callers).
+- **`src/spx0dte/vix_proxy.py`** (new): `fetch_vixcls_closes` (FRED
+  VIXCLS, same shape as `ratio_calibration.fetch_sp500_closes` for a
+  different series, kept local rather than coupling the two modules),
+  `measure_vix_anchor_now` (finds the most recent matched prior
+  trading day's real VIXCLS + VIXY closes, raises `VixProxyError`
+  rather than guessing), `VixProxyProvider` (locks the anchor once
+  per day, same pattern as `DailyPaceTracker`/`DailyLossLimitTracker`;
+  `get_vix_level()` fetches VIXY's live price via the already-proven
+  `get_stock_minute_bars` and scales the anchor by its ratio to
+  yesterday's VIXY close). `MAX_PLAUSIBLE_RATIO = 3.0` rejects (returns
+  `None`, the same graceful-skip contract `vix_in_tradeable_range`
+  already has) an estimate implying VIX more than tripled or dropped
+  to a third intraday -- added specifically because of the real
+  387.2% outlier observed above, not a hypothetical worry.
+- **`src/spx0dte/live_loop.py`**: `run_one_tick` gains an OPTIONAL
+  `vix_provider` parameter (default `None` -- omitting it keeps the
+  exact prior behavior, `vix_level` stays `None`, filter skipped not
+  rejected). When given, `vix_provider.get_vix_level(now=now)` is
+  called once per tick and the result is passed into `run_all_filters`
+  instead of the hardcoded `None` that had been there since this
+  filter's VIX gap was first recorded.
+- **`scripts/run_spx0dte_session.py`**: constructs a real
+  `VixProxyProvider` and passes it through.
+
+### Tests
+
+11 new tests in `tests/spx0dte/test_vix_proxy.py` (anchor measurement:
+finds the most recent matched day, skips an unmatched one, raises
+when nothing matches; provider: scales the anchor by the live ratio
+correctly, returns `None` on a fetch failure/no bars/implausible
+ratio above or below `MAX_PLAUSIBLE_RATIO`, accepts right at the
+bound, re-measures the anchor only on a new day, returns `None` when
+anchor measurement itself fails). 4 new tests in
+`tests/spx0dte/test_live_loop.py` (no provider behaves exactly as
+before; an in-range level does not block; an out-of-range level
+rejects the opportunity via the existing filter path; a provider
+that itself returns `None` degrades gracefully, same as no provider
+at all). Full suite: 2079 passed, zero regressions.
+
+STATUS: implemented, tested, NOT YET PUSHED -- this un-disables a
+real entry filter (`vix_in_tradeable_range`, which has been skipped
+unconditionally since D-0095), a genuine trading-behavior change, so
+it is presented for the Controller's explicit push approval.
+
+### Controller chose: measure the 12-35 bootstrap bounds first, before activating any rejection, 2026-11-18
+
+Asked, precisely: "what's the change exactly?" Answered plainly --
+before this change, `vix_level` was always `None`, so the filter
+accepted everything unconditionally; after it, a real opportunity
+WILL be silently rejected (no Telegram proposal at all) whenever the
+live VIX estimate sits outside 12-35. Flagged, unprompted, that the
+12-35 bounds themselves have never been measured against this
+project's own data (D-0095's own module docstring already says so:
+"not claiming to have found an edge inside the range"). Given two
+options -- activate now on the untested bootstrap bounds, or measure
+them first -- the Controller chose to measure first.
+
+Built `scripts/spx0dte_measure_vix_filter.py`: same locked pipeline
+and "tag, don't enforce, compare subsets" method as every other
+D-0095/D-0095-A filter measurement, now applied to
+`vix_in_tradeable_range`. Computes each historical trade's estimated
+VIX using ONLY VIXY bars at or before that trade's own `entry_time`
+(`_vixy_price_as_of` truncates explicitly) -- the lookahead-bug
+lesson from the cross-market filter's FIRST (uncorrected) run applied
+here from the start, not discovered the hard way a second time.
+
+Smoke-tested offline: the truncation helper correctly ignores a bar
+placed after the cutoff; `estimate_vix_at` matches the expected
+anchor*ratio value; an implausible ratio returns 0.0 (excluded from
+tagging, not a corrupted number). Full suite: 2079 passed (this
+script adds no new test file of its own -- smoke-tested the same way
+as the other `spx0dte_measure_*.py` scripts, which are themselves
+outside the pytest suite).
+
+Run command:
+
+    cd ~/Treading-bot-Claude && set -a && source .env && set +a && \
+    PYTHONPATH=src python3.11 scripts/spx0dte_measure_vix_filter.py --start 2025-06-01 --end 2025-12-31
+
+STATUS: built, awaiting the Controller's run on both independent
+periods before the already-built `vix_proxy` wiring (still unpushed)
+is either activated as-is, activated with different bounds measured
+from this data, or left unpushed if no real discriminating power is
+found -- same disposition the cross-market and daily-trade-count
+filters each ended up with.
