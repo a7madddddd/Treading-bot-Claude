@@ -55,6 +55,24 @@ def realized_pnl_dollars(entry_price: float, exit_price: float, quantity: int) -
     return (exit_price - entry_price) * quantity * CONTRACT_MULTIPLIER
 
 
+def percentile(sorted_values: List[float], pct: float) -> float:
+    """Linear-interpolated percentile of an ALREADY-SORTED sequence
+    (ascending). Same formula as
+    `scripts/spx0dte_measure_risk_sizing.py`'s own `_percentile` --
+    kept here too (not imported from a script) so production code
+    never depends on a scripts/ module. Raises ValueError on an
+    empty sequence -- a caller must check for enough history first,
+    never silently default to a fabricated number."""
+    if not sorted_values:
+        raise ValueError("sorted_values must be non-empty")
+    n = len(sorted_values)
+    k = (n - 1) * pct
+    f, c = int(k), min(int(k) + 1, n - 1)
+    if f == c:
+        return sorted_values[f]
+    return sorted_values[f] + (sorted_values[c] - sorted_values[f]) * (k - f)
+
+
 def contracts_for_trade() -> int:
     """Returns the approved fixed contract count. No arguments on
     purpose -- this is not meant to grow conditional logic; a change to

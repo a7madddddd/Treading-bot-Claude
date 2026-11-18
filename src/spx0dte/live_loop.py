@@ -52,6 +52,19 @@ opportunities are rejected (`proposals_rejected_by_loss_limit`) for
 the rest of that day -- already-open positions are NOT force-closed;
 they keep being managed by their own exit logic, a Controller-made
 design choice, not an assumption.
+
+Unusual-day notice (D-0095-A, 2026-11-18): the daily trade-count CAP
+sweep (`spx0dte_measure_risk_sizing.py` section 4) found no profit
+case for blocking a high-count day, so this is informational only,
+never a rejection. The threshold is SELF-UPDATING, not a manually
+typed number (the Controller explicitly asked for no manual step):
+each day, `run_one_tick` queries `repo.recent_daily_counts()` for the
+trailing `UNUSUAL_DAY_LOOKBACK_DAYS` real trading days and recomputes
+the 90th percentile itself -- the same self-measuring pattern
+`DailyPaceTracker` already uses for the hold-time cap, just sourced
+from this module's own proposal history instead of SPY bars. Stays
+off (`None`) until `UNUSUAL_DAY_MIN_HISTORY_DAYS` days of real
+history exist.
 """
 from __future__ import annotations
 
@@ -71,14 +84,26 @@ from spx0dte.orchestration import (
 )
 from spx0dte.ratio_calibration import RatioProvider
 from spx0dte.signal import find_breakout_opportunities
-from spx0dte.sizing import ConcurrentPositionTracker, DailyLossLimitTracker, realized_pnl_dollars
+from spx0dte.sizing import ConcurrentPositionTracker, DailyLossLimitTracker, percentile, realized_pnl_dollars
 from spx0dte.sqlite_repository import SpxPositionRepository, SpxProposalRepository
-from spx0dte.telegram_approval import ControllerDecision
+from spx0dte.telegram_approval import ControllerDecision, send_message
 
 STALE_PROPOSAL_MAX_AGE = timedelta(minutes=30)
 """A PENDING proposal the Controller never acted on this long is
 expired -- mirrors the equity-ladder flow's own supersession/expiry
 discipline, applied here on every tick via expire_stale_pending."""
+
+UNUSUAL_DAY_LOOKBACK_DAYS = 20
+"""Same trailing window length as `exit_logic.PACE_LOOKBACK_DAYS`,
+for the same reason: recent history only, never the whole dataset."""
+
+UNUSUAL_DAY_MIN_HISTORY_DAYS = 5
+"""Bootstrap judgment call, conservative side (Controller, 2026-11-18,
+after asking for this to be fully automatic rather than a manually
+typed number): below this many trailing days, a 90th percentile is
+too noisy to trust, so the notice stays off (`None`) rather than
+fire from a handful of points. Not a trading threshold -- this
+module never rejects a trade either way."""
 
 
 def _bars_to_signal_series(bars: List[dict]) -> List[dict]:
@@ -112,6 +137,24 @@ class LiveSessionState:
     tracker re-evaluates from the position's own recorded entry_price
     forward, which is a graceful (if slightly less precise)
     degradation, not a crash or a lost position."""
+
+    proposals_created_today: int = 0
+    unusual_day_alert_sent: bool = False
+    unusual_day_trade_count_threshold: Optional[float] = None
+    """Controller's own suggestion (2026-11-18), after the daily
+    trade-count CAP sweep (`spx0dte_measure_risk_sizing.py` section 4)
+    showed no profit case for blocking a high-count day: inform
+    instead of block. SELF-UPDATING, not a manually typed number
+    (Controller, 2026-11-18, explicitly asked for no manual step):
+    `run_one_tick` recomputes it every day from this bot's own
+    `SpxProposalRepository` history (the 90th percentile of the
+    trailing `UNUSUAL_DAY_LOOKBACK_DAYS` days, same self-measuring
+    pattern as `exit_logic.DailyPaceTracker`). Stays `None` (feature
+    off) until at least `UNUSUAL_DAY_MIN_HISTORY_DAYS` days of real
+    history exist -- never guessed in the meantime. Purely
+    informational either way: never rejects an opportunity, only
+    sends one Telegram notice per day the first time the count is
+    reached."""
 
 
 @dataclass(frozen=True)
@@ -213,6 +256,8 @@ def run_one_tick(
         state.current_date = today
         state.dynamic_cap_today = None
         state.processed_entry_keys = set()
+        state.proposals_created_today = 0
+        state.unusual_day_alert_sent = False
         try:
             equity = broker.get_account_equity()
             state.loss_limit_tracker.start_new_day(today, equity)
@@ -222,6 +267,21 @@ def run_one_tick(
             )
         except BrokerClientError as e:
             notes.append(f"could not fetch account equity -- daily loss limit NOT locked today: {e}")
+
+        recent_counts = repo.recent_daily_counts(before_date=today, limit=UNUSUAL_DAY_LOOKBACK_DAYS)
+        if len(recent_counts) >= UNUSUAL_DAY_MIN_HISTORY_DAYS:
+            state.unusual_day_trade_count_threshold = percentile(sorted(recent_counts), 0.90)
+            notes.append(
+                f"unusual-day threshold self-updated for {today}: "
+                f"{state.unusual_day_trade_count_threshold:.1f} "
+                f"(90th percentile of the last {len(recent_counts)} trading days)"
+            )
+        else:
+            state.unusual_day_trade_count_threshold = None
+            notes.append(
+                f"unusual-day notice off today: only {len(recent_counts)}/{UNUSUAL_DAY_MIN_HISTORY_DAYS} "
+                "trading days of history so far"
+            )
 
     if state.dynamic_cap_today is None and len(spy_bars) >= 15:
         pace = session_pace_width_pct(spy_bars, minutes=15)
@@ -273,6 +333,23 @@ def run_one_tick(
             planned_exit = entry.entry_time + timedelta(minutes=state.dynamic_cap_today)
             state.position_tracker.record_open(entry.entry_time, planned_exit)
             proposals_created += 1
+            state.proposals_created_today += 1
+
+            threshold = state.unusual_day_trade_count_threshold
+            if (
+                threshold is not None
+                and not state.unusual_day_alert_sent
+                and state.proposals_created_today >= threshold
+            ):
+                state.unusual_day_alert_sent = True
+                send_message(
+                    bot_token=bot_token, chat_id=chat_id,
+                    text=(
+                        f"Unusual day notice: {state.proposals_created_today} proposals "
+                        f"today ({today}), at or above the measured threshold of "
+                        f"{threshold}. Informational only -- no trade has been blocked."
+                    ),
+                )
 
     submission_results = process_decisions(
         repo, pending_decisions, broker, quantity=quantity,

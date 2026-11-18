@@ -73,6 +73,45 @@ class TestSpxProposalRepository(unittest.TestCase):
         self.assertIsNotNone(reopened.get("SPX-1"))
 
 
+class TestRecentDailyCounts(unittest.TestCase):
+    """D-0095-A, 2026-11-18 -- self-updating unusual-day threshold
+    source: how many proposals were created on each of the most
+    recent trading days, strictly before a given date."""
+
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        self.repo = SpxProposalRepository(self.path)
+
+    def tearDown(self):
+        os.remove(self.path)
+
+    def _seed(self, date: str, count: int) -> None:
+        for i in range(count):
+            self.repo.save(_make(proposal_id=f"{date}-{i}", date=date))
+
+    def test_empty_repo_returns_empty(self):
+        self.assertEqual(self.repo.recent_daily_counts(before_date="2026-11-18", limit=20), [])
+
+    def test_counts_per_distinct_date(self):
+        self._seed("2026-11-10", 3)
+        self._seed("2026-11-11", 1)
+        counts = self.repo.recent_daily_counts(before_date="2026-11-18", limit=20)
+        self.assertEqual(sorted(counts), [1, 3])
+
+    def test_excludes_the_before_date_itself(self):
+        self._seed("2026-11-17", 5)
+        self._seed("2026-11-16", 2)
+        counts = self.repo.recent_daily_counts(before_date="2026-11-17", limit=20)
+        self.assertEqual(counts, [2])  # today's own 5 must not count
+
+    def test_respects_limit_keeping_most_recent(self):
+        for d in range(1, 8):
+            self._seed(f"2026-11-{d:02d}", d)
+        counts = self.repo.recent_daily_counts(before_date="2026-11-20", limit=3)
+        self.assertEqual(sorted(counts), [5, 6, 7])  # the 3 most recent dates
+
+
 def _make_position(proposal_id="SPX-1", **overrides) -> OpenPosition:
     defaults = dict(
         proposal_id=proposal_id, occ_symbol="SPXW261116C06900000", direction="call",

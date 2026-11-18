@@ -143,6 +143,19 @@ def report_trades_per_day(daily_counts: dict, daily_pnls: dict) -> None:
         return
     counts = sorted(daily_counts.values())
     print(f"  days: {len(counts)}  min={counts[0]} median={median(counts)} max={counts[-1]}")
+    print(
+        f"  75th percentile: {_percentile(counts, 0.75):.1f}  "
+        f"90th percentile: {_percentile(counts, 0.90):.1f}  "
+        f"95th percentile: {_percentile(counts, 0.95):.1f}"
+    )
+    print(
+        "\n  (Not a trading-behavior limit -- an 'unusual day' NOTIFICATION"
+        "\n  threshold, per the Controller's own suggestion: inform, never"
+        "\n  block, since the cap sweep below shows no profit case for"
+        "\n  blocking a high-count day. The 90th percentile above is the"
+        "\n  recommended starting threshold -- re-measure periodically"
+        "\n  rather than freezing it forever.)"
+    )
 
     # Tag-and-compare: split days into terciles by trade count, report
     # average pnl PER TRADE (not per day) in each tercile -- same

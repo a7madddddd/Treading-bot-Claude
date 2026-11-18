@@ -112,7 +112,7 @@ def main() -> int:
     ))
 
     decision_source.start()
-    state = LiveSessionState()
+    state = LiveSessionState()  # unusual-day threshold self-updates from repo history each day -- see live_loop.py
     start_time = datetime.now(timezone.utc)
     deadline = start_time + timedelta(hours=args.max_hours)
     stop_reason = "max-hours reached"

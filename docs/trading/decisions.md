@@ -8682,3 +8682,117 @@ independent window used throughout this workstream
 (2024-12-01..2025-05-31) before any daily trade-count cap is set for
 real -- this is measurement only, no trading-behavior change
 proposed yet.
+
+## Daily trade-count cap: measured, NOT applied -- replaced with an "unusual day" notification, 2026-11-18
+
+Controller ran the sweep on 2025-06-01..2025-12-31: unlike the clean
+plateau the concurrency-cap sweep showed, this one is noisy -- a
+trough at cap=6 (+$3,474) recovers by cap=18 (+$27,589, the GLOBAL
+MAXIMUM, slightly above the fully-uncapped total of +$27,162). There
+is no clean inflection point where more trades/day starts hurting;
+the earlier tercile view's "high-count days are worse" was an
+artifact of a too-wide aggregate bucket, not a reproducible effect.
+
+**DECISION: no daily trade-count cap.** A hard cap would have no
+measured profit justification and could reject genuinely good trades
+on an active day (the data argues the opposite of what the coarse
+tercile view suggested).
+
+**Controller's own follow-up, asked before closing the item:** "why
+make a limit when the daily loss limit already exists?" -- correct
+challenge. The loss limit is REACTIVE (acts after dollar losses
+accumulate); a trade-count cap would have been meant as PREVENTIVE,
+but the data shows no preventive case exists here. Controller then
+asked whether any alternative was suggested before closing, and
+proposed: replace the (unjustified) hard cap with a purely
+INFORMATIONAL notice -- never rejects a trade, only tells the
+Controller a day's trade count is statistically unusual, so a real
+anomaly (e.g. a filter malfunction generating far more signals than
+normal) is noticed without sacrificing the profitable high-count
+days the measurement actually found.
+
+### Implementation
+
+- **`scripts/spx0dte_measure_risk_sizing.py`**: `report_trades_per_day`
+  now also prints the 75th/90th/95th percentile of daily trade count,
+  labeled explicitly as a notification-threshold suggestion, not a
+  trading limit.
+- **`src/spx0dte/live_loop.py`**: `LiveSessionState` gains
+  `proposals_created_today` (reset each day alongside
+  `processed_entry_keys`), `unusual_day_alert_sent` (reset each day),
+  and `unusual_day_trade_count_threshold: Optional[int] = None` --
+  `None` turns the feature off entirely; NOT shipped with a guessed
+  default, per the "never a placeholder constant" rule. When set and
+  reached, `run_one_tick` sends ONE plain Telegram notice (via
+  `telegram_approval.send_message`, the same function already used
+  for session start/stop notices) the first time that day's proposal
+  count reaches it -- never rejects, never touches
+  `proposals_rejected_by_*`.
+- **`scripts/run_spx0dte_session.py`**: new
+  `--unusual-day-trade-count-threshold` CLI flag (default: unset,
+  i.e. off), passed into `LiveSessionState` at construction. The
+  Controller sets the real number from the measured 90th percentile
+  once ready -- not hardcoded here.
+
+### Tests
+
+4 new tests in `tests/spx0dte/test_live_loop.py`: off by default:
+fires once the threshold is reached, with the exact count recorded:
+stays off strictly below threshold; resets on a new day. Full suite:
+2056 passed, zero regressions.
+
+STATUS: implemented, tested. This is explicitly NOT a
+trading-behavior change -- it rejects nothing, per
+`.claude/rules/01-roles-and-authority.md` ("notifications" do not
+require per-trade approval).
+
+### Reworked to be fully self-updating -- Controller rejected the manual CLI number, 2026-11-18
+
+Controller's objection, after walking through activation: "my problem
+is I have to enter the number manually... I didn't want to make it
+manual." Correct push-back -- a feature meant to catch an unnoticed
+anomaly should not itself depend on a human remembering to re-measure
+and retype a number periodically.
+
+**Reworked, no CLI flag, no manual step at all:**
+
+- **`src/spx0dte/sqlite_repository.py`**: new
+  `SpxProposalRepository.recent_daily_counts(before_date, limit)` --
+  counts of proposals created on each of the most recent distinct
+  trading days STRICTLY BEFORE `before_date` (never including it, so
+  a day can't bias its own trailing window). Reads this bot's own
+  real trade history already sitting in `spx0dte.sqlite`; no new
+  table, no network call.
+- **`src/spx0dte/sizing.py`**: new public `percentile(sorted_values, pct)`
+  (same linear-interpolation formula as the measurement script's
+  private copy, kept in production code so `live_loop` never imports
+  from `scripts/`).
+- **`src/spx0dte/live_loop.py`**: `UNUSUAL_DAY_LOOKBACK_DAYS = 20`
+  (same window as `exit_logic.PACE_LOOKBACK_DAYS`) and
+  `UNUSUAL_DAY_MIN_HISTORY_DAYS = 5` (bootstrap judgment call,
+  conservative side -- below this many days a 90th percentile is too
+  noisy to trust). Each day, `run_one_tick` queries
+  `repo.recent_daily_counts()` and recomputes the threshold itself --
+  same self-measuring pattern `DailyPaceTracker` already uses, now
+  applied to this bot's own proposal history instead of SPY bars.
+  Stays `None` (feature off) below the minimum history, never a
+  guessed number in the meantime.
+- **`scripts/run_spx0dte_session.py`**: the
+  `--unusual-day-trade-count-threshold` flag is REMOVED entirely --
+  nothing to type, nothing to forget to update.
+
+### Tests
+
+4 tests in `tests/spx0dte/test_live_loop.py` replaced with ones that
+seed real repo history via a new `_seed_daily_counts` test helper
+(off with zero history; self-computed correctly from 5 real seeded
+days; correctly NOT reached on a busier history; today's own date
+correctly excluded from its own trailing window; counters reset on a
+new day). 4 new tests in `tests/spx0dte/test_sqlite_repository.py`
+for `recent_daily_counts` (empty repo, per-distinct-date counting,
+excludes `before_date` itself, respects `limit` keeping the most
+recent dates). 3 new tests for `sizing.percentile`. Full suite: 2064
+passed, zero regressions.
+
+STATUS: implemented, tested, NOT YET PUSHED -- presented for the
+Controller's push confirmation.

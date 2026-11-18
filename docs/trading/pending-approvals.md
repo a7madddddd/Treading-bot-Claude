@@ -5492,3 +5492,38 @@ added".
 STATUS: built, awaiting the Controller's run (both the original
 period and, per the cross-period-agreement rule, the second
 independent window). No trading-behavior change proposed yet.
+
+**UPDATE 2026-11-18 -- CLOSED, no cap applied.** The sweep's real
+result: no clean inflection point (a trough at cap=6, recovering to
+a GLOBAL MAXIMUM near cap=18 that is slightly above the fully
+uncapped total). No daily trade-count cap is justified by this data.
+Controller asked why a preventive cap was even being considered when
+the reactive daily loss limit already exists -- fair challenge,
+answered in `docs/trading/decisions.md`. Replaced the idea with a
+purely informational "unusual day" Telegram notice (never rejects a
+trade), threshold left unset (`None` = off) until the Controller
+sets it from the measured 90th-percentile trade count -- never a
+guessed default. 4 new tests, full suite 2056 passed. Full details:
+`docs/trading/decisions.md` D-0095-A, "Daily trade-count cap:
+measured, NOT applied".
+
+**UPDATE 2026-11-18 -- reworked, no manual step.** Controller
+rejected the manual CLI number ("I didn't want to make it manual").
+Threshold is now fully self-updating: `live_loop.run_one_tick`
+recomputes it each day from this bot's own real proposal history
+(`SpxProposalRepository.recent_daily_counts`, 90th percentile of the
+trailing 20 days, same self-measuring pattern as `DailyPaceTracker`)
+-- no flag, nothing to type or remember. Off until 5 real trading
+days of history exist. 11 new/changed tests, full suite 2064 passed.
+Full details: `docs/trading/decisions.md` D-0095-A, "Reworked to be
+fully self-updating".
+
+STATUS: implemented, tested, NOT YET PUSHED -- not a trading-behavior
+change, but touches `live_loop.py`, so held for the Controller's push
+confirmation.
+
+**Risk/sizing workstream (priority 2 of 3), remaining items:**
+re-check whether the concurrency cap should move from 2 to 3-4 (needs
+a second independent period, same rule as everything else); once
+that's settled, priority 3 of 3 (broader market context: live VIX,
+GEX reconsideration) is next.

@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 from spx0dte.sizing import (
     CONTRACT_MULTIPLIER, CONTRACTS_PER_TRADE, DAILY_LOSS_LIMIT_PCT, MAX_CONCURRENT_POSITIONS,
     ConcurrentPositionTracker, DailyLossLimitTracker, DailyTradeCounter,
-    contracts_for_trade, realized_pnl_dollars,
+    contracts_for_trade, percentile, realized_pnl_dollars,
 )
 
 
@@ -58,6 +58,21 @@ class TestDailyTradeCounter(unittest.TestCase):
         self.assertTrue(counter.can_trade(today))
         counter.record_trade(today)
         self.assertFalse(counter.can_trade(today))
+
+
+class TestPercentile(unittest.TestCase):
+    def test_matches_known_values(self):
+        values = list(range(1, 11))  # 1..10, already sorted
+        self.assertEqual(percentile(values, 0.0), 1)
+        self.assertEqual(percentile(values, 1.0), 10)
+        self.assertAlmostEqual(percentile(values, 0.5), 5.5)
+
+    def test_single_value(self):
+        self.assertEqual(percentile([7.0], 0.9), 7.0)
+
+    def test_rejects_empty_sequence(self):
+        with self.assertRaises(ValueError):
+            percentile([], 0.5)
 
 
 class TestRealizedPnlDollars(unittest.TestCase):

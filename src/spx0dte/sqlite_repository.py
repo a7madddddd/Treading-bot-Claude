@@ -123,6 +123,30 @@ class SpxProposalRepository:
             rows = cur.fetchall()
         return [_from_row(r) for r in rows]
 
+    def recent_daily_counts(self, *, before_date: str, limit: int) -> list:
+        """How many proposals were created on each of the `limit`
+        most recent distinct trading days strictly BEFORE
+        `before_date` (never including it -- today's own count is
+        still accumulating and must not bias its own trailing
+        window). Self-updating history for `live_loop`'s "unusual
+        day" notice (D-0095-A, 2026-11-18): no manual input, derived
+        from this bot's own real trade history, the same way
+        `exit_logic.DailyPaceTracker` self-updates from recent pace
+        instead of a fixed constant."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT date, COUNT(*) as cnt FROM spx_proposals
+                WHERE date < ?
+                GROUP BY date
+                ORDER BY date DESC
+                LIMIT ?
+                """,
+                (before_date, limit),
+            )
+            rows = cur.fetchall()
+        return [r[1] for r in rows]
+
 
 class SpxPositionRepository:
     """Separate class, same db file as SpxProposalRepository (shares

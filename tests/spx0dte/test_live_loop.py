@@ -6,9 +6,29 @@ from datetime import datetime, timedelta, timezone
 from execution.broker_client import BrokerClient, BrokerOrderState
 from spx0dte.greeks import OptionType, black_scholes_price
 from spx0dte.live_loop import LiveSessionState, run_one_tick
-from spx0dte.proposal import ProposalApprovalState
+from spx0dte.proposal import OptionTradeProposal, ProposalApprovalState
 from spx0dte.sqlite_repository import SpxPositionRepository, SpxProposalRepository
 from spx0dte.telegram_approval import ControllerDecision, DecisionKind
+
+
+def _seed_daily_counts(repo: SpxProposalRepository, date_to_count: dict) -> None:
+    """Writes `count` synthetic proposals for each `date` (YYYY-MM-DD)
+    so tests can exercise the unusual-day threshold's self-computation
+    from real repo history, without a real multi-day live run."""
+    seq = 0
+    for date_str, count in date_to_count.items():
+        day_dt = datetime.strptime(date_str, "%Y-%m-%d").replace(
+            hour=15, tzinfo=timezone.utc,
+        )
+        for _ in range(count):
+            seq += 1
+            proposal = OptionTradeProposal(
+                proposal_id=f"SEED-{seq}", date=date_str, direction="call", strike=5900,
+                occ_symbol=f"SPXW{date_str.replace('-', '')[2:]}C05900000",
+                entry_time=day_dt, hold_cap_minutes=40.0, estimated_premium=1.0,
+                vix=None, filters_passed="seed", created_at=day_dt,
+            )
+            repo.save(proposal)
 
 
 class FakeRatioProvider:
@@ -178,6 +198,66 @@ class TestRunOneTick(unittest.TestCase):
         result = self._tick()
         self.assertEqual(result.proposals_created, 0)
         self.assertEqual(result.proposals_rejected_by_loss_limit, 1)
+
+    def test_unusual_day_threshold_off_without_enough_history(self):
+        # Fresh repo -- zero prior trading days of history.
+        result = self._tick()
+        self.assertEqual(result.proposals_created, 1)
+        self.assertIsNone(self.state.unusual_day_trade_count_threshold)
+        self.assertFalse(self.state.unusual_day_alert_sent)
+
+    def test_unusual_day_threshold_self_computed_from_real_history(self):
+        # 5 prior days (2026-11-10..14), all with 1 proposal -- 90th
+        # percentile of [1,1,1,1,1] is 1, so today's first and only
+        # proposal (also 1) should reach it.
+        _seed_daily_counts(self.repo, {
+            "2026-11-10": 1, "2026-11-11": 1, "2026-11-12": 1,
+            "2026-11-13": 1, "2026-11-14": 1,
+        })
+        result = self._tick()
+        self.assertEqual(result.proposals_created, 1)
+        self.assertEqual(self.state.unusual_day_trade_count_threshold, 1.0)
+        self.assertTrue(self.state.unusual_day_alert_sent)
+
+    def test_unusual_day_threshold_not_reached_when_history_is_busier(self):
+        # 5 prior days all with 10 proposals -- 90th percentile is 10;
+        # today's single proposal stays well below it.
+        _seed_daily_counts(self.repo, {
+            "2026-11-10": 10, "2026-11-11": 10, "2026-11-12": 10,
+            "2026-11-13": 10, "2026-11-14": 10,
+        })
+        result = self._tick()
+        self.assertEqual(result.proposals_created, 1)
+        self.assertEqual(self.state.unusual_day_trade_count_threshold, 10.0)
+        self.assertFalse(self.state.unusual_day_alert_sent)
+
+    def test_unusual_day_history_excludes_todays_own_date(self):
+        # A row already saved for TODAY (e.g. from a prior tick) must
+        # never count toward its own trailing window.
+        _seed_daily_counts(self.repo, {
+            "2026-11-10": 1, "2026-11-11": 1, "2026-11-12": 1,
+            "2026-11-13": 1, self.now.strftime("%Y-%m-%d"): 99,
+        })
+        self._tick()
+        self.assertIsNone(self.state.unusual_day_trade_count_threshold)  # still only 4 PRIOR days
+
+    def test_unusual_day_counters_reset_on_new_day(self):
+        _seed_daily_counts(self.repo, {
+            "2026-11-10": 1, "2026-11-11": 1, "2026-11-12": 1,
+            "2026-11-13": 1, "2026-11-14": 1,
+        })
+        self._tick()
+        self.assertTrue(self.state.unusual_day_alert_sent)
+
+        next_day_start = self.session_start + timedelta(days=1)
+        next_day_bars = _build_breakout_spy_bars(next_day_start)
+        next_day_client = FakeOptionsClient(
+            spy_bars=next_day_bars, found_strike=(5920, "SPXW261118C05920000"),
+            option_bars=self.client._option_bars,
+        )
+        next_now = next_day_start + timedelta(minutes=17)
+        self._tick(now=next_now, options_client=next_day_client)
+        self.assertEqual(self.state.proposals_created_today, 1)  # reset, then one new proposal
 
     def test_new_day_resets_processed_keys(self):
         self._tick()
