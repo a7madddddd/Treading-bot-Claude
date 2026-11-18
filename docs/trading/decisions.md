@@ -8507,3 +8507,55 @@ change proposed yet -- this is measurement only; the actual daily
 loss limit, any trade-count cap, and any concurrency-cap change will
 each be a separate CHANGE proposal once the Controller has seen the
 real distributions.
+
+### CORRECTION, 2026-11-18 -- every pnl number in this module's history is in raw per-share price points, not real dollars
+
+Found while reading the Controller's first real run of
+`spx0dte_measure_risk_sizing.py`, before any daily-loss number was
+chosen -- not a code bug, a units/presentation gap.
+
+**FACT.** Every `pnl` computed anywhere in this module
+(`spx0dte_measure_risk_sizing.py`, `spx0dte_measure_cross_market.py`,
+and the original D-0095 backtests) is `exit_price - entry_price`: the
+OPTION'S OWN QUOTED PRICE difference, per share, with no contract
+multiplier applied anywhere in this codebase.
+
+**FACT, market convention, not a property of our code.** A US listed
+equity/index option contract (SPXW included) represents 100
+shares-equivalent. The real dollar P&L of a 1-contract position is
+the per-share price difference multiplied by 100.
+
+**CONSEQUENCE.** Every `total_pnl` figure recorded for this module
+since D-0095 is in raw per-share price-point units, not real dollars,
+and must be multiplied by 100 (at the approved 1-contract size) to
+read as an actual dollar amount. This was never stated explicitly
+before now, so a figure like D-0095's "`2025 n=254 total_pnl=+77.91`"
+reads, correctly, as **+$7,791**, not +$77.91 -- and every
+`profit_factor`/`expectancy` RATIO in the record is unaffected (both
+numerator and denominator scale by the same 100x), but every bare
+dollar figure needs this correction applied by the reader.
+
+**This run's daily-pnl distribution, corrected to real dollars
+(x100, at 1 contract):**
+```
+worst day:            -40.79  ->  -$4,079
+5th percentile day:   -15.43  ->  -$1,543
+25th percentile day:   -3.91  ->    -$391
+median day:            +0.46  ->     +$46
+mean day:              +1.84  ->    +$184
+best day:             +55.93  ->  +$5,593
+mean losing day:       -7.72  ->    -$772
+worst 5 days: [-4079, -2488, -2425, -2406, -2230]
+```
+
+**Not yet corrected, left for the Controller to use once a daily-loss
+number is chosen:** this conversion assumes the approved 1-contract
+baseline (`CONTRACTS_PER_TRADE = 1`); if `--quantity` is ever run at
+more than 1, every one of these dollar figures scales linearly with
+it.
+
+**NEXT:** re-read the trades-per-day tercile and concurrency-resweep
+numbers from the same run with this x100 correction in mind before
+drawing any conclusion from them either (the RATIOS there --
+profit_factor, pnl/trade -- are already correct as printed; only a
+bare dollar total needs the correction).

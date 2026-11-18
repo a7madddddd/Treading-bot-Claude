@@ -82,8 +82,22 @@ def _percentile(sorted_vals: list, pct: float) -> float:
     return sorted_vals[f] + (sorted_vals[c] - sorted_vals[f]) * (k - f)
 
 
+CONTRACT_MULTIPLIER = 100  # US listed options convention, not an Alpaca/code choice -- 1 contract = 100 shares-equivalent
+
+
+def _dollars(raw_per_share_pnl: float, quantity: int = 1) -> float:
+    """Converts a raw exit_price-entry_price figure (per share, as
+    every pnl in this module is computed) into the real dollar amount
+    a position of `quantity` contracts would actually realize. See
+    docs/trading/decisions.md D-0095-A, 'CORRECTION... not real
+    dollars' -- every bare total in this project's history before
+    2026-11-18 needs this same x100 conversion applied by the reader."""
+    return raw_per_share_pnl * CONTRACT_MULTIPLIER * quantity
+
+
 def report_daily_loss_distribution(daily_pnls: dict) -> None:
     print("\n=== 1. DAILY PNL DISTRIBUTION (for a data-grounded daily loss limit) ===")
+    print("  (raw = per-share option price points; $ = real dollars at 1 contract, raw x100)")
     if not daily_pnls:
         print("  no trading days with accepted trades -- nothing to report.")
         return
@@ -92,19 +106,23 @@ def report_daily_loss_distribution(daily_pnls: dict) -> None:
     losing_days = [v for v in values if v < 0]
     print(f"  trading days with >=1 accepted trade: {n}")
     print(f"  losing days: {len(losing_days)} ({len(losing_days)/n:.1%})")
-    print(f"  worst day: {values[0]:+.2f}")
-    print(f"  5th percentile day: {_percentile(values, 0.05):+.2f}")
-    print(f"  25th percentile day: {_percentile(values, 0.25):+.2f}")
-    print(f"  median day: {median(values):+.2f}")
-    print(f"  mean day: {mean(values):+.2f}")
-    print(f"  best day: {values[-1]:+.2f}")
+    print(f"  worst day: {values[0]:+.2f} raw (${_dollars(values[0]):+,.0f})")
+    print(f"  5th percentile day: {_percentile(values, 0.05):+.2f} raw (${_dollars(_percentile(values, 0.05)):+,.0f})")
+    print(f"  25th percentile day: {_percentile(values, 0.25):+.2f} raw (${_dollars(_percentile(values, 0.25)):+,.0f})")
+    print(f"  median day: {median(values):+.2f} raw (${_dollars(median(values)):+,.0f})")
+    print(f"  mean day: {mean(values):+.2f} raw (${_dollars(mean(values)):+,.0f})")
+    print(f"  best day: {values[-1]:+.2f} raw (${_dollars(values[-1]):+,.0f})")
     if losing_days:
-        print(f"  mean losing day: {mean(losing_days):+.2f}")
-        print(f"  worst 5 days: {[round(v, 2) for v in values[:5]]}")
+        print(f"  mean losing day: {mean(losing_days):+.2f} raw (${_dollars(mean(losing_days)):+,.0f})")
+        worst5_dollars = [round(_dollars(v)) for v in values[:5]]
+        print(f"  worst 5 days (raw): {[round(v, 2) for v in values[:5]]}")
+        print(f"  worst 5 days ($): {worst5_dollars}")
     print(
-        "\n  Choose a daily-loss-stop level from this distribution directly --"
+        "\n  Choose a daily-loss-stop level from the $ column directly --"
         "\n  e.g. 'a bit worse than the 5th-percentile day' or 'the worst day"
         "\n  seen plus a margin' -- not a round number picked independently of it."
+        "\n  If --quantity (live) is ever run above 1 contract, scale this"
+        "\n  linearly: these $ figures assume the approved 1-contract baseline."
     )
 
 
