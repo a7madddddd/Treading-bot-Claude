@@ -8637,6 +8637,48 @@ Full suite: 2052 passed, zero regressions.
    accepted trade-off (recorded here so it is a decision, not a
    silent gap), not a system limitation discovered later.
 
-STATUS: implemented, tested, NOT YET PUSHED -- awaiting the
-Controller's explicit push approval per this project's push policy
-for any trading-behavior change.
+STATUS: implemented, tested, Controller approved the push, PUSHED
+(commit `2fe7b03`).
+
+## Daily trade-count cap sweep added to the measurement tool, 2026-11-18
+
+Controller asked for a suggestion on the daily trade-count cap, given
+the trades-per-day tercile finding above ("high-count days, 8-23
+trades, net loser -- but too wide a range to say where exactly it
+turns"). Recommended NOT picking a number from that wide bucket, but
+measuring the exact inflection point first, per the "calculate from
+data, never a guess" rule -- same reasoning the Controller has applied
+to every prior threshold in this project. Controller agreed.
+
+Added `simulate_daily_trade_count_cap(trades_by_day, cap)` +
+`report_daily_trade_count_cap_sweep()` to
+`scripts/spx0dte_measure_risk_sizing.py`: for each day, keeps only
+the first `cap` trades in entry-time order (rejects the (cap+1)th
+candidate onward that day -- pure per-day truncation, no cross-day
+state, unlike the concurrency sweep) and sweeps `cap` from 1 to the
+observed daily max, reporting total pnl (raw and real dollars) and
+profit_factor at each step -- same "look for the plateau/reversal"
+read as the existing concurrency-cap resweep (section 3), applied to
+trade COUNT instead of simultaneous OPEN positions.
+
+Smoke-tested offline with a synthetic 2-day fixture (day 1: 3 trades,
+two small wins then one big loss; day 2: 1 win) -- confirms cap=2
+is the correct peak (+$2,500) and cap=3 reverses it (-$2,500),
+matching the intended "truncate this day's trade list, don't touch
+other days" semantics exactly.
+
+Full suite: 2052 passed, zero regressions (tool is standalone,
+exercised by the smoke test above, not wired into pytest -- same
+pattern as every other `spx0dte_measure_*.py` script).
+
+Run command (same tool, now reports section 4 too):
+
+    cd ~/Treading-bot-Claude && set -a && source .env && set +a && \
+    PYTHONPATH=src python3.11 scripts/spx0dte_measure_risk_sizing.py --start 2025-06-01 --end 2025-12-31
+
+STATUS: built, awaiting the Controller's run. Per the cross-period-
+agreement rule, the Controller should also run this on the second
+independent window used throughout this workstream
+(2024-12-01..2025-05-31) before any daily trade-count cap is set for
+real -- this is measurement only, no trading-behavior change
+proposed yet.

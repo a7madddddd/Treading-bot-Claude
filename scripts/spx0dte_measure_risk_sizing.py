@@ -30,6 +30,16 @@ and pnl. From that one list of real trades:
    simulate_exit), not a planned-exit estimate -- so this is a
    fresh, independent check of whether cap=2 still holds, not a
    re-display of the old numbers.
+4. DAILY TRADE-COUNT CAP SWEEP (2026-11-18 addition) -- the tercile
+   view in (2) said "high-count days are worse" but its "high" bucket
+   spanned 8-23 trades/day, too wide to say WHERE the cap should sit.
+   This sweeps a cap K from 1 to the observed max trades/day: for each
+   day, take only that day's first K trades in entry-time order
+   (reject the (K+1)th candidate onward, same "reject the extra
+   signal" shape as the concurrency cap, applied per-day instead of
+   per-moment) and report total pnl / profit_factor at each K -- same
+   read as the concurrency sweep: look for where it plateaus or
+   reverses, don't pick a number independently of that point.
 
 Uses only PAST, already-completed trading days -- historical
 measurement, not a live run.
@@ -199,6 +209,46 @@ def report_concurrency_resweep(trades: list) -> None:
     )
 
 
+def simulate_daily_trade_count_cap(trades_by_day: dict, cap: int) -> dict:
+    """For each day, keep only the first `cap` trades in entry-time
+    order (reject the (cap+1)th candidate onward that day) and sum
+    pnl over every kept trade across all days. Pure day-by-day
+    truncation -- no cross-day state, unlike the concurrency sweep."""
+    kept_pnls: list = []
+    for _date, day_trades in trades_by_day.items():
+        ordered = sorted(day_trades, key=lambda t: t[0])
+        kept_pnls.extend(pnl for _entry_time, pnl in ordered[:cap])
+    n = len(kept_pnls)
+    wins = [p for p in kept_pnls if p > 0]
+    losses = [p for p in kept_pnls if p <= 0]
+    gross_profit = sum(wins)
+    gross_loss = abs(sum(losses))
+    pf = round(gross_profit / gross_loss, 4) if gross_loss > 0 else float("inf")
+    return {"n": n, "total_pnl": sum(kept_pnls), "profit_factor": pf}
+
+
+def report_daily_trade_count_cap_sweep(trades_by_day: dict) -> None:
+    print("\n=== 4. DAILY TRADE-COUNT CAP SWEEP (where exactly does an extra trade/day start hurting?) ===")
+    if not trades_by_day:
+        print("  no trading days -- nothing to report.")
+        return
+    max_count = max(len(day_trades) for day_trades in trades_by_day.values())
+    for cap in range(1, max_count + 1):
+        r = simulate_daily_trade_count_cap(trades_by_day, cap)
+        print(
+            f"  cap={cap}: n={r['n']} total_pnl={r['total_pnl']:+.2f} raw "
+            f"(${_dollars(r['total_pnl']):+,.0f}) profit_factor={r['profit_factor']}"
+        )
+    print(
+        "\n  Look for where total_pnl plateaus or turns down as the cap"
+        "\n  rises, same read as the concurrency sweep above -- that point"
+        "\n  is where a daily trade-count cap should sit. Re-run this on a"
+        "\n  second independent period before setting it for real, same"
+        "\n  cross-period-agreement rule as every other filter/limit"
+        "\n  decision in this project."
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--start", required=True)
@@ -222,6 +272,7 @@ def main() -> None:
     daily_pnls: dict = defaultdict(float)
     daily_counts: dict = defaultdict(int)
     all_trades: list = []  # (entry_time, exit_time, pnl)
+    trades_by_day: dict = defaultdict(list)  # date -> [(entry_time, pnl), ...]
     skip_notes = 0
 
     for i, date in enumerate(dates):
@@ -284,6 +335,7 @@ def main() -> None:
             daily_pnls[date] += pnl
             daily_counts[date] += 1
             all_trades.append((entry.entry_time, result.exit_time, pnl))
+            trades_by_day[date].append((entry.entry_time, pnl))
 
         if (i + 1) % 20 == 0:
             print(f"  ...{i + 1}/{len(dates)} dates processed")
@@ -294,6 +346,7 @@ def main() -> None:
     report_daily_loss_distribution(daily_pnls)
     report_trades_per_day(daily_counts, daily_pnls)
     report_concurrency_resweep(all_trades)
+    report_daily_trade_count_cap_sweep(trades_by_day)
 
 
 if __name__ == "__main__":

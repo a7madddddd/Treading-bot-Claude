@@ -5476,6 +5476,19 @@ tests, full suite 2052 passed, zero regressions. Full details:
 `docs/trading/decisions.md` D-0095-A, "Daily loss limit built -- 2%
 of whole-account equity".
 
-**STATUS: implemented and tested, NOT PUSHED** -- this is a
-trading-behavior change (blocks new entries once triggered) and
-stays unpushed until the Controller explicitly approves the push.
+**STATUS: implemented, tested, Controller approved, PUSHED**
+(commit `2fe7b03`).
+
+**UPDATE 2026-11-18 -- daily trade-count cap sweep added to the
+measurement tool.** The earlier tercile view's "high-count days are
+worse" bucket spanned 8-23 trades/day, too wide to set a real cap
+from. Added a per-day-truncation cap sweep (1 to observed max) to
+`scripts/spx0dte_measure_risk_sizing.py`, reporting where total pnl
+actually plateaus/reverses -- same read as the existing concurrency
+sweep. Smoke-tested; full suite 2052 passed. Full details:
+`docs/trading/decisions.md` D-0095-A, "Daily trade-count cap sweep
+added".
+
+STATUS: built, awaiting the Controller's run (both the original
+period and, per the cross-period-agreement rule, the second
+independent window). No trading-behavior change proposed yet.
