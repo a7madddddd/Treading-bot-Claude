@@ -5534,8 +5534,28 @@ limit (2% whole-account equity) built and applied; daily trade-count
 cap measured, rejected, replaced with a self-updating informational
 notice; concurrency cap re-checked and kept at 2.
 
-**NEXT: priority 3 of 3 -- broader market context.** Live intraday
-VIX source; GEX/dealer-positioning reconsideration now that the
-account's Options Agreement is signed (previously deferred in D-0095
-as "not backtestable without paid data" -- may be worth a fresh
-look).
+## P-100 — Priority 3 of 3: live VIX source for `vix_in_tradeable_range`
+
+**Opened 2026-11-18.** Direct live testing confirmed no free
+real-time official VIX source exists anywhere (CBOE's own endpoints
+refuse/404, Yahoo's public chart endpoint lags ~15 minutes
+consistently, Nasdaq rejects the symbol) -- the same structural,
+industry-wide licensing restriction already known from real-time
+options data (OPRA). Comprehensive design agreed with the Controller:
+anchor to yesterday's real FRED VIXCLS close, scale by today's
+real-time relative move in two independent free proxies (VIXY daily
+ratio; SPY realized-volatility ratio), same "stale anchor + live
+relative move" shape as Option B and the SPY:SPX ratio provider.
+
+Built `scripts/spx0dte_measure_vix_proxy.py` (validates each proxy's
+estimate against the real historical FRED VIXCLS close for that same
+day) plus a small `alpaca_client.py` generalization
+(`get_stock_daily_bars`, no behavior change for existing callers).
+Smoke-tested offline; full suite 2064 passed. Full details:
+`docs/trading/decisions.md` D-0095-A, "Live VIX source research
+started".
+
+STATUS: built, awaiting the Controller's run (both periods, per the
+cross-period-agreement rule). No trading-behavior change proposed
+yet. GEX/dealer-positioning reconsideration (also part of priority 3)
+not yet started.

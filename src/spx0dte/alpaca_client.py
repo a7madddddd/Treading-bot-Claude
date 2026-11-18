@@ -119,21 +119,26 @@ class AlpacaOptionsClient:
 
     def get_spy_daily_bars(self, start_date: str, end_date: str) -> List[dict]:
         """SPY 1-day bars between `start_date`/`end_date` (YYYY-MM-DD,
-        inclusive). Used for ratio recalibration (see
-        scripts/spx0dte_recalibrate_ratio.py), not the minute-bar
-        signal path -- a separate method rather than overloading
-        get_spy_minute_bars's timeframe, so each stays a single,
-        obviously-correct call. `feed=iex` for the same free-tier
-        reason as get_spy_minute_bars; a daily bar for a day that
-        already closed is not "recent" in Alpaca's sense regardless,
-        but specifying it explicitly costs nothing and removes any
-        ambiguity for a range that includes today."""
+        inclusive). Thin wrapper around `get_stock_daily_bars` -- kept
+        for existing callers (`ratio_calibration.py`) that already
+        name it explicitly; new callers needing a different symbol
+        (e.g. VIXY/VXX for the VIX-proxy measurement) should call
+        `get_stock_daily_bars` directly."""
+        return self.get_stock_daily_bars("SPY", start_date, end_date)
+
+    def get_stock_daily_bars(self, symbol: str, start_date: str, end_date: str) -> List[dict]:
+        """1-day bars for any stock `symbol` between `start_date`/
+        `end_date` (YYYY-MM-DD, inclusive). `feed=iex` for the same
+        free-tier reason as `get_stock_minute_bars`; a daily bar for
+        a day that already closed is not "recent" in Alpaca's sense
+        regardless, but specifying it explicitly costs nothing and
+        removes any ambiguity for a range that includes today."""
         qs = urllib.parse.urlencode({
-            "symbols": "SPY", "timeframe": "1Day", "feed": "iex",
+            "symbols": symbol, "timeframe": "1Day", "feed": "iex",
             "start": f"{start_date}T00:00:00Z", "end": f"{end_date}T23:59:59Z", "limit": 1000,
         })
         body = self._get(f"/v2/stocks/bars?{qs}")
-        return body.get("bars", {}).get("SPY", [])
+        return body.get("bars", {}).get(symbol, [])
 
     def get_option_bars(self, symbol: str, start_iso: str, end_iso: str, limit: int = 200) -> List[dict]:
         """Bars for one OCC option `symbol` (e.g. SPXW261104C06900000)

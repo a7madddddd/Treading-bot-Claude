@@ -8843,3 +8843,86 @@ entries.
 NEXT: Controller priority 3 of 3 -- broader market context (live
 intraday VIX source; GEX/dealer-positioning reconsideration now that
 the account's Options Agreement is signed).
+
+## Live VIX source research started: no free real-time official source exists, 2026-11-18
+
+### Research (real tests, not assumption)
+
+Tested directly, live, before proposing anything: CBOE's own
+delayed-quote endpoints (404 / AccessDenied), Yahoo's public
+`v8/finance/chart` endpoint for `^VIX` (works, but its
+`regularMarketTime` held IDENTICAL across two real calls 5 seconds
+apart, then showed an exact ~15-minute lag behind wall-clock time on
+a third call made minutes later -- a consistent, structural delay,
+not a fluke), Yahoo's `v7/finance/quote` endpoint (now requires auth,
+`"Unauthorized"`), Nasdaq's quote API (`"Symbol not exists"` for
+`^VIX`/`VIX`). **Conclusion: no free source serves real-time official
+VIX anywhere tested -- the same structural, industry-wide licensing
+reality already encountered for real-time OPTIONS data (OPRA), now
+confirmed for INDEX data too.** Further searching for a free
+real-time official-VIX source is not expected to find one; the
+economics are the same reason, not a vendor-specific gap.
+
+### Design (Controller-approved direction)
+
+Rejected two single-proxy ideas on their own honest trade-offs
+(discussed with the Controller before this, not re-litigated here):
+VIXY/VXX alone (real-time, forward-looking like real VIX since it
+tracks VIX FUTURES, but has its own futures-roll/contango noise
+unrelated to volatility) and SPY realized volatility alone (real-time,
+zero new dependency, but backward-looking -- structurally blind to
+anticipatory fear ahead of an event, a blind spot only PARTIALLY
+covered by the existing `economic_calendar_clear` filter, which only
+catches SCHEDULED macro releases, not unscheduled news or
+geopolitical shocks).
+
+**Comprehensive design, same "stale real anchor + live relative
+move" shape already proven twice in this project** (`greeks.
+reprice_from_stale_quote` / Option B; `ratio_calibration.
+RatioProvider`): anchor to YESTERDAY's real FRED VIXCLS close (one
+day stale, never guessed), then scale it by TODAY's real-time
+relative change in a fast proxy:
+
+    estimated_vix_today = yesterdays_real_vix_close * (proxy_today / proxy_yesterday)
+
+The proxy's ABSOLUTE level never has to be trusted, only its
+RELATIVE day-over-day change -- which sidesteps each single-proxy
+idea's main weakness. Two independent proxies for the ratio, measured
+separately and averaged: VIXY's daily close ratio, and SPY's own
+realized-volatility ratio (stdev of 1-minute log returns within each
+day; the annualization constant is deliberately omitted, since it
+cancels exactly in a same-unit day-over-day ratio).
+
+### Implementation (measurement only, not yet wired into any filter)
+
+- `src/spx0dte/alpaca_client.py`: generalized `get_spy_daily_bars` the
+  same way `get_spy_minute_bars` was earlier -- new
+  `get_stock_daily_bars(symbol, start, end)`, `get_spy_daily_bars` now
+  a thin wrapper. No behavior change for existing callers
+  (`ratio_calibration.py`), confirmed by the unchanged existing tests.
+- `scripts/spx0dte_measure_vix_proxy.py` (new): fetches FRED VIXCLS
+  (local `fetch_vixcls_closes`, same shape as `ratio_calibration.
+  fetch_sp500_closes` for a different series -- kept local to this
+  research script rather than coupling production code to it), VIXY
+  daily bars, and SPY minute bars for a date range; for each day,
+  computes both candidate estimates against yesterday's real anchor,
+  and compares each (plus their average) against that SAME day's
+  REAL FRED VIXCLS close -- validation only possible in hindsight,
+  this is historical measurement, exactly the same validation shape
+  `scripts/spx0dte_validate_greeks.py` used for Option B.
+
+Smoke-tested offline (no network): `realized_vol` against a flat
+price series (zero), a varying series (nonzero), and too-few-bars
+(zero, graceful); `summarize_errors` against empty and real sample
+inputs. Full suite: 2064 passed, zero regressions.
+
+Run command:
+
+    cd ~/Treading-bot-Claude && set -a && source .env && set +a && \
+    PYTHONPATH=src python3.11 scripts/spx0dte_measure_vix_proxy.py --start 2025-06-01 --end 2025-12-31
+
+STATUS: built, awaiting the Controller's run. Per this project's
+cross-period-agreement rule, the second independent window
+(2024-12-01..2025-05-31) should also be run before wiring anything
+into `entry_filters.vix_in_tradeable_range` for real. No
+trading-behavior change proposed yet.

@@ -62,13 +62,32 @@ instead.**
   original open items are now built and tested. VERIFIED on the VM
   with a 2-hour real-market dry run, 2026-11-17 (signal/pricing path
   only; no trade fired)
-- `scripts/spx0dte_measure_cross_market.py` — measures whether
+- `scripts/spx0dte_measure_cross_market.py` — measured whether
   `entry_filters.cross_market_confirmed` (QQQ/IWM agreement) has real
-  discriminating power, same "tag, don't enforce, compare subsets"
-  method that debunked the volume filter in D-0095. Built, not yet
-  run. First of three Controller-selected improvement workstreams
-  (signal quality / risk+sizing / market context) before permanent
-  deployment
+  discriminating power. RESULT: NOT activated -- the corrected,
+  time-synchronized measurement reversed direction between the two
+  independent periods (a lookahead bug had inflated the first,
+  uncorrected run). Signal-quality workstream (1 of 3) CLOSED with
+  this negative finding
+- `scripts/spx0dte_measure_risk_sizing.py` — daily loss limit (RESULT:
+  built and applied, 2% of whole-account equity), daily trade-count
+  cap (RESULT: measured and rejected, no clean inflection point;
+  replaced by a self-updating informational notice, never a reject),
+  and a concurrency-cap resweep (RESULT: kept at 2, no reproducible
+  cross-period case to raise it). Risk/sizing workstream (2 of 3)
+  CLOSED
+- `src/spx0dte/sizing.py` — `DailyLossLimitTracker`, `realized_pnl_dollars`
+  (the 100x contract multiplier this module's pnl figures were
+  missing until 2026-11-18 -- see decisions.md "CORRECTION"),
+  `percentile()`
+- `scripts/spx0dte_measure_vix_proxy.py` — market-context workstream
+  (3 of 3), in progress: no free real-time official VIX source
+  exists anywhere (verified by direct live testing, same OPRA-style
+  licensing restriction as options data). Measures a comprehensive
+  "stale real anchor + live relative move" proxy (yesterday's real
+  FRED VIXCLS close, scaled by today's VIXY/SPY-realized-vol ratio),
+  same shape as Option B and the SPY:SPX ratio provider. Built, not
+  yet run
 - `tests/spx0dte/` — unit tests for all of the above (all against fakes,
   no real network/broker calls)
 - `docs/trading/decisions.md` D-0095 / D-0095-A — full design, every
