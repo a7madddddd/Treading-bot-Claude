@@ -8361,3 +8361,75 @@ Run command (same as before, same tool, now fixed):
 Full suite re-run after the fix: 2041 passed, zero regressions
 (fix is confined to the measurement script; no production code
 changed in this entry).
+
+### FINAL RESULT -- corrected measurement reverses the earlier finding; cross_market_confirmed NOT activated, 2026-11-18
+
+Controller pulled the fix and re-ran both periods on the VM.
+
+**Period 1 (2025-06-01..2025-12-31, 153 days, 0 skips), corrected:**
+```
+would_have_REJECTED by cross-market: n=525 total_pnl=+329.50 win_rate=35.05% expectancy=+0.6276 profit_factor=1.5831
+would_have_PASSED   by cross-market: n=392 total_pnl=-57.88  win_rate=30.36% expectancy=-0.1477 profit_factor=0.8962
+```
+This is the OPPOSITE of the pre-fix result for this same period
+(previously: rejected 0.895, passed 2.1282). The subset the filter
+would reject is the one that was actually profitable; the subset it
+would pass was the net loser. The entire apparent edge in the
+original (buggy) measurement was an artifact of comparing each
+morning/midday opportunity against QQQ/IWM's END-OF-DAY close.
+
+**Period 2 (2024-12-01..2025-05-31, 130 days, 0 skips), corrected:**
+```
+would_have_REJECTED by cross-market: n=355 total_pnl=-39.08 win_rate=35.77% expectancy=-0.1101 profit_factor=0.9427
+would_have_PASSED   by cross-market: n=344 total_pnl=+62.40 win_rate=40.12% expectancy=+0.1814 profit_factor=1.0734
+```
+A small edge toward the passed subset this time, but far weaker than
+anything measured before the fix, and n=355/344 is a near 50/50
+split either way.
+
+**Method 2 probe (confirmation-strength terciles, would-pass subset),
+corrected:** Period 1: weak=1.0632, mid=0.7664, strong=0.9595 (not
+monotonic, noisy). Period 2: weak=0.9264, mid=0.8663, strong=1.4362
+(jump in the top tercile only). No consistent climb in either period
+on its own, and the two periods don't even agree on which tercile
+pattern to expect.
+
+**DECISION, applying the project's own cross-period-agreement rule
+(same rule that dropped `volume_confirmed`, D-0095):** the DIRECTION
+of the effect reverses between the two periods (period 1: rejected
+subset wins; period 2: passed subset wins by a small margin). A
+reversal in direction is itself the disqualifying finding, independent
+of either period's individual strength -- it means there is no
+reproducible real effect to act on, and in period 1 specifically,
+enforcing this filter as designed would have actively removed the
+better-performing trades.
+
+**`cross_market_confirmed` is NOT activated.** Same disposition as
+`volume_confirmed`: stays implemented in `entry_filters.py`, available
+for a future re-measurement under a different formulation, but
+excluded from `run_all_filters`. The uncommitted wiring that had been
+prepared in `entry_filters.py`/`live_loop.py` (never pushed) was
+reverted at the Controller's explicit instruction; the repository's
+production code is unchanged from before this entire workstream
+started. Full suite after revert: 2040 passed.
+
+**What this workstream leaves behind, as real value despite the
+negative result:**
+1. A documented, fixable example of lookahead bias, caught by
+   reviewing methodology rather than by a failing test -- worth
+   remembering as a category of bug this project has not hit before
+   in this form.
+2. `AlpacaOptionsClient.get_stock_minute_bars()` (the QQQ/IWM-capable
+   generalization of `get_spy_minute_bars()`) stays in the repo --
+   genuinely useful infrastructure, independent of this filter's
+   outcome, for any future cross-symbol measurement.
+3. `scripts/spx0dte_measure_cross_market.py` stays in the repo,
+   fixed, as a reusable template for the next filter idea that needs
+   this exact "tag, don't enforce, require cross-period agreement"
+   methodology -- including its Method-2 tercile probe pattern.
+
+**Signal-quality workstream (Controller priority 1 of 3) item 1 is
+now CLOSED with a negative result**, recorded with the same rigor as
+a positive one would have been. Next: items 2 and 3 of the
+Controller's three selected priorities (risk/sizing management;
+broader market context) remain open.

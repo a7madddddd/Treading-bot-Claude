@@ -5403,11 +5403,27 @@ re-measurement of both periods. Full details:
 status put on hold". Run commands for the corrected script are in
 that entry.
 
-**P-098 ITEM STILL OPEN** (signal-quality workstream, 1 of 3
-Controller-selected priorities). Still open from that same list:
-risk/sizing management, broader market context (live VIX, GEX
-reconsideration) -- see the 2026-11-17 "three priorities" update
-above.
+**CLOSED 2026-11-18 -- FINAL RESULT: NOT ACTIVATED (negative
+finding).** Controller re-ran both periods with the corrected
+script. Result REVERSED from the buggy run: period 1 (2025 H2) now
+shows the subset the filter would reject was the profitable one
+(profit_factor 1.5831 rejected vs 0.8962 passed) -- the opposite
+direction from period 2's small edge (0.9427 vs 1.0734). A reversal
+in direction between independent periods is itself the disqualifying
+finding under this project's own cross-period-agreement rule (the
+same rule that dropped `volume_confirmed`). `cross_market_confirmed`
+is NOT wired into `run_all_filters`. The uncommitted wiring prepared
+earlier was reverted at the Controller's explicit instruction; the
+repo's production code is unchanged from before this workstream.
+Full numbers: `docs/trading/decisions.md` D-0095-A, "FINAL RESULT --
+corrected measurement reverses the earlier finding".
+
+**P-098 ITEM 1 OF 3 CLOSED** (signal-quality workstream). Item 1
+(cross-market confirmation) is done, with a negative result reached
+through the same rigor a positive one would have gotten. Remaining
+from the Controller's three selected priorities: risk/sizing
+management, broader market context (live VIX, GEX reconsideration) --
+see the 2026-11-17 "three priorities" update above.
 
 Still carried forward, not fixed, not forgotten:
 - No live intraday VIX source -- the VIX entry filter runs effectively
