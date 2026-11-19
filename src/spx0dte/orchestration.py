@@ -31,6 +31,7 @@ from spx0dte.live_pricing import (
 from spx0dte.position import OpenPosition
 from spx0dte.proposal import OptionTradeProposal, ProposalApprovalState
 from spx0dte.ratio_calibration import RatioProvider
+from spx0dte.sizing import MAX_CONCURRENT_POSITIONS
 from spx0dte.sqlite_repository import SpxPositionRepository, SpxProposalRepository
 from spx0dte.telegram_approval import ControllerDecision, DecisionKind, send_proposal_message
 
@@ -113,12 +114,32 @@ def process_decisions(
     ratio_provider: Optional[RatioProvider] = None,
     position_repo: Optional[SpxPositionRepository] = None,
     now: Optional[datetime] = None,
+    notes: Optional[List[str]] = None,
 ) -> List[SubmissionResult]:
     """Applies each decision to its proposal and, for an APPROVE still
     inside the 5-minute window, submits a buy order. Returns one
     SubmissionResult per decision that reached submission (a REJECT,
     an unknown proposal_id, or an already-decided proposal produces no
     SubmissionResult -- nothing was submitted).
+
+    SAFETY GATES at submission time (D-0095-A, 2026-11-19 -- found
+    live, during the Controller's requested full-cycle dry run, when
+    three proposals arrived close together and were all approved at
+    once; `entry_filters`/`sizing.ConcurrentPositionTracker` only gate
+    proposal CREATION, using each candidate's PLANNED exit, so by
+    approval time they can be stale). If `position_repo` is given,
+    an APPROVE is skipped (no order submitted, proposal stays marked
+    APPROVED but nothing is sent to the broker) when EITHER:
+    1. `MAX_CONCURRENT_POSITIONS` real open positions already exist
+       (defense in depth alongside the creation-time check, using the
+       REAL current count, not a planned-exit estimate), or
+    2. a position with the SAME `occ_symbol` is already open -- the
+       real incident this fixes: two proposals for the literal same
+       option contract (same strike/direction/expiry), approved
+       together, both re-priced identically and closed identically
+       (same stop hit at the same tick, same $ loss on both).
+    Each skip is appended to `notes` (if given) so it is visible in
+    the tick log, not silently dropped.
 
     If `options_client`/`ratio_provider` are given, the limit price is
     RE-PRICED live at submission time via
@@ -159,6 +180,23 @@ def process_decisions(
 
         if not decided.is_approval_still_valid(now=now):
             continue  # expired between decision and this processing pass
+
+        if position_repo is not None:
+            currently_open = position_repo.list_open()
+            if len(currently_open) >= MAX_CONCURRENT_POSITIONS:
+                if notes is not None:
+                    notes.append(
+                        f"{decided.proposal_id}: approved but NOT submitted -- "
+                        f"{len(currently_open)} positions already open (cap {MAX_CONCURRENT_POSITIONS})"
+                    )
+                continue
+            if any(p.occ_symbol == decided.occ_symbol for p in currently_open):
+                if notes is not None:
+                    notes.append(
+                        f"{decided.proposal_id}: approved but NOT submitted -- "
+                        f"a position in {decided.occ_symbol} is already open"
+                    )
+                continue
 
         limit_price = decided.estimated_premium
         if options_client is not None and ratio_provider is not None:

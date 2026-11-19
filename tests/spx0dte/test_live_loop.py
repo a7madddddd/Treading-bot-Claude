@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -5,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from execution.broker_client import BrokerClient, BrokerOrderState
 from spx0dte.greeks import OptionType, black_scholes_price
-from spx0dte.live_loop import LiveSessionState, run_one_tick
+from spx0dte.live_loop import LiveSessionState, build_status_snapshot, run_one_tick
 from spx0dte.proposal import OptionTradeProposal, ProposalApprovalState
 from spx0dte.sqlite_repository import SpxPositionRepository, SpxProposalRepository
 from spx0dte.telegram_approval import ControllerDecision, DecisionKind
@@ -422,6 +423,129 @@ class TestExitMonitoring(unittest.TestCase):
                 break
 
         self.assertTrue(closed_on_some_tick)
+
+
+class TestBuildStatusSnapshot(unittest.TestCase):
+    """The live dashboard's data source -- a pure function over
+    position_repo + state, no I/O of its own."""
+
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        self.position_repo = SpxPositionRepository(self.path)
+        self.entry_time = datetime(2026, 11, 19, 15, 0, tzinfo=timezone.utc)
+        self.state = LiveSessionState()
+        self.state.current_date = "2026-11-19"
+        self.state.dynamic_cap_today = 40.0
+        self.state.loss_limit_tracker.start_new_day("2026-11-19", equity=97_593.76)
+
+    def tearDown(self):
+        os.remove(self.path)
+
+    def _open_a_position(self, entry_price=1.0, hold_cap_minutes=40.0):
+        from spx0dte.live_exit import LiveExitTracker
+        from spx0dte.position import OpenPosition
+        position = OpenPosition(
+            proposal_id="SPX-snaptest", occ_symbol="SPXW261119C05900000", direction="call",
+            quantity=1, strike=5900, date="2026-11-19", entry_time=self.entry_time,
+            entry_price=entry_price, hold_cap_minutes=hold_cap_minutes,
+        )
+        self.position_repo.save(position)
+        self.state.exit_trackers[position.proposal_id] = LiveExitTracker(
+            entry_price=entry_price, entry_time=self.entry_time, hold_cap_minutes=hold_cap_minutes,
+        )
+        return position
+
+    def test_empty_when_no_open_positions(self):
+        snapshot = build_status_snapshot(now=self.entry_time, state=self.state, position_repo=self.position_repo)
+        self.assertEqual(snapshot["open_positions"], [])
+        self.assertEqual(snapshot["date"], "2026-11-19")
+        self.assertEqual(snapshot["dynamic_cap_today"], 40.0)
+
+    def test_open_position_fields_computed_correctly(self):
+        self._open_a_position(entry_price=2.0)
+        self.state.last_known_price["SPX-snaptest"] = 2.50
+        now = self.entry_time + timedelta(minutes=10)
+
+        snapshot = build_status_snapshot(now=now, state=self.state, position_repo=self.position_repo)
+        self.assertEqual(len(snapshot["open_positions"]), 1)
+        p = snapshot["open_positions"][0]
+        self.assertEqual(p["direction"], "call")
+        self.assertEqual(p["entry_price"], 2.0)
+        self.assertEqual(p["current_price"], 2.50)
+        self.assertAlmostEqual(p["target_price"], 3.6)  # 2.0 * 1.8
+        self.assertAlmostEqual(p["stop_price"], 1.2)    # 2.0 * 0.6
+        self.assertAlmostEqual(p["armed_price"], 2.5)   # 2.0 * 1.25
+        self.assertFalse(p["armed"])  # tracker just created, not yet updated
+        self.assertAlmostEqual(p["unrealized_pnl_dollars"], 50.0)  # (2.50-2.00)*1*100
+        self.assertAlmostEqual(p["elapsed_minutes"], 10.0)
+        self.assertAlmostEqual(p["remaining_minutes"], 30.0)
+
+    def test_current_price_none_when_no_quote_fetched_yet(self):
+        self._open_a_position()
+        snapshot = build_status_snapshot(now=self.entry_time, state=self.state, position_repo=self.position_repo)
+        p = snapshot["open_positions"][0]
+        self.assertIsNone(p["current_price"])
+        self.assertIsNone(p["unrealized_pnl_dollars"])
+
+    def test_loss_limit_section_reflects_tracker(self):
+        self.state.loss_limit_tracker.record_realized_pnl(-200.0)
+        snapshot = build_status_snapshot(now=self.entry_time, state=self.state, position_repo=self.position_repo)
+        self.assertEqual(snapshot["loss_limit"]["locked_equity"], 97_593.76)
+        self.assertEqual(snapshot["loss_limit"]["realized_pnl_today"], -200.0)
+        self.assertFalse(snapshot["loss_limit"]["limit_reached"])
+
+
+class TestRunOneTickStatusFile(unittest.TestCase):
+    def test_writes_a_valid_json_snapshot_when_path_given(self):
+        fd, db_path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        fd2, status_path = tempfile.mkstemp(suffix=".json")
+        os.close(fd2)
+        try:
+            repo = SpxProposalRepository(db_path)
+            position_repo = SpxPositionRepository(db_path)
+            broker = FakeBroker()
+            ratio_provider = FakeRatioProvider(10.0)
+            now = datetime(2026, 11, 19, 15, 0, tzinfo=timezone.utc)
+            client = FakeOptionsClient(spy_bars=[], found_strike=None, option_bars=[])
+            state = LiveSessionState()
+
+            run_one_tick(
+                now=now, options_client=client, broker=broker, ratio_provider=ratio_provider,
+                repo=repo, position_repo=position_repo, pending_decisions=[],
+                bot_token="t", chat_id="1", quantity=1, state=state,
+                status_file_path=status_path,
+            )
+
+            with open(status_path) as f:
+                snapshot = json.load(f)
+            self.assertIn("open_positions", snapshot)
+            self.assertIn("loss_limit", snapshot)
+        finally:
+            os.remove(db_path)
+            os.remove(status_path)
+
+    def test_no_file_written_when_path_omitted(self):
+        fd, db_path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        try:
+            repo = SpxProposalRepository(db_path)
+            position_repo = SpxPositionRepository(db_path)
+            broker = FakeBroker()
+            ratio_provider = FakeRatioProvider(10.0)
+            now = datetime(2026, 11, 19, 15, 0, tzinfo=timezone.utc)
+            client = FakeOptionsClient(spy_bars=[], found_strike=None, option_bars=[])
+            state = LiveSessionState()
+
+            result = run_one_tick(
+                now=now, options_client=client, broker=broker, ratio_provider=ratio_provider,
+                repo=repo, position_repo=position_repo, pending_decisions=[],
+                bot_token="t", chat_id="1", quantity=1, state=state,
+            )
+            self.assertEqual(result.new_opportunities_seen, 0)  # just confirms a normal tick, no crash
+        finally:
+            os.remove(db_path)
 
 
 if __name__ == "__main__":

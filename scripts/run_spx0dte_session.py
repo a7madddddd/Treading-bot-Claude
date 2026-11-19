@@ -87,6 +87,13 @@ def main() -> int:
     parser.add_argument("--quantity", type=int, default=CONTRACTS_PER_TRADE,
                          help="contracts per approved entry (default: the approved fixed size)")
     parser.add_argument("--db-path", default="spx0dte.sqlite")
+    parser.add_argument(
+        "--status-file", default=None,
+        help=(
+            "Optional path to write a live JSON status snapshot after every tick, for "
+            "scripts/spx0dte_dashboard_server.py to serve. Omit to skip writing one entirely."
+        ),
+    )
     args = parser.parse_args()
 
     key_id = _required_env("ALPACA_API_KEY_ID")
@@ -140,7 +147,7 @@ def main() -> int:
                     ratio_provider=ratio_provider, repo=repo, position_repo=position_repo,
                     pending_decisions=pending_decisions, bot_token=bot_token,
                     chat_id=chat_id, quantity=args.quantity, state=state,
-                    vix_provider=vix_provider,
+                    vix_provider=vix_provider, status_file_path=args.status_file,
                 )
                 logger.info(
                     "tick: cap=%s new=%d created=%d filter_rej=%d conc_rej=%d loss_limit_rej=%d "

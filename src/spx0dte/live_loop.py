@@ -72,6 +72,7 @@ history exist.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Set
@@ -80,7 +81,7 @@ from execution.broker_client import BrokerClient, BrokerClientError
 
 from spx0dte.alpaca_client import AlpacaDataError, AlpacaOptionsClient
 from spx0dte.entry_filters import run_all_filters
-from spx0dte.exit_logic import DailyPaceTracker, session_pace_width_pct
+from spx0dte.exit_logic import ARM_PCT, STOP_PCT, TARGET_PCT, DailyPaceTracker, session_pace_width_pct
 from spx0dte.live_exit import LiveExitTracker
 from spx0dte.live_pricing import LivePricingUnavailableError, reprice_known_symbol
 from spx0dte.orchestration import (
@@ -142,6 +143,14 @@ class LiveSessionState:
     tracker re-evaluates from the position's own recorded entry_price
     forward, which is a graceful (if slightly less precise)
     degradation, not a crash or a lost position."""
+
+    last_known_price: Dict[str, float] = field(default_factory=dict)
+    """proposal_id -> the latest successfully-fetched live re-priced
+    estimate, updated every tick in `monitor_open_positions`. Exists
+    so `build_status_snapshot` (the live dashboard's data source) can
+    show a position's current price without a second network call --
+    this is the exact same quote `LiveExitTracker.update()` just
+    evaluated, not a separate/possibly-inconsistent read."""
 
     proposals_created_today: int = 0
     unusual_day_alert_sent: bool = False
@@ -211,6 +220,8 @@ def monitor_open_positions(
             notes.append(f"{position.proposal_id}: could not re-price for exit monitoring: {e}")
             continue
 
+        state.last_known_price[position.proposal_id] = quote.bias_corrected_price
+
         reason = tracker.update(quote.bias_corrected_price, now)
         if reason is not None:
             close_position(
@@ -218,6 +229,7 @@ def monitor_open_positions(
                 exit_price=quote.bias_corrected_price, exit_reason=reason, now=now,
             )
             state.exit_trackers.pop(position.proposal_id, None)
+            state.last_known_price.pop(position.proposal_id, None)
             pnl = realized_pnl_dollars(position.entry_price, quote.bias_corrected_price, position.quantity)
             state.loss_limit_tracker.record_realized_pnl(pnl)
             closed_count += 1
@@ -229,6 +241,61 @@ def monitor_open_positions(
     return len(open_positions), closed_count, notes
 
 
+def build_status_snapshot(
+    *, now: datetime, state: LiveSessionState, position_repo: SpxPositionRepository,
+) -> dict:
+    """Assembles one JSON-able snapshot of everything the live
+    dashboard needs: today's day-pace cap, the daily loss limit's
+    real status, and each open position's live vitals (current
+    price, target/stop levels derived from the SAME constants
+    `LiveExitTracker` itself uses, armed state, elapsed/remaining
+    time). Pure function, no I/O -- `run_one_tick` is the only
+    caller that writes this to a file, so this stays trivially
+    testable on its own."""
+    positions = []
+    for position in position_repo.list_open():
+        tracker = state.exit_trackers.get(position.proposal_id)
+        current_price = state.last_known_price.get(position.proposal_id)
+        elapsed_minutes = max((now - position.entry_time).total_seconds() / 60.0, 0.0)
+        positions.append({
+            "proposal_id": position.proposal_id,
+            "occ_symbol": position.occ_symbol,
+            "direction": position.direction,
+            "strike": position.strike,
+            "quantity": position.quantity,
+            "entry_time": position.entry_time.isoformat(),
+            "entry_price": position.entry_price,
+            "current_price": current_price,
+            "target_price": position.entry_price * (1 + TARGET_PCT),
+            "stop_price": position.entry_price * (1 - STOP_PCT),
+            "armed_price": position.entry_price * (1 + ARM_PCT),
+            "armed": tracker.armed if tracker is not None else None,
+            "unrealized_pnl_dollars": (
+                realized_pnl_dollars(position.entry_price, current_price, position.quantity)
+                if current_price is not None else None
+            ),
+            "hold_cap_minutes": position.hold_cap_minutes,
+            "elapsed_minutes": round(elapsed_minutes, 1),
+            "remaining_minutes": round(max(position.hold_cap_minutes - elapsed_minutes, 0.0), 1),
+        })
+
+    loss_limit = state.loss_limit_tracker
+    return {
+        "generated_at": now.isoformat(),
+        "date": state.current_date,
+        "dynamic_cap_today": state.dynamic_cap_today,
+        "loss_limit": {
+            "locked_equity": loss_limit.locked_equity,
+            "limit_pct": loss_limit.limit_pct,
+            "realized_pnl_today": loss_limit.realized_pnl_today,
+            "limit_reached": loss_limit.limit_reached(),
+        },
+        "proposals_created_today": state.proposals_created_today,
+        "unusual_day_trade_count_threshold": state.unusual_day_trade_count_threshold,
+        "open_positions": positions,
+    }
+
+
 def run_one_tick(
     *, now: datetime, options_client: AlpacaOptionsClient, broker: BrokerClient,
     ratio_provider: RatioProvider, repo: SpxProposalRepository,
@@ -237,13 +304,22 @@ def run_one_tick(
     bot_token: str, chat_id: str, quantity: int,
     state: LiveSessionState,
     vix_provider: Optional[VixProxyProvider] = None,
+    status_file_path: Optional[str] = None,
 ) -> TickResult:
     """One pass: roll the day forward if needed, detect+propose new
     opportunities, apply any pending Controller decisions (re-pricing
     live at submission), and expire stale proposals. Never raises for
     an ordinary data gap (no bars yet, no strike found) -- those are
     recorded in `TickResult.notes`; only a genuine construction error
-    (bad arguments) would raise."""
+    (bad arguments) would raise.
+
+    `status_file_path`, if given, is OPTIONAL and additive: at the
+    very end of the tick, writes `build_status_snapshot`'s JSON to
+    this path -- the data source for the live dashboard
+    (`scripts/spx0dte_dashboard_server.py`). A write failure (disk
+    full, bad path) is caught and recorded as a note, never raised --
+    this is a display convenience, not core trading logic, and must
+    never be the reason a tick fails."""
     notes: List[str] = []
     today = now.strftime("%Y-%m-%d")
 
@@ -362,7 +438,7 @@ def run_one_tick(
     submission_results = process_decisions(
         repo, pending_decisions, broker, quantity=quantity,
         options_client=options_client, ratio_provider=ratio_provider,
-        position_repo=position_repo, now=now,
+        position_repo=position_repo, now=now, notes=notes,
     )
 
     expired = expire_stale_pending(repo, older_than=now - STALE_PROPOSAL_MAX_AGE)
@@ -372,6 +448,14 @@ def run_one_tick(
         position_repo=position_repo, state=state,
     )
     notes.extend(exit_notes)
+
+    if status_file_path is not None:
+        try:
+            snapshot = build_status_snapshot(now=now, state=state, position_repo=position_repo)
+            with open(status_file_path, "w") as f:
+                json.dump(snapshot, f, indent=2)
+        except OSError as e:
+            notes.append(f"could not write status snapshot to {status_file_path}: {e}")
 
     return TickResult(
         date=today, dynamic_cap=state.dynamic_cap_today,

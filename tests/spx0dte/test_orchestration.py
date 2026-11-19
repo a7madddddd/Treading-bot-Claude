@@ -316,5 +316,90 @@ class TestPositionWiring(unittest.TestCase):
         self.assertEqual(closed.exit_reason, "target")
 
 
+class TestProcessDecisionsSafetyGates(unittest.TestCase):
+    """D-0095-A, 2026-11-19 -- the real incident: two proposals for the
+    SAME option contract, approved together, re-priced identically,
+    closed identically. Found live during the Controller's full-cycle
+    dry run. These gates run at approval/submission time, as defense
+    in depth alongside entry_filters/ConcurrentPositionTracker's
+    creation-time check (which uses each candidate's PLANNED exit and
+    can be stale by the time a human actually approves)."""
+
+    def setUp(self):
+        fd, self.proposal_path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        self.repo = SpxProposalRepository(self.proposal_path)
+        self.position_repo = SpxPositionRepository(self.proposal_path)
+        self.now = datetime(2026, 11, 19, 15, 0, tzinfo=timezone.utc)
+
+    def tearDown(self):
+        os.remove(self.proposal_path)
+
+    def _approve(self, *, strike, occ_symbol):
+        proposal = build_proposal(
+            date="2026-11-19", direction="put", strike=strike, occ_symbol=occ_symbol,
+            entry_time=self.now, hold_cap_minutes=40.0, estimated_premium=14.0, vix=None,
+            filters_passed="OK", now=self.now,
+        )
+        self.repo.save(proposal)
+        return proposal
+
+    def test_duplicate_same_contract_is_not_submitted_twice(self):
+        broker = FakeBroker()
+        p1 = self._approve(strike=7200, occ_symbol="SPXW261119P07200000")
+        p2 = self._approve(strike=7200, occ_symbol="SPXW261119P07200000")
+        decisions = [
+            ControllerDecision(proposal_id=p1.proposal_id, kind=DecisionKind.APPROVE, decided_by="111"),
+            ControllerDecision(proposal_id=p2.proposal_id, kind=DecisionKind.APPROVE, decided_by="111"),
+        ]
+        notes = []
+
+        results = process_decisions(
+            self.repo, decisions, broker, quantity=1, position_repo=self.position_repo,
+            now=self.now, notes=notes,
+        )
+
+        self.assertEqual(len(results), 1)  # only the FIRST actually submitted
+        self.assertEqual(len(self.position_repo.list_open()), 1)
+        self.assertTrue(any("already open" in n for n in notes))
+
+    def test_concurrency_cap_rechecked_at_submission_time(self):
+        from spx0dte.sizing import MAX_CONCURRENT_POSITIONS
+        broker = FakeBroker()
+        proposals = [
+            self._approve(strike=7000 + i * 100, occ_symbol=f"SPXW261119P0{7000+i*100}00")
+            for i in range(MAX_CONCURRENT_POSITIONS + 1)
+        ]
+        decisions = [
+            ControllerDecision(proposal_id=p.proposal_id, kind=DecisionKind.APPROVE, decided_by="111")
+            for p in proposals
+        ]
+        notes = []
+
+        results = process_decisions(
+            self.repo, decisions, broker, quantity=1, position_repo=self.position_repo,
+            now=self.now, notes=notes,
+        )
+
+        self.assertEqual(len(results), MAX_CONCURRENT_POSITIONS)  # the cap, not one more
+        self.assertEqual(len(self.position_repo.list_open()), MAX_CONCURRENT_POSITIONS)
+        self.assertTrue(any("already open" in n and "cap" in n for n in notes))
+
+    def test_gates_are_skipped_entirely_without_position_repo(self):
+        # Backward compatible: omitting position_repo (e.g. an older
+        # caller, or a test) must behave exactly as before these gates existed.
+        broker = FakeBroker()
+        p1 = self._approve(strike=7200, occ_symbol="SPXW261119P07200000")
+        p2 = self._approve(strike=7200, occ_symbol="SPXW261119P07200000")
+        decisions = [
+            ControllerDecision(proposal_id=p1.proposal_id, kind=DecisionKind.APPROVE, decided_by="111"),
+            ControllerDecision(proposal_id=p2.proposal_id, kind=DecisionKind.APPROVE, decided_by="111"),
+        ]
+
+        results = process_decisions(self.repo, decisions, broker, quantity=1, now=self.now)
+
+        self.assertEqual(len(results), 2)  # no position_repo -- no gate, both submitted
+
+
 if __name__ == "__main__":
     unittest.main()
