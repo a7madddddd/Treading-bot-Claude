@@ -5659,9 +5659,10 @@ real `-$X` vs `$-X` formatting bug this way). 6 new tests, full suite
 2085 passed. Full details: `docs/trading/decisions.md` D-0095-A,
 "Live visual dashboard built".
 
-STATUS: implemented, tested, visually verified, NOT YET PUSHED --
-`live_loop.py` is loaded by the currently-running live session and
-is not touched/restarted mid-run. Deploy after this dry run ends.
+STATUS: PUSHED (commit `d11d53f`), 2026-11-19. Still to do
+separately: start `spx0dte_dashboard_server.py` on the VM with
+`--status-file`, and open the port in Oracle Cloud's VCN security
+list -- code is on the branch, not yet running/reachable.
 
 ## P-101 UPDATE — both the concurrency gap and a duplicate-contract gap FIXED (code held)
 
@@ -5682,6 +5683,6 @@ is already open. Each skip is logged, never silent. 3 new tests, full
 suite 2088 passed. Full details: `docs/trading/decisions.md`
 D-0095-A, "Second real finding, same dry run... both gaps fixed".
 
-STATUS: implemented, tested, NOT YET PUSHED -- `orchestration.py`/
-`live_loop.py` are loaded by the currently-running live session; held
-until it ends, pushed together with the dashboard.
+STATUS: PUSHED (commit `d11d53f`), 2026-11-19, together with the
+dashboard, after the Controller confirmed the dry run had stopped
+cleanly (no running process, no open positions).

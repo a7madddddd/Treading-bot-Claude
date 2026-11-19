@@ -9285,13 +9285,13 @@ the tracker; `TestRunOneTickStatusFile`: a valid JSON snapshot is
 written when the path is given, nothing changes when it is omitted).
 Full suite: 2085 passed, zero regressions.
 
-**STATUS: implemented, tested, visually verified, NOT YET
-PUSHED/DEPLOYED.** `live_loop.py` is the exact file the currently-
-running live session has loaded in memory -- it is NOT touched or
-restarted mid-run, same reasoning as the concurrency-cap gap above.
-Push and deployment (start `spx0dte_dashboard_server.py` alongside
-the next session, pass `--status-file`, open the port in Oracle
-Cloud's VCN security list) wait until this dry run ends.
+**STATUS: PUSHED (commit `d11d53f`), 2026-11-19**, together with the
+concurrency/duplicate-contract fixes, after the Controller confirmed
+the dry run had stopped cleanly. **Still to do, separately:** start
+`spx0dte_dashboard_server.py` alongside the next session with
+`--status-file`, and open the port in Oracle Cloud's VCN security
+list so the Controller's own browser can reach it -- neither is done
+yet, this entry only covers the code being on the branch.
 
 ## Second real finding, same dry run: two proposals for the IDENTICAL contract -- both gaps fixed, 2026-11-19
 
@@ -9344,8 +9344,8 @@ out of one more approved), and a backward-compatibility case (omitting
 `position_repo` runs with zero gates, exactly as before). Full suite:
 2088 passed, zero regressions.
 
-**STATUS: both fixes implemented and tested, NOT YET PUSHED --**
-`orchestration.py` and `live_loop.py` are loaded by the currently-
-running live session; not touched/restarted mid-run. Push and
-restart together with the dashboard deployment, once this dry run
-ends.
+**STATUS: PUSHED (commit `d11d53f`), 2026-11-19.** The Controller
+stopped the dry run cleanly (graceful SIGTERM, confirmed no running
+process and no open positions before pushing) and asked to push
+everything that had been held. Pushed together with the live
+dashboard (see below).
