@@ -5623,3 +5623,24 @@ live VIX source built, measured, and activated; GEX re-confirmed not
 buildable on an exhaustive basis. **All three of the Controller's
 original improvement priorities (signal quality / risk+sizing /
 market context) are now closed.**
+
+## P-101 — Concurrency cap not re-checked at approval time, found live, 2026-11-19 (OPEN)
+
+Found during the Controller's requested full live-cycle dry run:
+three proposals were created and sent within ~40 minutes because
+`ConcurrentPositionTracker.can_open()` only runs at proposal-creation
+time (using each candidate's PLANNED exit, not the real one).
+`orchestration.process_decisions` has NO concurrency check at all --
+it submits an order for every valid APPROVE regardless of how many
+positions are already open. The Controller approved all three before
+this could be flagged; the next tick submits three real orders,
+which can leave three real positions open at once against an
+approved cap of 2.
+
+STATUS: NOT fixed yet -- deliberately not edited mid-live-run (same
+reasoning as never editing running trading code live). Fix: add a
+real-time concurrency check inside `process_decisions` (or right
+before it in `run_one_tick`), using `position_repo`'s actual open
+count, not the planned-exit estimate -- as defense in depth alongside
+the existing creation-time check, which stays as-is. Full details:
+`docs/trading/decisions.md` D-0095-A, "REAL GAP FOUND LIVE".

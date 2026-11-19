@@ -9169,3 +9169,49 @@ a new, explicitly-labeled proxy (with its own measurement pass
 before being trusted, same discipline as VIXY-for-VIX), not as "GEX
 itself", since SPY options and SPX options have structurally
 different participants and settlement mechanics.
+
+## REAL GAP FOUND LIVE: concurrency cap is enforced only at proposal creation, not at approval, 2026-11-19
+
+Found while the Controller ran the long-requested full live-cycle
+dry run (entry -> approval -> real exit): three proposals arrived
+within ~40 minutes (PUT 7200 @13:54, CALL 7200 @14:32, PUT 7200
+@14:35, all 2026-11-19). All three were created and sent because
+`sizing.ConcurrentPositionTracker.can_open()` is checked only at
+proposal-creation time, using each candidate's PLANNED exit time
+(entry_time + hold_cap) to decide whether an earlier position has
+"rolled off" -- by the time the 3rd candidate was evaluated, the
+1st's planned exit had already passed, freeing its slot for
+admission purposes, even though nothing guarantees the 1st's REAL
+exit happens that early.
+
+**FACT, read directly from `orchestration.process_decisions`:** it
+contains NO concurrency check of any kind. It processes every
+APPROVE decision and submits an order for it, regardless of how many
+positions are already open. The Controller approved all three
+proposals via Telegram before this gap could be flagged -- by the
+time it was caught, the approvals were already recorded (Telegram
+approval is a direct, out-of-band path to the bot, not mediated by
+this conversation).
+
+**CONFIRMED, not just theoretical -- from the real session log:**
+
+    18:58:10 INFO tick: ... decisions=3 submitted=3 ... monitored=3 closed=0
+    18:59:13 INFO tick: ... monitored=3 closed=0
+    19:00:16 INFO tick: ... monitored=3 closed=0
+
+All three orders were submitted and accepted, and three real
+positions are being monitored simultaneously as of this entry --
+exceeding the Controller-approved `MAX_CONCURRENT_POSITIONS = 2` in
+actual live practice, not merely as a theoretical risk. No code-level
+safeguard caught it before submission, exactly as predicted above.
+
+**STATUS: not yet fixed -- intentionally not touched mid-live-run.**
+Editing `process_decisions` or `run_one_tick` while a real session
+with real pending approvals is active is itself a risk; the fix
+belongs in a calm follow-up session once this run's real outcome is
+known. **NEXT (tracked, not forgotten):** add a concurrency check at
+decision-processing time too (reject/skip an APPROVE if
+`position_tracker.can_open()` is already false at the REAL moment of
+submission, using live open-position counts from `position_repo`,
+not the planned-exit estimate) -- defense in depth, not a
+replacement for the existing creation-time check.
