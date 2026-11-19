@@ -9292,3 +9292,60 @@ restarted mid-run, same reasoning as the concurrency-cap gap above.
 Push and deployment (start `spx0dte_dashboard_server.py` alongside
 the next session, pass `--status-file`, open the port in Oracle
 Cloud's VCN security list) wait until this dry run ends.
+
+## Second real finding, same dry run: two proposals for the IDENTICAL contract -- both gaps fixed, 2026-11-19
+
+The two remaining PUT positions (SPX-11a4404ee204, SPX-4ccdc3a6cd70)
+closed in the SAME tick, via the SAME exit reason (`stop_loss`), at
+the SAME price (7.40), for the EXACT SAME realized loss (-$572.22
+each). Investigated rather than assumed coincidental: both proposals
+were for the literal SAME option contract --
+`SPXW261119P07200000` -- just from two different breakout signals
+(13:54 and 14:35). Because the Controller approved both within the
+same minute, `process_decisions` re-priced both via `reprice_known_symbol`
+at essentially the same real moment, giving both the SAME recorded
+`entry_price` -- from that instant on they were economically
+identical positions, so every subsequent tick repriced them
+identically and they crossed `stop_loss` on the exact same tick.
+
+**Root cause, same category as the concurrency gap above but
+distinct:** nothing anywhere in this module checks whether a
+candidate's resolved option contract (`occ_symbol`) already has an
+open position before submitting another order for it.
+`processed_entry_keys` dedupes by SIGNAL time, not by the contract
+the signal resolves to -- two different signals can legitimately
+resolve to the same strike.
+
+### Both gaps fixed together (code built, NOT yet pushed -- same reasoning as above)
+
+`src/spx0dte/orchestration.py`'s `process_decisions` gains two
+real-time safety gates, checked right before order submission, using
+`position_repo`'s REAL current open-position list (not a
+planned-exit estimate):
+1. Skip (no order submitted) if `MAX_CONCURRENT_POSITIONS` positions
+   are already open -- the general concurrency gap's fix, defense in
+   depth alongside the existing creation-time check.
+2. Skip if a position with the SAME `occ_symbol` is already open --
+   fixes this specific incident directly.
+
+Both gates are OPTIONAL (only run when `position_repo` is given,
+exactly like every other optional live-only feature in this module)
+and append a human-readable reason to an optional new `notes` list
+parameter, wired through from `run_one_tick` so a skip is visible in
+the tick log, never silent. A skipped APPROVE still marks the
+proposal row as APPROVED (the Controller's decision is recorded
+honestly) -- it simply never reaches the broker.
+
+3 new tests in `tests/spx0dte/test_orchestration.py`
+(`TestProcessDecisionsSafetyGates`): the duplicate-contract case
+(only the first of two identical-contract approvals is submitted),
+the cap-recheck case (exactly `MAX_CONCURRENT_POSITIONS` submitted
+out of one more approved), and a backward-compatibility case (omitting
+`position_repo` runs with zero gates, exactly as before). Full suite:
+2088 passed, zero regressions.
+
+**STATUS: both fixes implemented and tested, NOT YET PUSHED --**
+`orchestration.py` and `live_loop.py` are loaded by the currently-
+running live session; not touched/restarted mid-run. Push and
+restart together with the dashboard deployment, once this dry run
+ends.

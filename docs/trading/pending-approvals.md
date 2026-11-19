@@ -5662,3 +5662,26 @@ real `-$X` vs `$-X` formatting bug this way). 6 new tests, full suite
 STATUS: implemented, tested, visually verified, NOT YET PUSHED --
 `live_loop.py` is loaded by the currently-running live session and
 is not touched/restarted mid-run. Deploy after this dry run ends.
+
+## P-101 UPDATE — both the concurrency gap and a duplicate-contract gap FIXED (code held)
+
+The two remaining open PUT positions closed in the same tick, same
+exit reason, same price, same $ loss -- investigated rather than
+assumed coincidence: both were the literal SAME option contract
+(`SPXW261119P07200000`), approved within the same minute, re-priced
+identically at submission. Root cause: nothing checked whether a
+contract already had an open position before submitting another
+order for it.
+
+Fixed both the general concurrency gap (P-101) and this specific
+duplicate-contract gap together in `orchestration.process_decisions`:
+two real-time gates right before order submission, using
+`position_repo`'s REAL current open-position list -- skip (don't
+submit) if the cap is already reached, or if the same `occ_symbol`
+is already open. Each skip is logged, never silent. 3 new tests, full
+suite 2088 passed. Full details: `docs/trading/decisions.md`
+D-0095-A, "Second real finding, same dry run... both gaps fixed".
+
+STATUS: implemented, tested, NOT YET PUSHED -- `orchestration.py`/
+`live_loop.py` are loaded by the currently-running live session; held
+until it ends, pushed together with the dashboard.
