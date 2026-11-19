@@ -5721,3 +5721,66 @@ surfaced and resolved in passing: TWO `run_spx0dte_session.py`
 processes were found running concurrently (an unintended second
 start); the Controller stopped both via `SIGTERM` and confirmed via
 `ps aux` before this was pushed.
+
+## P-104 — entry_price/exit_price recorded from the submitted limit price, never the broker's real fill (found live, 2026-11-19)
+
+Controller's own observation, from real live trades on the dashboard
+(2026-11-19): every approved entry he watched opened already showing
+a loss. Investigated by reading the actual code, not assumed.
+
+**FACT**, `src/spx0dte/orchestration.py`:
+- `process_decisions` (line ~222): `OpenPosition(..., entry_price=limit_price, ...)`
+  -- `limit_price` is the SUBMITTED order price (the Black-Scholes
+  stale-quote reprice, bias-corrected), never the broker's confirmed
+  fill.
+- `close_position` (line ~249): same pattern on exit --
+  `exit_price=exit_price` is the SUBMITTED limit, not the fill.
+- `execution.submit_entry_order`/`submit_exit_order` already return a
+  `SubmissionResult.order_state` whose `filled_avg_price` comes
+  straight from the real Alpaca order response
+  (`alpaca_broker_client.py` already parses it) -- the real fill
+  price IS already available at the call site and is simply never
+  read.
+
+**FACT**, D-0095-A's own validation (`docs/trading/decisions.md`,
+"VALIDATION RESULT -- Option B's real accuracy measured"): even after
+the measured +3.8%-median bias correction, mean absolute error is
+6.1% with a right-skewed tail -- a single trade's reprice can still
+land meaningfully off the true price.
+
+**HYPOTHESIS, needs the real fill data to confirm**: a buy limit
+order fills at or below the limit price. If the reprice overshot high
+on a given entry (within the known error band), the recorded
+`entry_price` is biased high, making every later, fresher reprice
+look like an immediate loss relative to an inflated baseline -- even
+if the true cost basis never moved against the position. This matches
+the Controller's exact observation and is the same direction as the
+model's own measured bias.
+
+**Consequence if confirmed**: `target_price`/`stop_price`/`armed`
+are ALL computed from this same `entry_price` (`P0`) in
+`exit_logic.py` -- an inflated `P0` pushes the real target further
+away and makes a real stop/stall trigger earlier than the approved
+rule intends. This is a possible EXECUTION PRECISION bug, not a
+strategy change, but fixing it changes what price basis exits use --
+needs Controller approval before being touched, per
+`.claude/rules/01-roles-and-authority.md`.
+
+Also affects every already-recorded `total_pnl`/realized-pnl figure
+in this module's history the same way the earlier 100x-multiplier
+correction did -- a second caveat to apply when reading any older
+number.
+
+**RECOMMENDATION (pending Controller approval, not yet built)**: use
+`result.order_state.filled_avg_price` as the recorded `entry_price`/
+`exit_price` when the broker returns one, falling back to the
+submitted limit price only when `filled_avg_price` is `None` (order
+not yet filled / no fill reported) -- same fallback discipline already
+used elsewhere in this module. Needs a real backtest/measurement pass
+comparing recorded vs. actual-fill entry prices on trades already in
+`spx0dte.sqlite` before being trusted, per "calculate from recorded
+data, never a guessed number."
+
+STATUS: OPEN, presented to the Controller 2026-11-19, awaiting a
+CHANGE/WHY/EXPECTED BENEFIT/RISK/FILES/TEST PLAN decision before any
+code is touched.
