@@ -9109,3 +9109,63 @@ proxy item done and activated; GEX item re-confirmed closed with a
 negative, data-grounded finding. **All three of the Controller's
 original improvement priorities (signal quality / risk+sizing /
 market context) are now closed.**
+
+### Controller pushed back: "not 100% sure" from one test -- exhaustive re-search, 2026-11-19
+
+Correct challenge: a single Alpaca endpoint test does not prove no
+free SPX open-interest source exists anywhere. Ran a genuinely wide
+search -- 9 real, direct tests plus a web search covering other
+named vendors -- before concluding anything twice.
+
+**Tested directly, live, real requests (not assumed):**
+1. Alpaca options snapshot (`/v1beta1/options/snapshots/SPXW`) --
+   `latestQuote` only, no `open_interest`/`greeks` (already recorded
+   above).
+2. CBOE's own delayed-quote page (`cboe.com/delayed_quote/quote_table?symbol=SPX`)
+   -- 607KB of HTML, no embedded OI data found in it.
+3. CBOE's CDN API (`cdn.cboe.com/api/global/delayed_quote/...`) --
+   `AccessDenied`.
+4. CBOE's market-statistics summary CSV -- `AccessDenied`.
+5. Nasdaq's options-chain API for `SPX` (`assetclass=index`) --
+   `"Symbol not exists"`.
+6. Nasdaq's options-chain API for `SPXW` -- same error.
+7. Barchart's options API (`barchart.com/proxies/core-api/.../options/get?symbol=$SPX`)
+   -- `Forbidden`.
+8. MarketChameleon's public SPX option-chain page -- loaded as a
+   12KB stub (login/paywall gate), no real chain data.
+9. **Polygon/Massive's options snapshot** (`/v3/snapshot/options/SPX`
+   AND `/v3/snapshot/options/I:SPX`, using this account's own real
+   `POLYGON_API_KEY`, already provisioned for other project work) --
+   `"NOT_AUTHORIZED... upgrade your plan"` for BOTH. Also tested the
+   same endpoint for **SPY** (the ETF, not the index) with the same
+   key -- same `NOT_AUTHORIZED` rejection. Polygon's free tier serves
+   NO options snapshot data at all on this account, index or equity.
+
+**Found, as a REAL positive result (not for SPX itself):** Nasdaq's
+options-chain API (`api.nasdaq.com/api/quote/SPY/option-chain?assetclass=etf`)
+DOES return real open interest, free, no key, for **SPY** (the ETF)
+-- verified with real numbers, e.g. strike 600: call OI=12, put
+OI=723, 1302 total contract records available. This is a genuine
+usable data point, just not for the index itself.
+
+**Web search covering vendors not directly tested** (Databento,
+Massive/Polygon's own marketing page, QuantConnect/AlgoSeek,
+Finnhub, historicaldata.net): consistent with the direct tests --
+free SPX-specific open interest is, at best, a stale historical
+sample (historicaldata.net's free download only covers
+Jul-Dec 2022, not current), gated behind a platform (QuantConnect),
+or outright paid (Databento, Massive/Polygon confirmed directly
+above). No source, named or tested, serves current/live free SPX
+index open interest.
+
+**FINAL DECISION, now on a genuinely exhaustive basis: GEX/dealer-
+positioning for SPX itself is NOT BUILDABLE for free, confirmed
+across 9 direct tests and a broader vendor search, not one
+endpoint's response.** The one real alternative on the table is a
+PROXY built from SPY's real open interest (same ETF-for-index
+convention this project already uses for the ORB signal and the
+SPY:SPX ratio) -- available if the Controller wants to pursue it as
+a new, explicitly-labeled proxy (with its own measurement pass
+before being trusted, same discipline as VIXY-for-VIX), not as "GEX
+itself", since SPY options and SPX options have structurally
+different participants and settlement mechanics.

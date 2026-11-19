@@ -5605,8 +5605,21 @@ as D-0095's original deferral, now re-confirmed empirically rather
 than assumed stale. Full details: `docs/trading/decisions.md`
 D-0095-A, "GEX/dealer-positioning reconsidered".
 
+**UPDATE 2026-11-19 -- exhaustive re-search done, final.** Controller
+correctly pushed back that one Alpaca test wasn't enough. 9 direct
+tests run (Alpaca, CBOE x3, Nasdaq x2, Barchart, MarketChameleon,
+Polygon x2 using the account's real key) plus a web search of other
+named vendors (Databento, Massive, QuantConnect, Finnhub,
+historicaldata.net) -- all confirm free SPX index open interest does
+not exist anywhere checked. One real positive found: Nasdaq's
+options-chain API gives free, real open interest for SPY (the ETF),
+not the index -- available as a future PROXY if the Controller wants
+it, with its own measurement pass first, same as VIXY-for-VIX. Full
+list of every source tested: `docs/trading/decisions.md` D-0095-A,
+"Controller pushed back... exhaustive re-search".
+
 **P-100 CLOSED. Market-context workstream (priority 3 of 3) CLOSED:**
 live VIX source built, measured, and activated; GEX re-confirmed not
-buildable. **All three of the Controller's original improvement
-priorities (signal quality / risk+sizing / market context) are now
-closed.**
+buildable on an exhaustive basis. **All three of the Controller's
+original improvement priorities (signal quality / risk+sizing /
+market context) are now closed.**
