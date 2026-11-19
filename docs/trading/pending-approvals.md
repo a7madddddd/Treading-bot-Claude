@@ -5644,3 +5644,21 @@ before it in `run_one_tick`), using `position_repo`'s actual open
 count, not the planned-exit estimate -- as defense in depth alongside
 the existing creation-time check, which stays as-is. Full details:
 `docs/trading/decisions.md` D-0095-A, "REAL GAP FOUND LIVE".
+
+## P-102 — Live visual dashboard built, tested, not yet deployed
+
+Controller's request mid-dry-run: a visual "vital signs" view of
+each open position instead of a raw text log. Built
+`scripts/spx0dte_dashboard_server.py` (stdlib-only, no third-party
+deps, zero external JS/CSS) hosted directly on this server (not
+claude.ai, which cannot reach this server's data live) + a
+`build_status_snapshot()`/`status_file_path` addition to
+`live_loop.py`/`run_spx0dte_session.py`. Verified with real HTTP
+requests and a real headless-Chromium render (caught and fixed a
+real `-$X` vs `$-X` formatting bug this way). 6 new tests, full suite
+2085 passed. Full details: `docs/trading/decisions.md` D-0095-A,
+"Live visual dashboard built".
+
+STATUS: implemented, tested, visually verified, NOT YET PUSHED --
+`live_loop.py` is loaded by the currently-running live session and
+is not touched/restarted mid-run. Deploy after this dry run ends.

@@ -9215,3 +9215,80 @@ decision-processing time too (reject/skip an APPROVE if
 submission, using live open-position counts from `position_repo`,
 not the planned-exit estimate) -- defense in depth, not a
 replacement for the existing creation-time check.
+
+## Live visual dashboard built (Controller's request, during the same live dry run), 2026-11-19
+
+Controller, while watching the live dry run's raw tick log, asked for
+something visual -- "vital signs" of each open position -- instead of
+a technical text log he has to tail over SSH. First considered a
+claude.ai-hosted page, but that cannot reach this server's private
+data live (it would only update when manually refreshed through a
+conversation, not genuinely live). Settled, correctly, on hosting the
+page directly on this server instead, so the Controller's own browser
+talks to the real data with no middleman.
+
+### Implementation
+
+- **`src/spx0dte/live_loop.py`**: `LiveSessionState` gains
+  `last_known_price: Dict[str, float]`, updated in
+  `monitor_open_positions` every time a live quote is fetched (the
+  exact same quote `LiveExitTracker.update()` evaluates, not a
+  second, possibly-inconsistent read). New `build_status_snapshot()`
+  (pure function, no I/O) assembles one JSON-able dict: today's
+  day-pace cap, the real daily-loss-limit status, and each open
+  position's current price, target/stop/armed price levels (derived
+  from the SAME `TARGET_PCT`/`STOP_PCT`/`ARM_PCT` constants
+  `LiveExitTracker` itself uses -- never a second guess at them),
+  armed state, and elapsed/remaining hold time. `run_one_tick` gains
+  an OPTIONAL `status_file_path` parameter (default `None` -- omitting
+  it changes nothing); when given, writes this snapshot as JSON after
+  every tick. A write failure is caught and logged as a note, never
+  raised -- a display convenience must never be able to fail a
+  trading tick.
+- **`scripts/spx0dte_dashboard_server.py`** (new): stdlib-only
+  (`http.server`), zero third-party dependencies, zero external
+  JS/CSS (works with no outbound internet on this machine). Serves
+  one self-contained HTML page at `/` and the raw snapshot at
+  `/status.json`. The page auto-refreshes every 5s and renders each
+  open position as a card: a stop-to-target gauge with markers for
+  the current price and the arm threshold, live P&L, an armed badge,
+  and an elapsed/remaining time bar; the header shows account equity,
+  the daily loss limit's real usage (as a progress bar), and today's
+  realized P&L. This server touches NO trading logic, the broker, or
+  the SQLite file directly -- it only reads the JSON file
+  `run_one_tick` writes, so running it carries zero trading risk.
+- **`scripts/run_spx0dte_session.py`**: new optional `--status-file`
+  flag, passed through to `run_one_tick`.
+
+### Verification (not just written, actually exercised)
+
+Ran the real server locally against a realistic sample snapshot
+(mirroring the real PUT 7200 position open in this exact live run)
+and hit it with real HTTP requests: `GET /` returns the page, `GET
+/status.json` returns the snapshot, `GET /nonexistent` returns 404.
+Then rendered the page in the project's headless Chromium and
+read back its text content to confirm the JS actually computed and
+displayed the right numbers from the real JSON (not just "looks
+right in the source") -- caught and fixed a real formatting bug this
+way (`fmtMoney` rendered a negative number as `$-510.69` instead of
+`-$510.69`), confirmed fixed by re-rendering. Screenshot sent to the
+Controller for visual sign-off.
+
+### Tests
+
+6 new tests in `tests/spx0dte/test_live_loop.py`
+(`TestBuildStatusSnapshot`: empty with no positions, all fields
+computed correctly including target/stop/armed price math and
+elapsed/remaining time, `current_price`/`unrealized_pnl_dollars` stay
+`None` before any quote is fetched, the loss-limit section reflects
+the tracker; `TestRunOneTickStatusFile`: a valid JSON snapshot is
+written when the path is given, nothing changes when it is omitted).
+Full suite: 2085 passed, zero regressions.
+
+**STATUS: implemented, tested, visually verified, NOT YET
+PUSHED/DEPLOYED.** `live_loop.py` is the exact file the currently-
+running live session has loaded in memory -- it is NOT touched or
+restarted mid-run, same reasoning as the concurrency-cap gap above.
+Push and deployment (start `spx0dte_dashboard_server.py` alongside
+the next session, pass `--status-file`, open the port in Oracle
+Cloud's VCN security list) wait until this dry run ends.
