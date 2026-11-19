@@ -9349,3 +9349,22 @@ stopped the dry run cleanly (graceful SIGTERM, confirmed no running
 process and no open positions before pushing) and asked to push
 everything that had been held. Pushed together with the live
 dashboard (see below).
+
+### Dashboard DEPLOYED and VERIFIED live on the real VM, 2026-11-19
+
+Opened port 8787 at both layers (Oracle Cloud VCN security list
+ingress rule, restricted to the Controller's own IP; the VM's own
+`firewalld`, confirmed via `firewall-cmd --list-ports`). Started a
+second (clean, post-fix) session with `--status-file`, and
+`spx0dte_dashboard_server.py` alongside it. The Controller opened
+`http://130.162.190.89:8787/` in his own browser and confirmed the
+real page: account equity $96,537, daily loss limit $1,931 (2.0%)
+shown as a progress bar, realized P&L today $0.00 (a fresh session,
+nothing closed yet), "No open positions right now." -- real live
+data from the real running session, not a local test render.
+
+**This closes P-102.** Every piece built in this session -- the
+duplicate-contract/concurrency fixes, the activated VIX filter, the
+daily loss limit, and the live dashboard -- is now deployed and
+confirmed working together on the real VM, verified end to end by
+the Controller himself in his own browser.

@@ -5645,7 +5645,7 @@ count, not the planned-exit estimate -- as defense in depth alongside
 the existing creation-time check, which stays as-is. Full details:
 `docs/trading/decisions.md` D-0095-A, "REAL GAP FOUND LIVE".
 
-## P-102 — Live visual dashboard built, tested, not yet deployed
+## P-102 — Live visual dashboard built, tested, DEPLOYED and VERIFIED (CLOSED)
 
 Controller's request mid-dry-run: a visual "vital signs" view of
 each open position instead of a raw text log. Built
@@ -5659,10 +5659,15 @@ real `-$X` vs `$-X` formatting bug this way). 6 new tests, full suite
 2085 passed. Full details: `docs/trading/decisions.md` D-0095-A,
 "Live visual dashboard built".
 
-STATUS: PUSHED (commit `d11d53f`), 2026-11-19. Still to do
-separately: start `spx0dte_dashboard_server.py` on the VM with
-`--status-file`, and open the port in Oracle Cloud's VCN security
-list -- code is on the branch, not yet running/reachable.
+STATUS: CLOSED, 2026-11-19 -- deployed and verified live. Port 8787
+opened at both layers (Oracle VCN security list, restricted to the
+Controller's own IP; the VM's `firewalld`). Second (clean) session
+started with `--status-file`, dashboard server started alongside it.
+Controller opened `http://130.162.190.89:8787/` in his own browser
+and confirmed real data (account equity, daily loss limit progress
+bar, realized P&L, no open positions). Full details:
+`docs/trading/decisions.md` D-0095-A, "Dashboard DEPLOYED and
+VERIFIED live on the real VM".
 
 ## P-101 UPDATE — both the concurrency gap and a duplicate-contract gap FIXED (code held)
 
