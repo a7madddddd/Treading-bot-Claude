@@ -5716,9 +5716,8 @@ server). Full suite 2097 passed, zero regressions. Visually verified
 with a real Playwright render (chart, button, exact confirmation
 text, post-confirm pending state).
 
-STATUS: BUILT AND TESTED, code held uncommitted/unpushed -- this
-touches `live_loop.py` and the dashboard server, part of what the
-currently-running live session (real open PUT position, per the
-Controller's last screenshot) is using. Needs a fresh `ps aux`
-confirmation from the Controller that the session has stopped before
-this can be committed and pushed.
+STATUS: RESOLVED -- PUSHED (commit `8c31665`), 2026-11-19. Also
+surfaced and resolved in passing: TWO `run_spx0dte_session.py`
+processes were found running concurrently (an unintended second
+start); the Controller stopped both via `SIGTERM` and confirmed via
+`ps aux` before this was pushed.

@@ -9433,12 +9433,12 @@ headless-Chromium Playwright render: the chart, the button, the exact
 confirmation text, and the post-confirm "pending" state all render
 and behave correctly (screenshots taken, not just code read).
 
-**STATUS: BUILT AND TESTED, NOT YET PUSHED.** Per
-`.claude/rules/*` ("never edit or restart code that is part of an
-actively-running live session with real open positions"), this
-touches `live_loop.py` and the dashboard server, which are part of
-the codebase a currently-running live session (the one with a real
-open PUT position, per the most recent screenshot) is using. Holding
-the commit until the Controller gives a fresh confirmation (e.g.
-`ps aux`) that that session has stopped, per the same discipline
-already applied to every other change this session.
+**STATUS: PUSHED (commit `8c31665`), 2026-11-19.** Held until the
+Controller confirmed via `ps aux` that BOTH running
+`run_spx0dte_session.py` processes (PIDs 2713358 and 2713449 -- a
+second, unintended concurrent process, started 19:55 while the first
+from 19:48 was still running, flagged to the Controller as its own
+real-time risk, same category as the earlier concurrency/duplicate
+gaps this session fixed) had been stopped cleanly via `SIGTERM`, and
+that no position was open. A third follow-up `ps aux` showed both
+processes gone before this was pushed.
