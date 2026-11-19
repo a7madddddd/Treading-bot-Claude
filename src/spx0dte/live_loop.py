@@ -14,14 +14,18 @@ module only decides WHEN to call each, exactly like
 `orchestration.trade_proposal_service`'s own stated scope for the
 equity-ladder flow.
 
-KNOWN GAP, not silently assumed away: there is no live intraday VIX
-source wired in yet (Alpaca serves no index data at all, and FRED's
-VIXCLS series updates once daily like SP500 -- no use intraday).
-`entry_filters.vix_in_tradeable_range` already degrades gracefully
-when given `vix_level=None` ("filter skipped, not rejected") -- this
-loop passes `None` today, which means that ONE filter is effectively
-off until a live VIX source is found and wired in. Recorded here, not
-hidden.
+Live VIX proxy (D-0095-A, 2026-11-18 -- market-context workstream,
+priority 3 of 3): `vix_provider` (a `vix_proxy.VixProxyProvider`) is
+OPTIONAL and defaults to `None`, in which case `vix_level` stays
+`None` and `vix_in_tradeable_range` degrades gracefully exactly as
+before ("filter skipped, not rejected") -- the same contract that
+held when no VIX source existed at all. When a provider is given,
+its `get_vix_level()` is called once per tick (cheap after the first
+call of the day) and the comprehensive VIXY-ratio estimate is passed
+through -- validated against 630 real historical samples before
+being trusted (median 2.1% error); see `vix_proxy.py`'s own
+docstring for the full story and why an SPY-realized-volatility
+candidate was measured and rejected alongside it.
 
 Concurrency bookkeeping uses each candidate's PLANNED exit time
 (entry_time + that day's dynamic hold cap) to reserve a slot in
@@ -85,6 +89,7 @@ from spx0dte.orchestration import (
 from spx0dte.ratio_calibration import RatioProvider
 from spx0dte.signal import find_breakout_opportunities
 from spx0dte.sizing import ConcurrentPositionTracker, DailyLossLimitTracker, percentile, realized_pnl_dollars
+from spx0dte.vix_proxy import VixProxyProvider
 from spx0dte.sqlite_repository import SpxPositionRepository, SpxProposalRepository
 from spx0dte.telegram_approval import ControllerDecision, send_message
 
@@ -231,6 +236,7 @@ def run_one_tick(
     pending_decisions: List[ControllerDecision],
     bot_token: str, chat_id: str, quantity: int,
     state: LiveSessionState,
+    vix_provider: Optional[VixProxyProvider] = None,
 ) -> TickResult:
     """One pass: roll the day forward if needed, detect+propose new
     opportunities, apply any pending Controller decisions (re-pricing
@@ -294,6 +300,8 @@ def run_one_tick(
     rejected_by_loss_limit = 0
     new_opportunities_seen = 0
 
+    vix_level = vix_provider.get_vix_level(now=now) if vix_provider is not None else None
+
     if state.dynamic_cap_today is not None:
         opportunities = find_breakout_opportunities(_bars_to_signal_series(spy_bars))
         for entry in opportunities:
@@ -304,7 +312,7 @@ def run_one_tick(
             state.processed_entry_keys.add(key)
 
             filter_results = run_all_filters(
-                vix_level=None,  # KNOWN GAP -- see module docstring
+                vix_level=vix_level,  # comprehensive VIXY-ratio proxy, D-0095-A 2026-11-18 -- see vix_proxy.py
                 entry_time=entry.entry_time, hold_cap_minutes=state.dynamic_cap_today,
             )
             if any(not r.passed for r in filter_results):

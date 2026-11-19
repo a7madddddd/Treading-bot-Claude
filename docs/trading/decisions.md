@@ -9043,3 +9043,39 @@ is either activated as-is, activated with different bounds measured
 from this data, or left unpushed if no real discriminating power is
 found -- same disposition the cross-market and daily-trade-count
 filters each ended up with.
+
+### RESULT across three measurements -- real discriminating power found, 12-35 bounds ACTIVATED, 2026-11-19
+
+**Period 1 (2025-06-01..2025-12-31):** zero rejections the whole
+period (n=0) -- the estimated VIX never left 12-35 in this window.
+No evidence either way, not a contradiction.
+
+**Period 2 (2024-12-01..2025-05-31):** would-reject n=19,
+profit_factor=0.3391 (net loser). Would-pass n=587,
+profit_factor=1.0705 (modest net winner). A real effect, but too thin
+a rejected sample to trust alone (the same n=7-19 concern that sank
+`volume_confirmed`'s first pass).
+
+**Larger combined sample (2023-06-01..2025-12-31, run in the
+background via `nohup` after two SSH disconnects on the long
+foreground attempt):** would-reject n=40, profit_factor=0.4389. Would-
+pass n=2436, profit_factor=1.1322 -- the SAME direction, now on
+double the rejected sample and the full picture consistent across
+every window measured. No period disagreed; the quiet first period
+simply had nothing to show either way.
+
+**DECISION: `vix_in_tradeable_range`'s 12-35 bounds show real,
+reproducible discriminating power and are ACTIVATED as originally
+designed -- no bound adjustment needed, the bootstrap range held up.**
+Pushed the `vix_proxy` wiring built earlier (`vix_proxy.py`,
+`live_loop.py`'s optional `vix_provider` parameter,
+`run_spx0dte_session.py` constructing a real provider) unchanged.
+
+**Market-context workstream (Controller priority 3 of 3) progress:**
+live VIX proxy built, measured (median 2.1% error against real VIXY,
+630 samples), and now wired into an entry filter that itself was
+just proven to discriminate real performance -- the first time in
+this project a previously-dormant filter went from "skipped
+unconditionally" to "measured and activated" in one workstream.
+GEX/dealer-positioning reconsideration is the one remaining item
+under this priority, not yet started.

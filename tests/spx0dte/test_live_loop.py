@@ -39,6 +39,14 @@ class FakeRatioProvider:
         return self._ratio
 
 
+class FakeVixProvider:
+    def __init__(self, level):
+        self._level = level
+
+    def get_vix_level(self, *, now=None):
+        return self._level
+
+
 class FakeOptionsClient:
     def __init__(self, *, spy_bars, found_strike, option_bars):
         self._spy_bars = spy_bars
@@ -143,6 +151,28 @@ class TestRunOneTick(unittest.TestCase):
         pending = self.repo.list_pending()
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0].occ_symbol, "SPXW261117C05920000")
+
+    def test_without_vix_provider_behaves_as_before(self):
+        result = self._tick()  # no vix_provider passed -- default None
+        self.assertEqual(result.proposals_created, 1)
+        self.assertEqual(result.proposals_rejected_by_filter, 0)
+
+    def test_vix_provider_in_tradeable_range_does_not_block(self):
+        result = self._tick(vix_provider=FakeVixProvider(20.0))
+        self.assertEqual(result.proposals_created, 1)
+        self.assertEqual(result.proposals_rejected_by_filter, 0)
+
+    def test_vix_provider_out_of_range_rejects_the_opportunity(self):
+        result = self._tick(vix_provider=FakeVixProvider(50.0))  # above the 35 upper bound
+        self.assertEqual(result.proposals_created, 0)
+        self.assertEqual(result.proposals_rejected_by_filter, 1)
+
+    def test_vix_provider_none_level_does_not_block(self):
+        # The provider itself may return None (anchor/live fetch failed) --
+        # must degrade exactly like not having a provider at all.
+        result = self._tick(vix_provider=FakeVixProvider(None))
+        self.assertEqual(result.proposals_created, 1)
+        self.assertEqual(result.proposals_rejected_by_filter, 0)
 
     def test_same_opportunity_not_processed_twice(self):
         self._tick()

@@ -28,7 +28,7 @@ Usage (on the Oracle VM, same .env the equity-ladder engine sources):
 
 Env vars required:
     ALPACA_API_KEY_ID, ALPACA_API_SECRET_KEY, ALPACA_BASE_URL (paper)
-    FRED_API_KEY                               (ratio calibration)
+    FRED_API_KEY                               (ratio calibration, VIX proxy anchor)
     SPX_TELEGRAM_BOT_TOKEN, SPX_TELEGRAM_ADMIN_USER_IDS
     SPX_TELEGRAM_CHAT_ID                       (where proposals are sent)
 """
@@ -56,6 +56,7 @@ from spx0dte.ratio_calibration import RatioProvider  # noqa: E402
 from spx0dte.sizing import CONTRACTS_PER_TRADE  # noqa: E402
 from spx0dte.sqlite_repository import SpxPositionRepository, SpxProposalRepository  # noqa: E402
 from spx0dte.telegram_approval import SpxTelegramDecisionSource, send_message  # noqa: E402
+from spx0dte.vix_proxy import VixProxyProvider  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("spx0dte_session")
@@ -97,6 +98,7 @@ def main() -> int:
     broker = AlpacaBrokerClient(base_url=base_url, key_id=key_id, secret_key=secret_key)
     options_client = AlpacaOptionsClient(key_id=key_id, secret_key=secret_key)
     ratio_provider = RatioProvider(client=options_client, fred_api_key=fred_key)
+    vix_provider = VixProxyProvider(client=options_client, fred_api_key=fred_key)
     repo = SpxProposalRepository(args.db_path)
     position_repo = SpxPositionRepository(args.db_path)  # same file, shared schema
 
@@ -138,6 +140,7 @@ def main() -> int:
                     ratio_provider=ratio_provider, repo=repo, position_repo=position_repo,
                     pending_decisions=pending_decisions, bot_token=bot_token,
                     chat_id=chat_id, quantity=args.quantity, state=state,
+                    vix_provider=vix_provider,
                 )
                 logger.info(
                     "tick: cap=%s new=%d created=%d filter_rej=%d conc_rej=%d loss_limit_rej=%d "

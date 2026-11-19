@@ -5585,9 +5585,16 @@ Smoke-tested; full suite 2079 passed. Full details:
 `docs/trading/decisions.md` D-0095-A, "Controller chose: measure the
 12-35 bootstrap bounds first".
 
-STATUS: built, awaiting the Controller's run on both independent
-periods. The already-built `vix_proxy` wiring stays unpushed until
-this result is in.
+**UPDATE 2026-11-19 -- RESULT IN, ACTIVATED.** Period 1: zero
+rejections (no evidence either way). Period 2: would-reject n=19,
+profit_factor=0.3391. Larger combined sample (2023-06-01..2025-12-31,
+n=40 rejected): profit_factor=0.4389 -- same direction, double the
+sample, no disagreement anywhere measured. `vix_in_tradeable_range`'s
+12-35 bounds are real and activated as originally designed -- no
+adjustment needed. `vix_proxy` wiring pushed. Full numbers:
+`docs/trading/decisions.md` D-0095-A, "RESULT across three
+measurements -- real discriminating power found".
 
-GEX/dealer-positioning reconsideration (the other half of priority 3
-of 3) not yet started.
+**P-100 market-context workstream (priority 3 of 3): live VIX source
+item CLOSED, activated.** GEX/dealer-positioning reconsideration is
+the one remaining item under this priority, not yet started.
