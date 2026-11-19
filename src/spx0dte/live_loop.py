@@ -75,7 +75,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 from execution.broker_client import BrokerClient, BrokerClientError
 
@@ -152,6 +152,31 @@ class LiveSessionState:
     this is the exact same quote `LiveExitTracker.update()` just
     evaluated, not a separate/possibly-inconsistent read."""
 
+    price_history: Dict[str, List[Tuple[str, float]]] = field(default_factory=dict)
+    """proposal_id -> [(iso_timestamp, price), ...], one point added
+    per tick in `monitor_open_positions` (Controller's own request,
+    2026-11-19: a real chart, not a single current-price marker).
+    In-memory only, like `exit_trackers` -- a process restart loses
+    history already drawn, same graceful degradation as everywhere
+    else in this module. Popped on close, same as `last_known_price`
+    -- a closed position isn't in the dashboard's open-positions list
+    anymore, so its history has nothing left to be drawn for."""
+
+    manual_close_requests: Set[str] = field(default_factory=set)
+    """proposal_ids the Controller has asked to close early from the
+    live dashboard (Controller's own request, 2026-11-19 -- a "Sell
+    Now" button). The dashboard's HTTP handler runs on its OWN thread
+    and must never touch the broker directly -- it only adds to this
+    set, the exact same "enqueue, let the next tick process it"
+    pattern already used for Telegram decisions
+    (`SpxTelegramDecisionSource.poll()`), so there is still exactly
+    ONE place that submits orders. `monitor_open_positions` checks
+    this set every tick and closes a matching OPEN position
+    immediately regardless of what `LiveExitTracker` itself says, at
+    the current live re-priced quote -- a request that cannot be
+    fulfilled this tick (e.g. the live quote fetch fails) stays
+    queued for the next one, not silently dropped."""
+
     proposals_created_today: int = 0
     unusual_day_alert_sent: bool = False
     unusual_day_trade_count_threshold: Optional[float] = None
@@ -221,8 +246,13 @@ def monitor_open_positions(
             continue
 
         state.last_known_price[position.proposal_id] = quote.bias_corrected_price
+        state.price_history.setdefault(position.proposal_id, []).append(
+            (now.isoformat(), quote.bias_corrected_price)
+        )
 
         reason = tracker.update(quote.bias_corrected_price, now)
+        if reason is None and position.proposal_id in state.manual_close_requests:
+            reason = "manual_close"  # Controller's own "Sell Now" request, from the live dashboard
         if reason is not None:
             close_position(
                 position_repo, position, broker,
@@ -230,6 +260,8 @@ def monitor_open_positions(
             )
             state.exit_trackers.pop(position.proposal_id, None)
             state.last_known_price.pop(position.proposal_id, None)
+            state.price_history.pop(position.proposal_id, None)
+            state.manual_close_requests.discard(position.proposal_id)
             pnl = realized_pnl_dollars(position.entry_price, quote.bias_corrected_price, position.quantity)
             state.loss_limit_tracker.record_realized_pnl(pnl)
             closed_count += 1
@@ -266,6 +298,7 @@ def build_status_snapshot(
             "entry_time": position.entry_time.isoformat(),
             "entry_price": position.entry_price,
             "current_price": current_price,
+            "price_history": state.price_history.get(position.proposal_id, []),
             "target_price": position.entry_price * (1 + TARGET_PCT),
             "stop_price": position.entry_price * (1 - STOP_PCT),
             "armed_price": position.entry_price * (1 + ARM_PCT),
@@ -277,6 +310,7 @@ def build_status_snapshot(
             "hold_cap_minutes": position.hold_cap_minutes,
             "elapsed_minutes": round(elapsed_minutes, 1),
             "remaining_minutes": round(max(position.hold_cap_minutes - elapsed_minutes, 0.0), 1),
+            "manual_close_requested": position.proposal_id in state.manual_close_requests,
         })
 
     loss_limit = state.loss_limit_tracker

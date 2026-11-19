@@ -56,6 +56,8 @@ from spx0dte.ratio_calibration import RatioProvider  # noqa: E402
 from spx0dte.sizing import CONTRACTS_PER_TRADE  # noqa: E402
 from spx0dte.sqlite_repository import SpxPositionRepository, SpxProposalRepository  # noqa: E402
 from spx0dte.telegram_approval import SpxTelegramDecisionSource, send_message  # noqa: E402
+
+from spx0dte_dashboard_server import start_server_in_background  # noqa: E402 -- same scripts/ directory
 from spx0dte.vix_proxy import VixProxyProvider  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -91,7 +93,25 @@ def main() -> int:
         "--status-file", default=None,
         help=(
             "Optional path to write a live JSON status snapshot after every tick, for "
-            "scripts/spx0dte_dashboard_server.py to serve. Omit to skip writing one entirely."
+            "the live dashboard to serve. Omit to skip writing one entirely."
+        ),
+    )
+    parser.add_argument(
+        "--dashboard-port", type=int, default=None,
+        help=(
+            "If given (along with --status-file), starts the live dashboard server "
+            "(scripts/spx0dte_dashboard_server.py) INSIDE this same process, on this port -- "
+            "Controller's own request, 2026-11-19: one command instead of two. Omit to run no "
+            "dashboard at all."
+        ),
+    )
+    parser.add_argument(
+        "--public-host", default=None,
+        help=(
+            "This server's own public address (e.g. an IP or domain), used ONLY to build a "
+            "clickable dashboard link sent in the Telegram startup message. Not auto-detected -- "
+            "the Controller provides it explicitly (no new external dependency, no guessing an "
+            "address that could be wrong). Omit to skip sending a link."
         ),
     )
     args = parser.parse_args()
@@ -114,14 +134,24 @@ def main() -> int:
     signal.signal(signal.SIGINT, _handle_stop_signal)
     signal.signal(signal.SIGTERM, _handle_stop_signal)
 
-    bot_token = os.environ.get("SPX_TELEGRAM_BOT_TOKEN", "")
-    send_message(bot_token=bot_token, chat_id=chat_id, text=(
-        f"SPX 0DTE session starting (max {args.max_hours}h, "
-        f"tick every {args.tick_seconds}s, quantity {args.quantity}/entry)."
-    ))
-
     decision_source.start()
     state = LiveSessionState()  # unusual-day threshold self-updates from repo history each day -- see live_loop.py
+
+    if args.dashboard_port is not None and args.status_file is not None:
+        # `state` is passed through so the dashboard's "Sell Now" button can enqueue
+        # a manual_close_requests entry that this same loop's next tick acts on.
+        start_server_in_background(status_file_path=args.status_file, port=args.dashboard_port, state=state)
+        logger.info("Dashboard server started on port %d (status file: %s).", args.dashboard_port, args.status_file)
+
+    bot_token = os.environ.get("SPX_TELEGRAM_BOT_TOKEN", "")
+    startup_text = (
+        f"SPX 0DTE session starting (max {args.max_hours}h, "
+        f"tick every {args.tick_seconds}s, quantity {args.quantity}/entry)."
+    )
+    if args.public_host is not None and args.dashboard_port is not None:
+        startup_text += f"\nLive dashboard: http://{args.public_host}:{args.dashboard_port}/"
+    send_message(bot_token=bot_token, chat_id=chat_id, text=startup_text)
+
     start_time = datetime.now(timezone.utc)
     deadline = start_time + timedelta(hours=args.max_hours)
     stop_reason = "max-hours reached"

@@ -9368,3 +9368,77 @@ duplicate-contract/concurrency fixes, the activated VIX filter, the
 daily loss limit, and the live dashboard -- is now deployed and
 confirmed working together on the real VM, verified end to end by
 the Controller himself in his own browser.
+
+### D-0095-A addendum: manual "Sell Now" dashboard button + price-history chart + one-command startup (code built, NOT yet pushed)
+
+Controller's own request, 2026-11-19, after watching a real position
+on the dashboard: "when I see my benefit is enough, I can sell that
+... I want to sell." Three related additions, same session:
+
+1. **Price-history chart.** `LiveSessionState.price_history: Dict[str,
+   List[Tuple[str, float]]]`, appended every tick in
+   `monitor_open_positions`, cleared on close. `build_status_snapshot`
+   exposes it per position. The dashboard's canvas draws the real
+   price path against target/stop/armed/entry reference lines (a
+   genuine time-series chart, not the earlier single-point gauge).
+   Confirms the Controller's explicit question: two open positions
+   always render as two separate cards/charts, never combined.
+2. **One-command startup.** `run_spx0dte_session.py` gained
+   `--dashboard-port` (starts `spx0dte_dashboard_server.py` on a
+   daemon thread inside the SAME process instead of a second
+   terminal) and `--public-host` (builds a clickable dashboard link
+   in the startup Telegram message; never auto-detected, the
+   Controller supplies the address explicitly).
+3. **Manual close ("Sell Now" button).** `LiveSessionState` gains
+   `manual_close_requests: Set[str]`. The dashboard's HTTP handler
+   thread NEVER touches the broker -- `POST /close/<proposal_id>`
+   only does `state.manual_close_requests.add(proposal_id)`, the
+   exact same enqueue-for-the-next-tick pattern already used for
+   Telegram decisions, so there remains exactly ONE place
+   (`monitor_open_positions`, inside the trading loop's own tick)
+   that ever submits an order. That function now checks the set
+   right after the automatic `LiveExitTracker`, assigns the new
+   `ExitReason = "manual_close"` if the Controller requested a close
+   and nothing automatic already triggered, and discards the request
+   once the position is actually closed -- a request that cannot be
+   fulfilled this tick (e.g. a failed live re-price) stays queued for
+   the next one, never silently dropped.
+
+   Frontend: each open position gets a "Sell Now" button. Clicking it
+   does NOT fire the request immediately -- it shows an inline
+   confirmation first, with text the Controller explicitly required:
+   "This will sell this position at the NEXT cycle (it does not
+   execute instantly) -- are you sure?" Only "Yes, sell at next
+   cycle" calls `POST /close/<id>`; "Cancel" reverts to the plain
+   button. A position with `manual_close_requested: true` shows "Sell
+   requested -- will close on the next cycle." instead of the button,
+   until it disappears from `open_positions` on actual close.
+
+   A standalone dashboard process (no live `state`, e.g. run as its
+   own separate script) answers `{"status": "no_live_session"}`
+   rather than falsely confirming a close it cannot act on.
+
+**Tests:** `tests/spx0dte/test_live_loop.py` --
+`test_manual_close_request_closes_position_even_when_not_otherwise_triggered`
+(proves the manual request, and only it, caused the close in a
+scenario that would otherwise stay open) and
+`test_manual_close_requested_flag_reflects_state`. New file
+`tests/spx0dte/test_dashboard_server.py` -- real `http.client` POSTs
+against a real running `ThreadingHTTPServer` instance (not a mock):
+the request lands in `state.manual_close_requests`, an empty
+proposal id is rejected (400), an unknown path is 404, and a
+`state=None` server reports `no_live_session` honestly. Full suite:
+**2097 passed**, zero regressions. Visually verified with a real
+headless-Chromium Playwright render: the chart, the button, the exact
+confirmation text, and the post-confirm "pending" state all render
+and behave correctly (screenshots taken, not just code read).
+
+**STATUS: BUILT AND TESTED, NOT YET PUSHED.** Per
+`.claude/rules/*` ("never edit or restart code that is part of an
+actively-running live session with real open positions"), this
+touches `live_loop.py` and the dashboard server, which are part of
+the codebase a currently-running live session (the one with a real
+open PUT position, per the most recent screenshot) is using. Holding
+the commit until the Controller gives a fresh confirmation (e.g.
+`ps aux`) that that session has stopped, per the same discipline
+already applied to every other change this session.

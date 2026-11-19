@@ -5691,3 +5691,34 @@ D-0095-A, "Second real finding, same dry run... both gaps fixed".
 STATUS: PUSHED (commit `d11d53f`), 2026-11-19, together with the
 dashboard, after the Controller confirmed the dry run had stopped
 cleanly (no running process, no open positions).
+
+## P-103 — manual "Sell Now" dashboard button + chart + one-command startup (built, tested, held)
+
+Controller's own request, 2026-11-19: a button on the live dashboard
+to close an open position early when he judges the gain is enough,
+plus a real price-history chart (replacing the single-point gauge)
+and a `--dashboard-port`/`--public-host` one-command startup. All
+three built and tested this session.
+
+Design: the dashboard's HTTP handler thread never touches the broker
+-- clicking "Sell Now" shows an inline confirmation (text the
+Controller required: closes at the NEXT cycle, not instantly), and
+only on confirm does it `POST /close/<id>`, which adds the id to
+`LiveSessionState.manual_close_requests`. The next tick's
+`monitor_open_positions` (the one place that ever submits an order)
+honors it and discards it once closed. Full details:
+`docs/trading/decisions.md` D-0095-A addendum, "manual Sell Now
+dashboard button".
+
+Tests: 2 new in `test_live_loop.py`, 4 new in new file
+`test_dashboard_server.py` (real HTTP POSTs against a real running
+server). Full suite 2097 passed, zero regressions. Visually verified
+with a real Playwright render (chart, button, exact confirmation
+text, post-confirm pending state).
+
+STATUS: BUILT AND TESTED, code held uncommitted/unpushed -- this
+touches `live_loop.py` and the dashboard server, part of what the
+currently-running live session (real open PUT position, per the
+Controller's last screenshot) is using. Needs a fresh `ps aux`
+confirmation from the Controller that the session has stopped before
+this can be committed and pushed.

@@ -56,7 +56,14 @@ from typing import List, Literal, Optional
 
 ExitReason = Literal[
     "target", "breakeven_stop", "stall", "stop_loss", "lagging_pace", "time_cap",
+    "manual_close",
 ]
+"""`manual_close` is never produced by `simulate_exit`/`LiveExitTracker`
+themselves -- it is assigned directly by `live_loop.monitor_open_positions`
+when the Controller requests an early close from the live dashboard
+(2026-11-19). Listed here so `ExitReason` stays an accurate type for
+every value `close_position` can actually receive, not just the
+rule-based ones."""
 
 BASE_HOLD_CAP_MINUTES = 40.0
 MIN_HOLD_CAP_MINUTES = 25.0

@@ -341,6 +341,44 @@ class TestExitMonitoring(unittest.TestCase):
             option_bars=[_bar(stale_time, price)],
         )
 
+    def test_price_history_accumulates_across_ticks(self):
+        # Same consistent-basis construction as test_still_open_position_not_closed,
+        # so the position stays open across all 3 ticks (no incidental trigger).
+        first_now = self.entry_time + timedelta(minutes=1)
+        expiry = first_now.replace(hour=21, minute=0, second=0, microsecond=0)
+        entry_T = max((expiry - self.entry_time).total_seconds(), 1) / 86400 / 365
+        self.entry_price = black_scholes_price(5900, self.K, entry_T, 0.045, 0.15, OptionType.CALL)
+        self._open_a_position()
+
+        for minutes in (1, 2):
+            now = self.entry_time + timedelta(minutes=minutes)
+            stale_time = now - timedelta(minutes=40)
+            stale_T = max((expiry - stale_time).total_seconds(), 1) / 86400 / 365
+            stale_price = black_scholes_price(5900, self.K, stale_T, 0.045, 0.15, OptionType.CALL)
+            client = self._client_with_stale_price(stale_price, now)
+            result = run_one_tick(
+                now=now, options_client=client, broker=self.broker, ratio_provider=self.ratio_provider,
+                repo=self.repo, position_repo=self.position_repo, pending_decisions=[],
+                bot_token="t", chat_id="1", quantity=1, state=self.state,
+            )
+            self.assertEqual(result.positions_closed, 0)  # confirms the test setup itself is valid
+        self.assertEqual(len(self.state.price_history["SPX-exittest"]), 2)
+
+    def test_price_history_cleared_on_close(self):
+        self._open_a_position()
+        now = self.entry_time + timedelta(minutes=5)
+        expiry = now.replace(hour=21, minute=0, second=0, microsecond=0)
+        stale_time = now - timedelta(minutes=40)
+        stale_T = max((expiry - stale_time).total_seconds(), 1) / 86400 / 365
+        stale_price = black_scholes_price(5900, self.K, stale_T, 0.045, 0.60, OptionType.CALL)
+        client = self._client_with_stale_price(stale_price, now)
+        run_one_tick(
+            now=now, options_client=client, broker=self.broker, ratio_provider=self.ratio_provider,
+            repo=self.repo, position_repo=self.position_repo, pending_decisions=[],
+            bot_token="t", chat_id="1", quantity=1, state=self.state,
+        )
+        self.assertNotIn("SPX-exittest", self.state.price_history)
+
     def test_target_hit_closes_position(self):
         self._open_a_position()
         now = self.entry_time + timedelta(minutes=5)
@@ -395,6 +433,32 @@ class TestExitMonitoring(unittest.TestCase):
 
         self.assertEqual(result.positions_closed, 0)
         self.assertEqual(len(self.position_repo.list_open()), 1)
+
+    def test_manual_close_request_closes_position_even_when_not_otherwise_triggered(self):
+        # Same consistent-basis construction as test_still_open_position_not_closed,
+        # so without the manual_close_requests entry this tick would NOT close --
+        # isolating that the Controller's dashboard "Sell Now" request is what did it.
+        now = self.entry_time + timedelta(minutes=1)
+        expiry = now.replace(hour=21, minute=0, second=0, microsecond=0)
+        entry_T = max((expiry - self.entry_time).total_seconds(), 1) / 86400 / 365
+        self.entry_price = black_scholes_price(5900, self.K, entry_T, 0.045, 0.15, OptionType.CALL)
+        self._open_a_position()
+        self.state.manual_close_requests.add("SPX-exittest")
+
+        stale_time = now - timedelta(minutes=40)
+        stale_T = max((expiry - stale_time).total_seconds(), 1) / 86400 / 365
+        stale_price = black_scholes_price(5900, self.K, stale_T, 0.045, 0.15, OptionType.CALL)
+        client = self._client_with_stale_price(stale_price, now)
+
+        result = run_one_tick(
+            now=now, options_client=client, broker=self.broker, ratio_provider=self.ratio_provider,
+            repo=self.repo, position_repo=self.position_repo, pending_decisions=[],
+            bot_token="t", chat_id="1", quantity=1, state=self.state,
+        )
+
+        self.assertEqual(result.positions_closed, 1)
+        self.assertEqual(self.position_repo.list_open(), [])
+        self.assertNotIn("SPX-exittest", self.state.manual_close_requests)  # discarded once acted on
 
     def test_tracker_persists_across_ticks_for_stall_detection(self):
         self._open_a_position()
@@ -480,6 +544,24 @@ class TestBuildStatusSnapshot(unittest.TestCase):
         self.assertAlmostEqual(p["unrealized_pnl_dollars"], 50.0)  # (2.50-2.00)*1*100
         self.assertAlmostEqual(p["elapsed_minutes"], 10.0)
         self.assertAlmostEqual(p["remaining_minutes"], 30.0)
+        self.assertEqual(p["price_history"], [])  # none recorded in this test yet
+
+    def test_price_history_included_when_present(self):
+        self._open_a_position(entry_price=2.0)
+        expected = [("2026-11-19T15:01:00+00:00", 2.10), ("2026-11-19T15:02:00+00:00", 2.25)]
+        self.state.price_history["SPX-snaptest"] = expected
+        snapshot = build_status_snapshot(now=self.entry_time, state=self.state, position_repo=self.position_repo)
+        p = snapshot["open_positions"][0]
+        self.assertEqual(p["price_history"], expected)
+
+    def test_manual_close_requested_flag_reflects_state(self):
+        self._open_a_position(entry_price=2.0)
+        snapshot = build_status_snapshot(now=self.entry_time, state=self.state, position_repo=self.position_repo)
+        self.assertFalse(snapshot["open_positions"][0]["manual_close_requested"])
+
+        self.state.manual_close_requests.add("SPX-snaptest")
+        snapshot = build_status_snapshot(now=self.entry_time, state=self.state, position_repo=self.position_repo)
+        self.assertTrue(snapshot["open_positions"][0]["manual_close_requested"])
 
     def test_current_price_none_when_no_quote_fetched_yet(self):
         self._open_a_position()
