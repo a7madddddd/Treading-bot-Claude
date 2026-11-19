@@ -5595,6 +5595,18 @@ adjustment needed. `vix_proxy` wiring pushed. Full numbers:
 `docs/trading/decisions.md` D-0095-A, "RESULT across three
 measurements -- real discriminating power found".
 
-**P-100 market-context workstream (priority 3 of 3): live VIX source
-item CLOSED, activated.** GEX/dealer-positioning reconsideration is
-the one remaining item under this priority, not yet started.
+**UPDATE 2026-11-19 -- GEX reconsidered, RE-CONFIRMED not buildable.**
+Real test against Alpaca's options snapshot endpoint on the VM:
+every contract's response contained only `latestQuote` (bid/ask) --
+no `open_interest`, no `greeks`, even for live 0DTE contracts today.
+Signing the Options Agreement unlocked quote/trade data only; open
+interest needs a data tier this account doesn't have. Same finding
+as D-0095's original deferral, now re-confirmed empirically rather
+than assumed stale. Full details: `docs/trading/decisions.md`
+D-0095-A, "GEX/dealer-positioning reconsidered".
+
+**P-100 CLOSED. Market-context workstream (priority 3 of 3) CLOSED:**
+live VIX source built, measured, and activated; GEX re-confirmed not
+buildable. **All three of the Controller's original improvement
+priorities (signal quality / risk+sizing / market context) are now
+closed.**

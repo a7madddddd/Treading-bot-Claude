@@ -9077,5 +9077,35 @@ live VIX proxy built, measured (median 2.1% error against real VIXY,
 just proven to discriminate real performance -- the first time in
 this project a previously-dormant filter went from "skipped
 unconditionally" to "measured and activated" in one workstream.
-GEX/dealer-positioning reconsideration is the one remaining item
-under this priority, not yet started.
+
+### GEX/dealer-positioning reconsidered -- RE-CONFIRMED not buildable on this account's data tier, 2026-11-19
+
+D-0095 originally deferred this as "not backtestable -- no free
+source for historical options open interest found". The OPRA/Options
+Agreement signed for D-0095-A's verification unlocked real-time
+options TRADE/QUOTE data (what this module already uses for pricing)
+-- worth checking whether it also unlocked open interest, rather than
+assuming the old finding still held.
+
+**Real test, on the VM, against the actual Alpaca options snapshot
+endpoint** (`/v1beta1/options/snapshots/SPXW?expiration_date=...`):
+the response for every contract contained ONLY `latestQuote`
+(bid/ask) -- no `open_interest` field, no `greeks`, no `latestTrade`,
+even for live, currently-quoted 0DTE contracts today. **FACT:**
+signing the Options Agreement unlocked quote/trade data only; open
+interest is gated behind a tier this account's free Basic plan does
+not include, confirmed by direct inspection of the real response
+shape, not by assumption.
+
+**DECISION: GEX/dealer-positioning stays NOT BUILDABLE on this
+account's current data access.** Same disposition as D-0095's
+original finding, now re-confirmed empirically after the one thing
+that plausibly could have changed (the OPRA agreement) -- it did not
+change this specific gap. Revisit only if the account's data plan
+changes, not on a fixed schedule.
+
+**Market-context workstream (priority 3 of 3) CLOSED:** live VIX
+proxy item done and activated; GEX item re-confirmed closed with a
+negative, data-grounded finding. **All three of the Controller's
+original improvement priorities (signal quality / risk+sizing /
+market context) are now closed.**
