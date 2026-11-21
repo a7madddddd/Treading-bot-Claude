@@ -254,19 +254,30 @@ def monitor_open_positions(
         if reason is None and position.proposal_id in state.manual_close_requests:
             reason = "manual_close"  # Controller's own "Sell Now" request, from the live dashboard
         if reason is not None:
-            close_position(
+            close_result = close_position(
                 position_repo, position, broker,
                 exit_price=quote.bias_corrected_price, exit_reason=reason, now=now,
             )
+            # Realized pnl must come from the broker's own confirmed fill when
+            # one is available, same real-fill-over-estimate correction `close_position`
+            # itself applies to the persisted exit_price (D-0095-A, 2026-11-19) --
+            # `quote.bias_corrected_price` is only the pre-trade reprice used to
+            # submit the order, not necessarily what it actually filled at.
+            realized_exit_price = quote.bias_corrected_price
+            if (
+                close_result.order_state is not None
+                and close_result.order_state.filled_avg_price is not None
+            ):
+                realized_exit_price = close_result.order_state.filled_avg_price
             state.exit_trackers.pop(position.proposal_id, None)
             state.last_known_price.pop(position.proposal_id, None)
             state.price_history.pop(position.proposal_id, None)
             state.manual_close_requests.discard(position.proposal_id)
-            pnl = realized_pnl_dollars(position.entry_price, quote.bias_corrected_price, position.quantity)
+            pnl = realized_pnl_dollars(position.entry_price, realized_exit_price, position.quantity)
             state.loss_limit_tracker.record_realized_pnl(pnl)
             closed_count += 1
             notes.append(
-                f"{position.proposal_id}: closed ({reason}) at {quote.bias_corrected_price:.2f}, "
+                f"{position.proposal_id}: closed ({reason}) at {realized_exit_price:.2f}, "
                 f"realized ${pnl:+.2f}"
             )
 

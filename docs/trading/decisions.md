@@ -9442,3 +9442,54 @@ real-time risk, same category as the earlier concurrency/duplicate
 gaps this session fixed) had been stopped cleanly via `SIGTERM`, and
 that no position was open. A third follow-up `ps aux` showed both
 processes gone before this was pushed.
+
+### D-0095-A: P-104 fixed -- entry_price/exit_price now use the broker's real fill when available, 2026-11-19
+
+Controller approved the recommendation presented for P-104 ("yes, go
+ahead and implement it"), explicitly noting it changes execution
+behavior (the basis exits are measured from).
+
+**Fix, `src/spx0dte/orchestration.py`:**
+- `process_decisions`: `OpenPosition.entry_price` is now
+  `result.order_state.filled_avg_price` when the submission response
+  includes one, falling back to the submitted `limit_price` only when
+  no fill price is yet available (unchanged behavior in that case).
+- `close_position`: same correction for `exit_price` -- the
+  persisted value is the broker's real fill when reported, the
+  submitted estimate otherwise.
+- `src/spx0dte/live_loop.py`'s `monitor_open_positions`: the realized
+  pnl fed to `DailyLossLimitTracker` now uses `close_position`'s own
+  returned `SubmissionResult.order_state.filled_avg_price` when
+  present (previously always used `quote.bias_corrected_price`, the
+  pre-trade reprice, even though `close_position` itself was about to
+  apply the same real-fill correction to the persisted row -- the two
+  would otherwise have disagreed).
+
+**Why this matters beyond display:** `exit_logic.py`'s target, stop,
+and armed-state calculations are all relative to `entry_price` (`P0`).
+Recording the pre-trade stale-quote reprice as `P0` meant a reprice
+that overshot high (within Option B's own measured 6.1% mean-abs-error
+band, see "VALIDATION RESULT" above) would push the real target
+further away and could trigger a real stop/stall earlier than the
+approved rule intends -- an execution-precision issue, not a strategy
+change, but one that materially affects when the approved exit rules
+actually fire.
+
+**Tests:** 4 new in `test_orchestration.py` (`FakeBroker` gained a
+configurable `filled_avg_price`: entry uses the real fill when given,
+falls back to the estimate when not, same two cases for
+`close_position`), 1 new in `test_live_loop.py`
+(`test_target_hit_realized_pnl_uses_real_fill_not_reprice_estimate`,
+confirms the FULL tick's recorded `exit_price` and realized pnl match
+the broker's real fill, not the reprice). Every existing test's
+`FakeBroker` still defaults to `filled_avg_price=None`, reproducing
+the exact prior fallback behavior unchanged. Full suite: **2102
+passed**, zero regressions.
+
+**Caveat for every already-recorded `total_pnl`/realized-pnl figure in
+this module's history**: a third correction to apply when reading an
+older number, alongside the earlier 100x-multiplier correction -- any
+trade recorded before this fix used the pre-trade estimate as both
+entry and exit price, not the real fill.
+
+STATUS: BUILT AND TESTED. P-104 CLOSED.

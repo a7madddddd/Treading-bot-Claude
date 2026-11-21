@@ -8,6 +8,7 @@ from execution.broker_client import BrokerClient, BrokerOrderState
 from spx0dte.greeks import OptionType, black_scholes_price
 from spx0dte.live_loop import LiveSessionState, build_status_snapshot, run_one_tick
 from spx0dte.proposal import OptionTradeProposal, ProposalApprovalState
+from spx0dte.sizing import realized_pnl_dollars
 from spx0dte.sqlite_repository import SpxPositionRepository, SpxProposalRepository
 from spx0dte.telegram_approval import ControllerDecision, DecisionKind
 
@@ -65,15 +66,20 @@ class FakeOptionsClient:
 
 
 class FakeBroker(BrokerClient):
-    def __init__(self, account_equity: float = 100_000.0):
+    def __init__(self, account_equity: float = 100_000.0, filled_avg_price=None):
         self.calls = []
         self.account_equity = account_equity
+        # D-0095-A, 2026-11-19: None reproduces the original "no fill price yet"
+        # fallback every existing test here relies on.
+        self.filled_avg_price = filled_avg_price
 
     def submit_order(self, *, client_order_id, symbol, side, quantity, limit_price):
         self.calls.append(dict(client_order_id=client_order_id, symbol=symbol, side=side))
+        filled = self.filled_avg_price
         return BrokerOrderState(
-            broker_order_id=f"B-{client_order_id}", status="accepted",
-            is_terminal=False, filled_qty=0, filled_avg_price=None,
+            broker_order_id=f"B-{client_order_id}", status="accepted" if filled is None else "filled",
+            is_terminal=filled is not None, filled_qty=(quantity if filled is not None else 0),
+            filled_avg_price=filled,
         )
 
     def get_order_by_client_order_id(self, client_order_id):
@@ -407,6 +413,30 @@ class TestExitMonitoring(unittest.TestCase):
         # must reach the daily loss-limit tracker.
         self.assertGreater(self.state.loss_limit_tracker.realized_pnl_today, 0.0)
         self.assertGreaterEqual(abs(self.state.loss_limit_tracker.realized_pnl_today), 100 * 0.5)
+
+    def test_target_hit_realized_pnl_uses_real_fill_not_reprice_estimate(self):
+        # D-0095-A, 2026-11-19 correction: the Controller's real finding --
+        # realized pnl must come from the broker's own confirmed fill when
+        # reported, not from the stale-quote reprice used to submit the order.
+        self._open_a_position()
+        now = self.entry_time + timedelta(minutes=5)
+        expiry = now.replace(hour=21, minute=0, second=0, microsecond=0)
+        stale_time = now - timedelta(minutes=40)
+        stale_T = max((expiry - stale_time).total_seconds(), 1) / 86400 / 365
+        stale_price = black_scholes_price(5900, self.K, stale_T, 0.045, 0.60, OptionType.CALL)
+        client = self._client_with_stale_price(stale_price, now)
+        self.broker.filled_avg_price = stale_price + 0.50  # real fill, different from the reprice estimate
+
+        run_one_tick(
+            now=now, options_client=client, broker=self.broker, ratio_provider=self.ratio_provider,
+            repo=self.repo, position_repo=self.position_repo, pending_decisions=[],
+            bot_token="t", chat_id="1", quantity=1, state=self.state,
+        )
+
+        closed = self.position_repo.get("SPX-exittest")
+        self.assertAlmostEqual(closed.exit_price, self.broker.filled_avg_price, places=2)
+        expected_pnl = realized_pnl_dollars(self.entry_price, self.broker.filled_avg_price, 1)
+        self.assertAlmostEqual(self.state.loss_limit_tracker.realized_pnl_today, expected_pnl, places=2)
 
     def test_still_open_position_not_closed(self):
         # Build the stale quote AND the position's recorded entry_price

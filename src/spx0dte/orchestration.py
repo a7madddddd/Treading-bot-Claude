@@ -155,12 +155,17 @@ def process_decisions(
     If `position_repo` is given and submission succeeds, an
     `OpenPosition` is created and persisted (D-0095-A item 4) so
     `live_loop.monitor_open_positions` has something to track for an
-    eventual exit/close. The entry price recorded is the submitted
-    `limit_price` (a provisional estimate, not a confirmed fill) --
-    this module does not yet poll the broker for the actual fill
-    price; a future refinement could, but a provisional entry price is
-    enough for the exit tracker's OWN estimates to be self-consistent
-    (it compares against this SAME baseline throughout the trade)."""
+    eventual exit/close. The entry price recorded is the broker's own
+    `filled_avg_price` when the submission response includes one --
+    the real confirmed fill, not the pre-trade estimate -- falling
+    back to the submitted `limit_price` only when no fill price is
+    yet available (D-0095-A, 2026-11-19 correction: recording the
+    submitted limit unconditionally made every position's target/stop/
+    armed state, all computed from this same baseline in
+    `exit_logic.py`, drift from the real cost basis by however far the
+    pre-trade stale-quote reprice missed -- the Controller caught this
+    from a live trade that opened already showing a loss purely from
+    this mismatch, not from a real price move)."""
     now = now or datetime.now(timezone.utc)
     results: List[SubmissionResult] = []
 
@@ -216,10 +221,13 @@ def process_decisions(
         results.append(result)
 
         if result.success and position_repo is not None:
+            recorded_entry_price = limit_price
+            if result.order_state is not None and result.order_state.filled_avg_price is not None:
+                recorded_entry_price = result.order_state.filled_avg_price
             position_repo.save(OpenPosition(
                 proposal_id=decided.proposal_id, occ_symbol=decided.occ_symbol,
                 direction=decided.direction, quantity=quantity, strike=decided.strike,
-                date=decided.date, entry_time=now, entry_price=limit_price,
+                date=decided.date, entry_time=now, entry_price=recorded_entry_price,
                 hold_cap_minutes=decided.hold_cap_minutes,
             ))
 
@@ -241,13 +249,26 @@ def close_position(
     success -- an order the broker rejected is still a position this
     tracker must stop monitoring (the caller is responsible for
     surfacing a failed close prominently; silently retrying forever
-    is not this function's job)."""
+    is not this function's job).
+
+    `exit_price` is the pre-trade estimate used to SUBMIT the order;
+    the row's recorded `exit_price` is the broker's own
+    `filled_avg_price` when the submission response includes one, the
+    same real-fill-over-estimate correction applied to `entry_price`
+    in `process_decisions` (D-0095-A, 2026-11-19) -- realized pnl must
+    be computed from what the trade actually paid/received, not from
+    the stale-quote reprice that was only ever a submission target."""
     client_order_id = f"{position.proposal_id}-exit"
     result = submit_exit_order(
         broker, client_order_id=client_order_id, occ_symbol=position.occ_symbol,
         quantity=position.quantity, limit_price=exit_price,
     )
-    position_repo.save(position.with_exit(exit_time=now, exit_price=exit_price, exit_reason=exit_reason))
+    recorded_exit_price = exit_price
+    if result.order_state is not None and result.order_state.filled_avg_price is not None:
+        recorded_exit_price = result.order_state.filled_avg_price
+    position_repo.save(
+        position.with_exit(exit_time=now, exit_price=recorded_exit_price, exit_reason=exit_reason)
+    )
     return result
 
 

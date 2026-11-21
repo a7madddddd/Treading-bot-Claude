@@ -5781,6 +5781,14 @@ comparing recorded vs. actual-fill entry prices on trades already in
 `spx0dte.sqlite` before being trusted, per "calculate from recorded
 data, never a guessed number."
 
-STATUS: OPEN, presented to the Controller 2026-11-19, awaiting a
-CHANGE/WHY/EXPECTED BENEFIT/RISK/FILES/TEST PLAN decision before any
-code is touched.
+STATUS: RESOLVED -- CLOSED, 2026-11-19. Controller approved the
+proposed fix ("yes, go ahead and implement it"). `entry_price`/
+`exit_price` now use the broker's real `filled_avg_price` when the
+submission response includes one, falling back to the submitted
+estimate otherwise (same correction applied to the realized pnl fed
+into the daily loss-limit tracker). 5 new tests, full suite 2102
+passed, zero regressions. Full details: `docs/trading/decisions.md`
+D-0095-A, "P-104 fixed -- entry_price/exit_price now use the broker's
+real fill". Held for push until re-confirmed the current live session
+has no open position, per the same discipline applied to every other
+execution-behavior change this session.

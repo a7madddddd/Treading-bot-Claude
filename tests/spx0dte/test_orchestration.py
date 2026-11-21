@@ -15,16 +15,22 @@ from spx0dte.telegram_approval import ControllerDecision, DecisionKind
 
 
 class FakeBroker(BrokerClient):
-    def __init__(self):
+    def __init__(self, filled_avg_price=None):
         self.calls = []
+        # D-0095-A, 2026-11-19: None reproduces the original "no fill price yet"
+        # behavior every existing test here relies on; a real test of the
+        # real-fill-over-estimate fix sets this to a specific value.
+        self.filled_avg_price = filled_avg_price
 
     def submit_order(self, *, client_order_id, symbol, side, quantity, limit_price):
         self.calls.append(dict(
             client_order_id=client_order_id, symbol=symbol, quantity=quantity, limit_price=limit_price,
         ))
+        filled = self.filled_avg_price
         return BrokerOrderState(
-            broker_order_id=f"B-{client_order_id}", status="accepted",
-            is_terminal=False, filled_qty=0, filled_avg_price=None,
+            broker_order_id=f"B-{client_order_id}", status="accepted" if filled is None else "filled",
+            is_terminal=filled is not None, filled_qty=(quantity if filled is not None else 0),
+            filled_avg_price=filled,
         )
 
     def get_order_by_client_order_id(self, client_order_id):
@@ -273,6 +279,43 @@ class TestPositionWiring(unittest.TestCase):
         self.assertEqual(positions[0].occ_symbol, "SPXW261117C05900000")
         self.assertAlmostEqual(positions[0].entry_price, 1.50, places=2)
 
+    def test_approve_uses_real_fill_price_when_broker_reports_one(self):
+        # D-0095-A, 2026-11-19: the Controller's real finding -- every live
+        # trade opened already showing a loss, traced to recording the
+        # submitted estimate instead of the broker's own confirmed fill.
+        proposal = build_proposal(
+            date="2026-11-17", direction="call", strike=5900, occ_symbol="SPXW261117C05900000",
+            entry_time=self.now, hold_cap_minutes=40.0, estimated_premium=1.50, vix=18.0,
+            filters_passed="VIX OK", now=self.now,
+        )
+        self.repo.save(proposal)
+        broker = FakeBroker(filled_avg_price=1.32)  # real fill cheaper than the 1.50 estimate
+        decision = ControllerDecision(proposal_id=proposal.proposal_id, kind=DecisionKind.APPROVE, decided_by="111")
+
+        process_decisions(
+            self.repo, [decision], broker, quantity=1, position_repo=self.position_repo, now=self.now,
+        )
+
+        positions = self.position_repo.list_open()
+        self.assertAlmostEqual(positions[0].entry_price, 1.32, places=2)  # real fill, not the 1.50 estimate
+
+    def test_approve_falls_back_to_submitted_price_when_no_fill_reported(self):
+        proposal = build_proposal(
+            date="2026-11-17", direction="call", strike=5900, occ_symbol="SPXW261117C05900000",
+            entry_time=self.now, hold_cap_minutes=40.0, estimated_premium=1.50, vix=18.0,
+            filters_passed="VIX OK", now=self.now,
+        )
+        self.repo.save(proposal)
+        broker = FakeBroker(filled_avg_price=None)  # order accepted, no fill price back yet
+        decision = ControllerDecision(proposal_id=proposal.proposal_id, kind=DecisionKind.APPROVE, decided_by="111")
+
+        process_decisions(
+            self.repo, [decision], broker, quantity=1, position_repo=self.position_repo, now=self.now,
+        )
+
+        positions = self.position_repo.list_open()
+        self.assertAlmostEqual(positions[0].entry_price, 1.50, places=2)  # unchanged fallback behavior
+
     def test_reject_creates_no_position(self):
         proposal = build_proposal(
             date="2026-11-17", direction="call", strike=5900, occ_symbol="SPXW261117C05900000",
@@ -314,6 +357,51 @@ class TestPositionWiring(unittest.TestCase):
         closed = self.position_repo.get(position.proposal_id)
         self.assertTrue(closed.is_closed)
         self.assertEqual(closed.exit_reason, "target")
+
+    def test_close_position_uses_real_fill_price_when_broker_reports_one(self):
+        proposal = build_proposal(
+            date="2026-11-17", direction="call", strike=5900, occ_symbol="SPXW261117C05900000",
+            entry_time=self.now, hold_cap_minutes=40.0, estimated_premium=1.50, vix=18.0,
+            filters_passed="VIX OK", now=self.now,
+        )
+        self.repo.save(proposal)
+        broker = FakeBroker()  # no fill reported at entry -- recorded entry stays the 1.50 estimate
+        decision = ControllerDecision(proposal_id=proposal.proposal_id, kind=DecisionKind.APPROVE, decided_by="111")
+        process_decisions(
+            self.repo, [decision], broker, quantity=1, position_repo=self.position_repo, now=self.now,
+        )
+        position = self.position_repo.list_open()[0]
+
+        broker.filled_avg_price = 2.95  # the exit's real fill, different from the 2.70 submitted estimate
+        close_position(
+            self.position_repo, position, broker, exit_price=2.70, exit_reason="target",
+            now=self.now + timedelta(minutes=20),
+        )
+
+        closed = self.position_repo.get(position.proposal_id)
+        self.assertAlmostEqual(closed.exit_price, 2.95, places=2)  # real fill, not the 2.70 estimate
+
+    def test_close_position_falls_back_to_submitted_price_when_no_fill_reported(self):
+        proposal = build_proposal(
+            date="2026-11-17", direction="call", strike=5900, occ_symbol="SPXW261117C05900000",
+            entry_time=self.now, hold_cap_minutes=40.0, estimated_premium=1.50, vix=18.0,
+            filters_passed="VIX OK", now=self.now,
+        )
+        self.repo.save(proposal)
+        broker = FakeBroker()
+        decision = ControllerDecision(proposal_id=proposal.proposal_id, kind=DecisionKind.APPROVE, decided_by="111")
+        process_decisions(
+            self.repo, [decision], broker, quantity=1, position_repo=self.position_repo, now=self.now,
+        )
+        position = self.position_repo.list_open()[0]
+
+        close_position(
+            self.position_repo, position, broker, exit_price=2.70, exit_reason="target",
+            now=self.now + timedelta(minutes=20),
+        )
+
+        closed = self.position_repo.get(position.proposal_id)
+        self.assertAlmostEqual(closed.exit_price, 2.70, places=2)  # unchanged fallback behavior
 
 
 class TestProcessDecisionsSafetyGates(unittest.TestCase):
