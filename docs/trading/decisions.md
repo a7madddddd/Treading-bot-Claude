@@ -9532,3 +9532,103 @@ This is the third correction needed when reading any `total_pnl`
 figure recorded before 2026-11-19, alongside the 100x-multiplier
 correction and the general entry/exit-price-estimate caveat already
 noted for P-104.
+
+## D-0096 — P-068 (THE HANG) and P-069 (no heartbeat in `_check_watchlist`) fixed, equity-ladder engine
+
+Controller asked for a full project priority review (2026-11-21/22);
+chose this group first out of the full open-items list, as the only
+one tied to a real past outage (2026-10-06: the engine froze while
+the market was open, blocking the protective Floor for 7 minutes).
+
+### P-068 — unbounded `ThreadPoolExecutor.shutdown(wait=True)`
+
+**FACT, found reading the code (not assumed from the prior doc
+text):** FOUR call sites have the exact hang shape, not three --
+`src/research/political_aggregator.py`'s `fetch_all()` has the
+identical pattern and is reached from `_check_watchlist` on every
+cycle via `self._political_universe.get_signals()`, but was not named
+in the original P-068 write-up.
+
+**Fix, all four sites** (`src/engine/research_hub.py`'s `collect()`
+and the nested `_fetch_perplexity()`, `src/research/
+political_aggregator.py`'s `fetch_all()`): replaced `with
+ThreadPoolExecutor(...) as ex:` with `ex = ThreadPoolExecutor(...)`
+inside a `try/finally: ex.shutdown(wait=False, cancel_futures=True)`.
+`with`'s `__exit__` is `shutdown(wait=True)` -- it blocks until every
+submitted worker finishes, even one parked on a socket read that never
+returns, regardless of whether `fut.result(timeout=...)` already
+raised `TimeoutError` on that same future. `shutdown(wait=False)`
+returns immediately; Python cannot forcibly kill a thread, so a truly
+stuck worker keeps running in the background, but the method itself
+never blocks on it again.
+
+**Tests:** `tests/engine/test_research_hub.py` (NEW FILE -- no test
+existed for this module before), `tests/research/
+test_political_aggregator.py` -- both construct a stub source whose
+fetch method blocks for 2s against a 0.05s deadline, and assert the
+call returns in well under 1s. Each test was verified BOTH ways: fails
+(blocks the full 2s) with the fix reverted, passes in ~0.15s with it.
+
+### P-069 — no heartbeat inside `_check_watchlist`
+
+**FACT, found reading the code:** the per-candidate research loop is
+`TradeEvaluator.rank()`'s `[self.evaluate(s) for s in symbols]` --
+this is the ACTUAL place a cycle can spend several minutes (one real
+network collection per candidate), and it ran with zero heartbeats;
+only `run_trigger_check`'s own three calls bracket the whole
+`_check_watchlist` invocation.
+
+**Constraint respected, found in `src/engine/lock.py`'s own header
+comment (Controller-approved design, pre-existing):** "No background
+thread updates the heartbeat... must be updated cooperatively from the
+Engine's normal execution points." The fix does NOT use a background
+thread.
+
+**Fix:** `TradeEvaluator.rank()` gained an optional `heartbeat:
+Optional[Callable[[], None]] = None` parameter, called once after each
+symbol's `evaluate()`. `engine.py`'s `_check_watchlist` now passes
+`heartbeat=lambda: self._heartbeat(now=datetime.now(timezone.utc))` --
+reading the REAL wall clock at each beat, not reusing the `now`
+snapshot taken before the loop started (which would not actually prove
+liveness during a long or stalled cycle).
+
+**Regression found and fixed in the SAME change:** every test double
+standing in for `TradeEvaluator` across 5 test files (`test_d0079_
+cycle_metrics.py`, `test_d0080_pre_send_risk.py`, `test_d0082_symbol_
+scores.py`, `test_d0090_price_source_and_replacement.py`,
+`test_engine.py` -- 12 fake `rank()` methods total) did not accept the
+new `heartbeat` keyword. Calling them with it raised `TypeError`,
+caught by `_check_watchlist`'s own `except Exception` evaluator-failure
+fallback -- which is `P-062` ("evaluator failure opens a trade for
+EVERY candidate, ungated"), triggered by this change itself across 29
+tests before being caught by running the full suite. All 12 fakes
+updated to accept `heartbeat=None`. This is exactly why the full
+project suite is run after every change, not just the touched file's
+own tests.
+
+**Tests:** `tests/engine/test_trade_evaluator.py` (`rank()` calls
+heartbeat exactly once per symbol; works unchanged with no heartbeat
+given), `tests/engine/test_engine.py` (`test_heartbeat_fires_once_per_
+candidate_during_watchlist_check` -- confirms the REAL lock heartbeat
+timestamp in the DB advances, not a no-op stand-in; verified both ways
+like the P-068 tests).
+
+**Full suite: 2107 passed, zero regressions** (was 2104 before this
+change; +3 net from the new/added tests, none removed).
+
+### P-070 deliberately NOT touched in this change
+
+Investigation found `_check_watchlist` writes to the SAME repositories
+(`proposal_repo`, sometimes `trade_repo`) that `run_reconciliation_tick`
+(the Floor) also writes to. Running research in a background
+thread/worker while reconciliation keeps running on the main thread,
+as the doc's own proposed options describe, would introduce a NEW
+class of bug -- concurrent writes to the same SQLite repositories from
+two threads at once -- that does not exist in the current strictly-
+sequential design. Rushing this fix risked replacing a known hang with
+an unknown data-race. Deferred to its own dedicated design session,
+recommended to the Controller explicitly rather than bundled in here.
+
+STATUS: BUILT AND TESTED. Held for push pending Controller confirmation
+that the equity-ladder engine is not currently running live (same
+discipline as every SPX 0DTE change this session).

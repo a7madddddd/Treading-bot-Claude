@@ -50,7 +50,7 @@ class _Eval:
     def __init__(self, results):
         self._results = results
 
-    def rank(self, candidates):
+    def rank(self, candidates, heartbeat=None):
         by = {r.symbol: r for r in self._results}
         got = [by[s] for s in candidates if s in by]
         return sorted(got, key=lambda r: -r.soft_score)
@@ -285,7 +285,7 @@ class TestTheEngineCapturesIt(unittest.TestCase):
 
     def test_the_unscored_evaluator_failure_path_captures_no_symbols(self):
         class _Boom:
-            def rank(self, c):
+            def rank(self, c, heartbeat=None):
                 raise RuntimeError("evaluator blew up")
         trade_repo, proposal_repo, execution_repo, conn = _repos()
         captured = []

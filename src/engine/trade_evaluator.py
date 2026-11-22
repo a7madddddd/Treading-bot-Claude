@@ -412,10 +412,29 @@ class TradeEvaluator:
             research=research,
         )
 
-    def rank(self, symbols: Sequence[str]) -> List[EvaluationResult]:
+    def rank(
+        self, symbols: Sequence[str],
+        heartbeat: Optional[Callable[[], None]] = None,
+    ) -> List[EvaluationResult]:
         """Evaluates every symbol and returns them sorted best-first.
-        Rejected (hard-filter) symbols appear at the end."""
-        results = [self.evaluate(s) for s in symbols]
+        Rejected (hard-filter) symbols appear at the end.
+
+        `heartbeat`, when given, is called once after each symbol's
+        `evaluate()` (P-069, 2026-11-22): this loop is the actual place
+        the engine can spend several minutes (one real network
+        collection per candidate), and it previously ran with ZERO
+        heartbeats -- `_check_watchlist`'s own lock heartbeat only
+        brackets the WHOLE call, so a long watchlist (or a single slow
+        source) could leave the lock looking stale for its entire
+        duration. Takes no arguments and is called for its side effect
+        only, so the engine can re-read the real wall clock at each
+        beat rather than reusing a `now` snapshot taken before this
+        loop started."""
+        results = []
+        for s in symbols:
+            results.append(self.evaluate(s))
+            if heartbeat is not None:
+                heartbeat()
         passed = sorted([r for r in results if r.passes_hard_filter],
                         key=lambda r: -r.soft_score)
         failed = [r for r in results if not r.passes_hard_filter]

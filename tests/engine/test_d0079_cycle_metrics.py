@@ -224,7 +224,7 @@ class _Eval:
     def __init__(self, scores):
         self._scores = scores
 
-    def rank(self, candidates):
+    def rank(self, candidates, heartbeat=None):
         out = []
         for s in candidates:
             v = self._scores.get(s, 0.0)
@@ -354,7 +354,7 @@ class TestTheEngineRecordsEveryEvaluatedCycle(unittest.TestCase):
 
 
 class _Boom:
-    def rank(self, candidates):
+    def rank(self, candidates, heartbeat=None):
         raise RuntimeError("evaluator blew up")
 
 

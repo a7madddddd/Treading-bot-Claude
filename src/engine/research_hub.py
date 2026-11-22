@@ -249,7 +249,18 @@ class SymbolResearchHub:
             collected_at=datetime.utcnow(),
         )
         tasks: Dict[str, _fut.Future] = {}
-        with _fut.ThreadPoolExecutor(max_workers=self._max_workers) as ex:
+        # P-068, 2026-11-22: NOT a `with` block. `ThreadPoolExecutor.__exit__`
+        # is `shutdown(wait=True)` -- it blocks until every submitted worker
+        # actually finishes, even one still parked on a socket read that
+        # never returns, regardless of whether fut.result(timeout=...)
+        # already raised TimeoutError on that same future. This is THE HANG
+        # that froze the engine while the market was open on 2026-10-06.
+        # `shutdown(wait=False, cancel_futures=True)` returns immediately --
+        # a still-running worker keeps running in the background (Python
+        # cannot forcibly kill a thread), but this method itself never
+        # blocks on it again.
+        ex = _fut.ThreadPoolExecutor(max_workers=self._max_workers)
+        try:
             if self._fred is not None:
                 tasks["fred"] = ex.submit(self._fetch_fred)
             if self._fh is not None:
@@ -281,6 +292,8 @@ class SymbolResearchHub:
                     continue
                 self._apply(research, name, data)
                 research.sources_succeeded.append(name)
+        finally:
+            ex.shutdown(wait=False, cancel_futures=True)
 
         # Headline-display fallback: Tiingo's `news_headlines` (up to 5,
         # via _fetch_tiingo) may still leave us under 3 displayable
@@ -580,7 +593,13 @@ class SymbolResearchHub:
         risk_q = RISK_QUERY
 
         import concurrent.futures as _f
-        with _f.ThreadPoolExecutor(max_workers=2) as ex:
+        # P-068, 2026-11-22: same non-blocking shutdown as `collect()`'s own
+        # executor -- this one is itself invoked from INSIDE a worker thread
+        # of that outer executor, so a hang here, left unbounded, would
+        # propagate up through the outer `fut.result(timeout=self._deadline)`
+        # into the outer `with` block's own shutdown(wait=True) regardless.
+        ex = _f.ThreadPoolExecutor(max_workers=2)
+        try:
             fc = ex.submit(_bullets, cat_q)
             fr = ex.submit(_bullets, risk_q)
             try:
@@ -591,6 +610,8 @@ class SymbolResearchHub:
                 risk = fr.result(timeout=55.0)
             except Exception:  # noqa: BLE001
                 risk = []
+        finally:
+            ex.shutdown(wait=False, cancel_futures=True)
         if not cat and not risk:
             return None
         return {"perplexity_catalysts": cat, "perplexity_risks": risk}

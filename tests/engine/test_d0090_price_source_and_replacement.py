@@ -63,7 +63,7 @@ class _Evaluator:
     def __init__(self):
         self.seen = []
 
-    def rank(self, candidates):
+    def rank(self, candidates, heartbeat=None):
         return [_Result(_Research(s, price=272.63, volume=156_000.0))
                 for s in candidates]
 
@@ -114,7 +114,7 @@ class TestTheScoreSeesTheEnginesOwnPrice(unittest.TestCase):
         trade_repo, proposal_repo, execution_repo, conn = _repos()
 
         class _ThinYesterday(_Evaluator):
-            def rank(self, candidates):
+            def rank(self, candidates, heartbeat=None):
                 return [_Result(_Research(s, price=272.63, volume=40_000.0))
                         for s in candidates]
 

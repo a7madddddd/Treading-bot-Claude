@@ -43,7 +43,7 @@ class _CountingEval:
         self._scores = scores
         self.rank_calls = 0
 
-    def rank(self, candidates):
+    def rank(self, candidates, heartbeat=None):
         self.rank_calls += 1
         return sorted((_Res(s, self._scores.get(s, 70.0))
                        for s in candidates), key=lambda r: -r.soft_score)

@@ -687,8 +687,9 @@ class TestWatchlistWithTradeEvaluator(unittest.TestCase):
             self._scores = scores
             self._raise = raise_on_rank
             self.last_candidates = None
+            self.heartbeat_call_count = 0
 
-        def rank(self, candidates):
+        def rank(self, candidates, heartbeat=None):
             self.last_candidates = list(candidates)
             if self._raise:
                 raise RuntimeError("eval blew up")
@@ -700,6 +701,9 @@ class TestWatchlistWithTradeEvaluator(unittest.TestCase):
                     passes = False
                 results.append(TestWatchlistWithTradeEvaluator._FakeEvalResult(
                     s, abs(score), passes))
+                if heartbeat is not None:
+                    heartbeat()
+                    self.heartbeat_call_count += 1
             return sorted(results, key=lambda r: -r.soft_score)
 
     def test_low_score_candidates_skipped(self):
@@ -726,6 +730,34 @@ class TestWatchlistWithTradeEvaluator(unittest.TestCase):
         # A (55) below threshold → skipped. B,C accepted.
         self.assertEqual(trades, {"B", "C"})
         self.assertEqual(sorted(evaluator.last_candidates), ["A", "B", "C"])
+
+    def test_heartbeat_fires_once_per_candidate_during_watchlist_check(self):
+        # P-069, 2026-11-22: _check_watchlist's own research loop previously
+        # had zero heartbeats -- only the methods bracketing the whole call
+        # beat at all. The engine must now pass a REAL heartbeat callback
+        # through to the evaluator, called once per candidate.
+        trade_repo, proposal_repo, execution_repo, conn = _repos()
+        watchlist = StaticWatchlistSource(("A", "B", "C"))
+        evaluator = self._FakeEvaluator({"A": 70.0, "B": 70.0, "C": 70.0})
+        engine, broker, market_data, *_ = _make_engine(
+            trade_repo, proposal_repo, execution_repo, conn,
+            watchlist=watchlist, trade_evaluator=evaluator,
+        )
+        for s in ("A", "B", "C"):
+            market_data.set_price(s, 100.0)
+        now = _now()
+        engine._lock.acquire(now=now)
+        before = conn.execute(
+            "SELECT heartbeat_at FROM engine_lock WHERE id = 1").fetchone()[0]
+
+        engine.run_trigger_check(now=now)
+
+        self.assertEqual(evaluator.heartbeat_call_count, 3)  # one per candidate
+        after = conn.execute(
+            "SELECT heartbeat_at FROM engine_lock WHERE id = 1").fetchone()[0]
+        # The callback is the real lock heartbeat, not a no-op stand-in --
+        # it must have actually advanced the persisted heartbeat timestamp.
+        self.assertGreaterEqual(after, before)
 
     def test_top_n_cap_enforced(self):
         """More than 3 passing symbols → only Top-3 by score become proposals."""
@@ -837,7 +869,7 @@ class TestPoliticalSignalEndToEnd(unittest.TestCase):
             self.rank_calls = 0
             self.reeval_calls = 0
 
-        def rank(self, candidates):
+        def rank(self, candidates, heartbeat=None):
             self.rank_calls += 1
             return [
                 TestPoliticalSignalEndToEnd._FakeResult(
@@ -2186,7 +2218,7 @@ class TestPoliticalD0058(unittest.TestCase):
         def __init__(self, scores):
             self._scores = scores
 
-        def rank(self, candidates):
+        def rank(self, candidates, heartbeat=None):
             results = [TestWatchlistWithTradeEvaluator._FakeEvalResult(
                 s, self._scores.get(s, 0.0), True) for s in candidates]
             return sorted(results, key=lambda r: -r.soft_score)
@@ -2524,7 +2556,7 @@ class TestRemindLaterP034(unittest.TestCase):
         def __init__(self, scores):
             self._scores = scores
 
-        def rank(self, candidates):
+        def rank(self, candidates, heartbeat=None):
             results = [TestWatchlistWithTradeEvaluator._FakeEvalResult(
                 s, self._scores.get(s, 0.0), True) for s in candidates]
             return sorted(results, key=lambda r: -r.soft_score)

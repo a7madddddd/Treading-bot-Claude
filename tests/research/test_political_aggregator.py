@@ -1,5 +1,7 @@
 """Tests for the multi-source political aggregator (B.22)."""
 
+import threading
+import time
 import unittest
 from datetime import date, datetime
 from research.political_aggregator import (
@@ -116,6 +118,25 @@ class TestAggregator(unittest.TestCase):
     def test_all_sources_down_returns_empty(self):
         agg = PoliticalAggregator()  # no sources
         self.assertEqual(agg.fetch_all(), [])
+
+    def test_fetch_all_does_not_block_on_a_hung_source(self):
+        # P-068, 2026-11-22: the real incident -- a source call that never
+        # returns must not make fetch_all() itself hang forever on
+        # ThreadPoolExecutor.__exit__'s shutdown(wait=True). This stub
+        # blocks for 2s (standing in for "never returns" from the
+        # perspective of the 0.05s deadline below); fetch_all() must return
+        # well before that, proving shutdown(wait=False) is in effect.
+        class _HungQQ:
+            def recent_congress_trades(self):
+                threading.Event().wait(timeout=2.0)
+                return []
+
+        agg = PoliticalAggregator(quiverquant=_HungQQ(), max_workers=1, deadline_seconds=0.05)
+        start = time.monotonic()
+        got = agg.fetch_all()
+        elapsed = time.monotonic() - start
+        self.assertEqual(got, [])
+        self.assertLess(elapsed, 1.0)  # comfortably under the stub's 2s block
 
 
 if __name__ == "__main__":

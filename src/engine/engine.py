@@ -2365,7 +2365,19 @@ class Engine:
         # D-0050 Phase B.28: enrich each candidate's SymbolResearch
         # with the political signal map so the evaluator sees it.
         try:
-            ranked = self._evaluator.rank(candidates)
+            # P-069, 2026-11-22: heartbeat after each candidate's research,
+            # reading the REAL wall clock at each beat rather than reusing
+            # this call's own `now` (which is a snapshot from before this
+            # loop started, and reusing it unchanged would not actually
+            # prove liveness during a long or stalled cycle). Respects the
+            # Controller-approved "cooperative only, no background thread"
+            # heartbeat design (src/engine/lock.py's own header comment) --
+            # this still only ever beats from code the Engine's own call
+            # stack executes, just at a finer grain than before.
+            ranked = self._evaluator.rank(
+                candidates,
+                heartbeat=lambda: self._heartbeat(now=datetime.now(timezone.utc)),
+            )
             ranked = self._correct_stale_prices(ranked)
             if political_signals:
                 for r in ranked:

@@ -221,7 +221,15 @@ class PoliticalAggregator:
 
     def fetch_all(self) -> List[PoliticalTrade]:
         trades: List[PoliticalTrade] = []
-        with _fut.ThreadPoolExecutor(max_workers=self._max_workers) as ex:
+        # P-068, 2026-11-22: same non-blocking shutdown as
+        # engine.research_hub.SymbolResearchHub.collect() -- this is a
+        # FOURTH, previously undocumented instance of the identical hang
+        # risk (`with ThreadPoolExecutor` blocks on __exit__'s
+        # shutdown(wait=True) even after fut.result(timeout=...) has
+        # already raised), reached from _check_watchlist on every cycle via
+        # EquityEngine's political-signal collection.
+        ex = _fut.ThreadPoolExecutor(max_workers=self._max_workers)
+        try:
             futs = {}
             if self._qq is not None:
                 futs[ex.submit(from_quiverquant, self._qq)] = "quiverquant"
@@ -238,6 +246,8 @@ class PoliticalAggregator:
                     continue
                 if isinstance(rows, list):
                     trades.extend(rows)
+        finally:
+            ex.shutdown(wait=False, cancel_futures=True)
         return self._dedup_and_filter(trades)
 
     def _dedup_and_filter(

@@ -189,6 +189,27 @@ class TestEvaluator(unittest.TestCase):
         self.assertEqual(order[1].symbol, "B")
         self.assertEqual(order[2].symbol, "C")  # rejected last
 
+    def test_rank_calls_heartbeat_once_per_symbol(self):
+        # P-069, 2026-11-22: rank() is the actual place a real cycle can
+        # spend several minutes (one network collection per candidate) --
+        # it previously had zero heartbeats. heartbeat must fire after
+        # EACH symbol, not just once for the whole call.
+        a = _good_research(symbol="A")
+        b = _good_research(symbol="B")
+        c = _good_research(symbol="C")
+        hub = _StubHub({"A": a, "B": b, "C": c})
+        ev = TradeEvaluator(hub)
+        beats = []
+        ev.rank(["A", "B", "C"], heartbeat=lambda: beats.append(1))
+        self.assertEqual(len(beats), 3)
+
+    def test_rank_without_heartbeat_still_works(self):
+        a = _good_research(symbol="A")
+        hub = _StubHub({"A": a})
+        ev = TradeEvaluator(hub)
+        order = ev.rank(["A"])  # no heartbeat given -- unchanged behavior
+        self.assertEqual(order[0].symbol, "A")
+
     def test_format_block_rejected(self):
         hub = _StubHub({"TSLA": _good_research(next_earnings_days=2)})
         ev = TradeEvaluator(hub)

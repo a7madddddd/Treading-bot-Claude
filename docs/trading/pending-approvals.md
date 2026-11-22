@@ -5792,3 +5792,41 @@ D-0095-A, "P-104 fixed -- entry_price/exit_price now use the broker's
 real fill". Held for push until re-confirmed the current live session
 has no open position, per the same discipline applied to every other
 execution-behavior change this session.
+
+## P-068 UPDATE — fixed, 2026-11-22 (RESOLVED)
+
+Controller chose this group first out of a full project priority
+review. Fixed at all FOUR hang sites (a fourth, previously
+undocumented one found in `src/research/political_aggregator.py`'s
+`fetch_all()`), not just the three originally described. Full details,
+including the test methodology and a regression this change itself
+surfaced and fixed (P-062's fallback path, triggered across 12 fake
+`TradeEvaluator.rank()` test doubles): `docs/trading/decisions.md`
+D-0096.
+
+STATUS: BUILT AND TESTED, full suite 2107 passed. Held for push
+pending confirmation the equity-ladder engine is not currently running
+live.
+
+## P-069 UPDATE — fixed, 2026-11-22 (RESOLVED)
+
+`TradeEvaluator.rank()` now beats once per candidate via an injected
+callback, respecting the existing Controller-approved "no background
+heartbeat thread" constraint in `lock.py`. Full details:
+`docs/trading/decisions.md` D-0096.
+
+STATUS: BUILT AND TESTED, full suite 2107 passed. Held for push
+pending confirmation the equity-ladder engine is not currently running
+live.
+
+## P-070 — status unchanged, deliberately deferred (OPEN)
+
+Investigated alongside P-068/P-069 (same root incident). Both of the
+doc's own proposed options ("run the watchlist check in a worker with
+a hard deadline" / "give reconciliation its own thread") would run
+research concurrently with reconciliation, and both touch the SAME
+repositories (`proposal_repo`, sometimes `trade_repo`) -- introducing a
+NEW concurrent-write risk that does not exist in the current strictly
+sequential design. Needs its own dedicated design session, not a
+quick patch alongside P-068/P-069. Full details: `docs/trading/
+decisions.md` D-0096, "P-070 deliberately NOT touched."
