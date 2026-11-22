@@ -9706,6 +9706,18 @@ launched. Confirmed `http.server.HTTPServer.allow_reuse_address = 1`
 not hit "Address already in use" on the dashboard port even on a
 quick crash-restart cycle.
 
-STATUS: repo-side changes complete. NOT YET INSTALLED on the VM --
-awaiting the Controller running the documented install steps and
-confirming the unit is active.
+STATUS: repo-side changes complete AND INSTALLED on the VM, 2026-11-22.
+Controller ran the documented install steps: pulled, installed
+`spx0dte-session.service` to `~/.config/systemd/user/`,
+`daemon-reload`, stopped the manual session (confirmed via `ps aux`,
+no leftover process), `systemctl --user enable --now
+spx0dte-session.service`. Verified: service `active (running)`,
+`curl http://127.0.0.1:8787/status.json` responds (serving the last
+real snapshot -- the service started on a Sunday with the market
+closed, so no new tick has run yet to refresh it; expected to update
+automatically once the market opens), `loginctl show-user opc
+--property=Linger` confirms `Linger=yes` (already enabled from the
+equity-ladder unit's own install). **This closes the last open item
+from the full-project priority review that was specific to the SPX
+0DTE module** -- the module now runs unattended, with automatic
+restart-on-crash, exactly like the equity-ladder engine.

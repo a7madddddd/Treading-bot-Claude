@@ -5844,7 +5844,7 @@ STATUS: BUILT AND TESTED, full suite 2107 passed. Held for push
 pending confirmation the equity-ladder engine is not currently running
 live.
 
-## P-098 residual UPDATE — systemd deployment prepared, awaiting install (2026-11-22)
+## P-098 residual UPDATE — systemd deployment prepared AND INSTALLED (RESOLVED, 2026-11-22)
 
 The one remaining open SPX 0DTE item from the full project priority
 review: the module only ever ran via manual `nohup`/`disown`.
@@ -5853,7 +5853,8 @@ installed; its wrapper script predated the live dashboard feature and
 would have silently run without it. Both fixed/documented. Full
 details: `docs/trading/decisions.md` D-0098.
 
-STATUS: repo-side work done. NOT a code change to the trading module
-itself (deployment/launch wiring only). Awaiting the Controller running
-the install steps in `deploy/README.md`'s new "SPX 0DTE unattended
-session" section and confirming the unit is active.
+STATUS: RESOLVED. Controller ran the install steps and confirmed the
+unit is `active (running)`, the dashboard responds, and lingering is
+enabled. Full details: `docs/trading/decisions.md` D-0098. This was
+the last open SPX 0DTE-specific item from the full project priority
+review.
