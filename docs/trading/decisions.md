@@ -9493,3 +9493,42 @@ trade recorded before this fix used the pre-trade estimate as both
 entry and exit price, not the real fill.
 
 STATUS: BUILT AND TESTED. P-104 CLOSED.
+
+### P-104 BACKTEST RESULT -- real measured impact on the 6 historical trades, 2026-11-21/22
+
+`scripts/spx0dte_measure_entry_fill_gap.py` run on the VM against
+every position in `spx0dte.sqlite` and Alpaca's real order history
+(read-only, GET only). n=6 trades, all pre-fix.
+
+```
+ENTRY gaps (recorded - real fill): n=6
+  mean gap:      +1.1439   median: +1.3564   (always positive, 6/6)
+EXIT  gaps (recorded - real fill): n=6
+  mean gap:      -1.4978   median: -0.8075   (always negative, 6/6)
+```
+
+**FACT:** in every single one of the 6 trades, the recorded entry was
+higher than the real fill (6/6, 0.1% to 18.5%), and the recorded exit
+was lower than the real fill (6/6, 0.1% to 35.9%) -- both consistently
+in the direction that made the OLD recorded pnl look WORSE than what
+actually happened, never the reverse.
+
+**Worked example, `SPX-54debfa4e8f4`:** recorded pnl/share
+7.4275-19.3114 ... (exit_recorded - entry_recorded) = -1.8839 (a
+recorded LOSS); real pnl/share (real fills) = 20.6000 - 19.3000 =
++1.3000 (an actual GAIN). `SPX-9000d4132a87`: recorded -2.2757 vs real
++0.1000 -- another trade recorded as a loss that was actually
+profitable. The other 4 trades stayed losses in both views, but the
+real loss was smaller than recorded by +1.92 to +4.24 per share in
+every case.
+
+**Caveat, stated plainly:** n=6 is real but small -- this confirms the
+bug was real and material on these specific trades, not that every
+future trade will show the same direction or magnitude. The fix
+itself (already live) is what prevents this going forward; this
+measurement is the historical record, not a new guarantee.
+
+This is the third correction needed when reading any `total_pnl`
+figure recorded before 2026-11-19, alongside the 100x-multiplier
+correction and the general entry/exit-price-estimate caveat already
+noted for P-104.
