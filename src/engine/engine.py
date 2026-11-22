@@ -2103,10 +2103,11 @@ class Engine:
         from engine.snapshot_watchlist import _current_effective_date_et
 
         if ranked is None:
-            # The evaluator-failure fallback: trades were opened without
-            # any symbol being scored. The three score columns are NULL
-            # rather than 0, because 0 would read as "scored, nothing
-            # was good enough" while trades were in fact opened.
+            # The evaluator-failure fallback (P-062, 2026-11-22: no
+            # trades are opened on this path any more -- accepted_count
+            # is always 0 here). The three score columns are NULL rather
+            # than 0, because 0 would read as "scored, nothing was good
+            # enough" while in fact nothing was ever scored this cycle.
             self._cycle_metrics_recorder(CycleMetrics(
                 cycle_at=now,
                 effective_date=_current_effective_date_et(now),
@@ -2408,18 +2409,25 @@ class Engine:
                 failed = [r for r in ranked if not r.passes_hard_filter]
                 ranked = passed + failed
         except Exception as exc:  # noqa: BLE001
-            # Evaluator must never block the trigger loop; fall through
-            # to the un-ranked flow so no opportunity is missed.
+            # P-062, 2026-11-22 (Controller-approved): an evaluator failure
+            # means we know NOTHING about any candidate's quality -- that is
+            # not evidence every one of them is worth a trade. Previously
+            # fell through to propose EVERY candidate ungated (no score
+            # gate, no sector/correlation filter, no Top-N cap); since
+            # D-0079 raised the concurrent cap 5->12, a single evaluator
+            # failure could put up to 12 unscored symbols in front of the
+            # Controller in one cycle. Now: propose nothing, report via the
+            # same CRITICAL notification as before, and let the NEXT cycle
+            # (30s-few min later) retry evaluation normally -- a transient
+            # failure costs one skipped cycle, not an ungated trade.
             self._notify(
                 level=NotificationLevel.CRITICAL,
                 event="evaluator_failed",
-                message=f"TradeEvaluator failed; falling back to un-ranked candidates: {exc}",
+                message=f"TradeEvaluator failed; no proposals this cycle: {exc}",
                 symbol=None,
             )
-            for symbol in candidates:
-                self._start_new_trade(symbol, now=now)
             self._record_cycle(now=now, ranked=None,
-                               accepted_count=len(candidates),
+                               accepted_count=0,
                                candidates_evaluated=len(candidates))
             return
 

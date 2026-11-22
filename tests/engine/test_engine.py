@@ -780,8 +780,11 @@ class TestWatchlistWithTradeEvaluator(unittest.TestCase):
         # Top-3 by score: C(90), E(80), B(70). D(65) and A(61) dropped.
         self.assertEqual(trades, {"C", "E", "B"})
 
-    def test_evaluator_raise_falls_back_to_unranked(self):
-        """A buggy evaluator must never block the trigger loop."""
+    def test_evaluator_raise_opens_no_trades_and_reports(self):
+        """P-062, 2026-11-22: a buggy evaluator must never block the
+        trigger loop, but must also never open a trade for every
+        candidate ungated -- it proposes nothing and reports via the
+        same CRITICAL notification as before."""
         trade_repo, proposal_repo, execution_repo, conn = _repos()
         watchlist = StaticWatchlistSource(("A", "B"))
         evaluator = self._FakeEvaluator({}, raise_on_rank=True)
@@ -795,7 +798,7 @@ class TestWatchlistWithTradeEvaluator(unittest.TestCase):
         engine.run_trigger_check(now=_now())
 
         trades = {s for s in ("A", "B") if trade_repo.list_for_symbol(s)}
-        self.assertEqual(trades, {"A", "B"})
+        self.assertEqual(trades, set())
         self.assertTrue(any(e.event == "evaluator_failed" for e in notifier.events))
 
     def test_hard_filter_reject_dropped(self):

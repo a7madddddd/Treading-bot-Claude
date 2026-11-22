@@ -362,10 +362,12 @@ class TestTheEvaluatorFailureFallbackIsRecordedAsUNSCORED(unittest.TestCase):
     """Found by probing after the first full green run.
 
     Engine._check_watchlist has a fallback: if the evaluator raises, it
-    opens a trade for EVERY candidate with no score gate at all, then
-    returns. That path originally wrote no metrics row, so a cycle that
-    created trades was invisible in the table and any per-day proposal
-    total computed from it would be wrong.
+    records an unscored cycle and opens NO trades (P-062,
+    2026-11-22 -- previously opened a trade for EVERY candidate with no
+    score gate at all; the Controller decided that was the wrong
+    default). This path originally wrote no metrics row at all, so a
+    failed cycle was invisible in the table and any per-day total
+    computed from it would be wrong.
     """
 
     def _run(self):
@@ -392,18 +394,20 @@ class TestTheEvaluatorFailureFallbackIsRecordedAsUNSCORED(unittest.TestCase):
 
     def test_the_score_columns_are_None_not_zero(self):
         """Zero would read as 'scored, nothing was good enough' while
-        trades were in fact opened."""
+        in fact nothing was ever scored this cycle."""
         m = self._run()[0][0]
         self.assertIsNone(m.above_min_score)
         self.assertIsNone(m.rejected_hard_filter)
         self.assertIsNone(m.best_score)
         self.assertFalse(m.scored)
 
-    def test_proposals_created_carries_the_real_count(self):
+    def test_no_trades_opened_and_proposals_created_is_zero(self):
+        # P-062, 2026-11-22: an evaluator failure must propose NOTHING,
+        # not every candidate ungated.
         rows, trade_repo = self._run()
-        self.assertEqual(rows[0].proposals_created, 2)
-        self.assertTrue(trade_repo.list_for_symbol("A"))
-        self.assertTrue(trade_repo.list_for_symbol("B"))
+        self.assertEqual(rows[0].proposals_created, 0)
+        self.assertFalse(trade_repo.list_for_symbol("A"))
+        self.assertFalse(trade_repo.list_for_symbol("B"))
 
     def test_a_scored_cycle_still_reports_scored_true(self):
         rows = TestTheEngineRecordsEveryEvaluatedCycle._run(

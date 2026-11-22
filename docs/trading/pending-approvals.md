@@ -5830,3 +5830,16 @@ NEW concurrent-write risk that does not exist in the current strictly
 sequential design. Needs its own dedicated design session, not a
 quick patch alongside P-068/P-069. Full details: `docs/trading/
 decisions.md` D-0096, "P-070 deliberately NOT touched."
+
+## P-062 UPDATE — fixed, 2026-11-22 (RESOLVED)
+
+Controller-approved direction (Claude's own recommendation, already
+recorded in the original entry above, was adopted as-is): an evaluator
+failure now proposes nothing and reports via the existing CRITICAL
+notification, instead of opening a trade for every candidate ungated.
+Full details, including two renamed tests that previously asserted the
+OLD (now-wrong) behavior: `docs/trading/decisions.md` D-0097.
+
+STATUS: BUILT AND TESTED, full suite 2107 passed. Held for push
+pending confirmation the equity-ladder engine is not currently running
+live.

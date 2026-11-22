@@ -9632,3 +9632,45 @@ recommended to the Controller explicitly rather than bundled in here.
 STATUS: BUILT AND TESTED. Held for push pending Controller confirmation
 that the equity-ladder engine is not currently running live (same
 discipline as every SPX 0DTE change this session).
+
+## D-0097 — P-062 fixed: an evaluator failure now proposes nothing, not every candidate ungated
+
+Controller-approved ("yes, go ahead and implement it"), second item
+from the same priority-review session as D-0096.
+
+**CHANGE:** `src/engine/engine.py`'s `_check_watchlist`, the
+`except Exception` around `TradeEvaluator.rank()`: removed the
+`for symbol in candidates: self._start_new_trade(symbol, now=now)`
+fallback. The CRITICAL `evaluator_failed` notification still fires
+(unchanged); `_record_cycle` now records `accepted_count=0` instead of
+`len(candidates)`.
+
+**WHY:** an evaluator failure means nothing is known about any
+candidate's quality -- that is not evidence every one of them is worth
+a trade. Since `D-0079` raised the concurrent cap 5->12, this path
+could put up to 12 unscored symbols in front of the Controller in a
+single cycle.
+
+**RISK accepted:** a transient evaluator failure now skips proposing
+anything for that one cycle; the next cycle (30s to a few minutes
+later, same cadence as before) retries evaluation normally. A real
+missed opportunity only if the SAME symbol's setup is gone by the next
+cycle -- judged acceptable against the alternative (12 unscored
+symbols at once).
+
+**Tests updated to the new, correct expectation (not just satisfied):**
+`test_d0079_cycle_metrics.py`'s
+`test_no_trades_opened_and_proposals_created_is_zero` (renamed from
+`test_proposals_created_carries_the_real_count`, which asserted the
+OLD behavior), `test_engine.py`'s
+`test_evaluator_raise_opens_no_trades_and_reports` (renamed from
+`test_evaluator_raise_falls_back_to_unranked`). Both verified to fail
+against the pre-fix code (confirmed via `git stash`) and pass with it.
+`test_d0082_symbol_scores.py`'s existing evaluator-failure test only
+asserted metrics, not trade creation -- needed no change.
+
+Full suite: 2107 passed (unchanged count -- 2 tests renamed/updated in
+place, none added or removed), zero regressions.
+
+STATUS: BUILT AND TESTED. Held for push pending Controller confirmation
+the equity-ladder engine is not currently running live.
