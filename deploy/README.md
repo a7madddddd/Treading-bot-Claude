@@ -266,3 +266,62 @@ value are in `connect()`'s comment and in P-023.
 `scripts/run_scheduler.py` is **not** used in production. Its job
 callable only prints a line. The engine runs its own D-0021 loop
 internally, and the daily refresh is this timer.
+
+---
+
+## SPX 0DTE unattended session (D-0095-A, separate from the equity-ladder units above)
+
+A THIRD, independent user unit -- own Telegram bot
+(`SPX_TELEGRAM_BOT_TOKEN`), own SQLite file (`spx0dte.sqlite`), own
+log file. Never interacts with `trading-engine.service`: a crash or
+restart in one never touches the other (see the comment block at the
+top of `spx0dte-session.service` for why sharing a bot token between
+two independent long-pollers would corrupt both).
+
+Carries the live dashboard (price chart per open position, manual
+"Sell Now" button) inside the same process via `--dashboard-port` --
+a systemd-managed session serves it exactly like the manual
+`nohup`/`disown` sessions used during development, not a reduced mode.
+
+```bash
+cd ~/Treading-bot-Claude
+git pull --no-rebase --no-edit origin claude/youthful-goodall-4cr0ei
+chmod +x deploy/spx0dte-run.sh
+
+mkdir -p ~/.config/systemd/user
+cp deploy/spx0dte-session.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+```
+
+Stop any hand-started session first, or the dashboard port is still
+held by the old process:
+
+```bash
+pkill -TERM -f run_spx0dte_session; sleep 5
+pkill -TERM -f spx0dte_dashboard_server; sleep 2   # a standalone dashboard, if one is separately running
+```
+
+Then enable:
+
+```bash
+systemctl --user enable --now spx0dte-session.service
+```
+
+Verify:
+
+```bash
+systemctl --user status spx0dte-session.service --no-pager
+tail -f ~/Treading-bot-Claude/logs/spx0dte.log
+curl -s http://127.0.0.1:8787/status.json   # from the VM itself
+```
+
+The public dashboard URL is unchanged: `http://130.162.190.89:8787/`
+(Oracle Cloud VCN security list + the VM's own `firewalld`, both
+already opened for this port -- see the 2026-11-19 session notes in
+`docs/trading/decisions.md` D-0095-A if the port ever needs reopening
+after a VM rebuild).
+
+`DASHBOARD_PORT`, `PUBLIC_HOST`, and `STATUS_FILE` can be overridden
+via an `Environment=` line in the unit file if any of them ever need
+to change; `spx0dte-run.sh` defaults all three to the values already
+verified working.

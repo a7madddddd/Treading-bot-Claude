@@ -10,6 +10,16 @@ export PYTHONUNBUFFERED=1
 
 REPO_DIR="${REPO_DIR:-/home/opc/Treading-bot-Claude}"
 PYTHON_BIN="${PYTHON_BIN:-python3.11}"
+# Controller's own request, 2026-11-19/22: the live dashboard (price
+# chart, manual "Sell Now" button) runs inside this same process via
+# --dashboard-port, so a systemd-managed session serves it exactly like
+# the manual nohup sessions did -- not a reduced, dashboard-less mode.
+# PUBLIC_HOST defaults to the VM's own known public IP (confirmed via
+# `curl ifconfig.me` on this same VM, 2026-11-19); override via the
+# unit's Environment= if it ever changes.
+DASHBOARD_PORT="${DASHBOARD_PORT:-8787}"
+PUBLIC_HOST="${PUBLIC_HOST:-130.162.190.89}"
+STATUS_FILE="${STATUS_FILE:-spx0dte_status.json}"
 
 cd "$REPO_DIR"
 mkdir -p logs
@@ -31,4 +41,7 @@ set +a
 # means systemd, not this script, decides when the process restarts.
 exec "$PYTHON_BIN" scripts/run_spx0dte_session.py \
     --max-hours 87600 \
-    --tick-seconds 60
+    --tick-seconds 60 \
+    --status-file "$STATUS_FILE" \
+    --dashboard-port "$DASHBOARD_PORT" \
+    --public-host "$PUBLIC_HOST"

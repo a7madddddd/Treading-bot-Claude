@@ -9674,3 +9674,38 @@ place, none added or removed), zero regressions.
 
 STATUS: BUILT AND TESTED. Held for push pending Controller confirmation
 the equity-ladder engine is not currently running live.
+
+## D-0098 — SPX 0DTE systemd deployment: dashboard flags wired through, install steps documented
+
+Controller redirected scope to SPX 0DTE-only work (2026-11-22). Per
+the full project survey, the one remaining genuinely open SPX 0DTE
+item was operational, not a code bug: `deploy/spx0dte-session.service`
+and `deploy/spx0dte-run.sh` already existed in the repo but were never
+installed on the VM -- the module has only ever run via manual
+`nohup`/`disown`, and the wrapper script itself PREDATED the live
+dashboard feature (`--dashboard-port`/`--public-host`/`--status-file`,
+D-0095-A "manual Sell Now" work, 2026-11-19): deploying it as-is would
+have silently dropped the dashboard.
+
+**FIX, `deploy/spx0dte-run.sh`:** added `DASHBOARD_PORT` (default
+`8787`), `PUBLIC_HOST` (default `130.162.190.89`, the VM's own
+confirmed public IP), `STATUS_FILE` (default `spx0dte_status.json`),
+all overridable via environment, and passed through as
+`--dashboard-port`/`--public-host`/`--status-file` to
+`scripts/run_spx0dte_session.py`. No Python code changed.
+
+**`deploy/README.md`:** added a full "SPX 0DTE unattended session"
+section (install, stop-any-hand-started-session, enable, verify)
+mirroring the existing equity-ladder sections' structure -- this
+section did not exist before; the service file was undocumented.
+
+**No code behavior changed for the module itself** -- this only
+affects how the existing, already-tested `run_spx0dte_session.py` is
+launched. Confirmed `http.server.HTTPServer.allow_reuse_address = 1`
+(Python stdlib default), so a `Restart=always` systemd restart does
+not hit "Address already in use" on the dashboard port even on a
+quick crash-restart cycle.
+
+STATUS: repo-side changes complete. NOT YET INSTALLED on the VM --
+awaiting the Controller running the documented install steps and
+confirming the unit is active.
