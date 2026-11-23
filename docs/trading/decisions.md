@@ -9956,3 +9956,49 @@ inside `run_all_filters`. Full suite: 2119 passed, zero regressions.
 
 This closes P-106. Full numbers for all three runs: this entry plus the
 two "D-0100"/"D-0100 UPDATE" entries directly above.
+
+## D-0101 — Signal-strength sizing research started: measurement script built (not yet run)
+
+Controller's own request (2026-11-23): "make our strategy more pro."
+Presented a ranked menu (risk-defined spreads, signal-strength sizing,
+Greeks-aware exits, multi-timeframe confirmation) with FACT/RECOMMENDATION
+labels -- confirmed via real research that Alpaca supports multi-leg
+options orders (spreads, iron condors) in paper trading since Nov 2024,
+live since Feb 2025, so the "spreads" option is genuinely buildable,
+not blocked like GEX was. Controller chose to start with the cheapest,
+lowest-risk option: signal-strength-based position sizing (currently
+always `CONTRACTS_PER_TRADE=1`, fixed, regardless of signal quality).
+
+Per this project's own rule, nothing about sizing changes yet --
+measurement first. Built `scripts/spx0dte_measure_signal_strength.py`:
+two candidate strength metrics, both derivable from `signal.EntrySignal`
+alone (no new data source):
+1. `breakout_magnitude` -- how far price pushed beyond the ORB
+   boundary, normalized by the ORB's own width.
+2. `vwap_distance` -- how far price sits from the VWAP/TWAP proxy at
+   entry, same normalization.
+
+Each tagged trade is bucketed into TERCILES from that run's OWN
+distribution (not a fixed global cutoff), pnl/profit_factor/expectancy
+compared across buckets, plus the same permutation significance test
+built for D-0100 (here testing whether the HIGH tercile is genuinely
+BETTER than chance, the opposite direction from testing a bucket for
+being worse). The real current filter set (VIX range + economic
+calendar -- lunch-chop window already disabled, D-0100 FINAL) is
+applied before tagging, so the candidate population matches what
+actually reaches a live proposal today.
+
+Smoke-tested: `breakout_magnitude`/`vwap_distance`'s arithmetic verified
+against hand-computed expected values; `tercile_buckets` verified on a
+perfectly-ordered synthetic series; `permutation_p_value` verified
+against synthetic data (a genuinely good synthetic subgroup: p=0.0; a
+random non-special subgroup: p=0.99) before trusting it on real data.
+
+STATUS: BUILT, NOT YET RUN. No sizing change proposed until this
+actually runs and a result exists, same discipline as D-0100.
+
+Run command (on the VM):
+```
+cd ~/Treading-bot-Claude && set -a && source .env && set +a && \
+PYTHONPATH=src python3.11 scripts/spx0dte_measure_signal_strength.py --start 2025-06-01 --end 2025-12-31
+```

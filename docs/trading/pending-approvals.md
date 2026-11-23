@@ -5917,3 +5917,19 @@ removed from `run_all_filters`. Full details: `docs/trading/
 decisions.md` D-0100 FINAL.
 
 STATUS: RESOLVED. Full suite 2119 passed, zero regressions.
+
+## P-107 — Signal-strength sizing measurement (OPEN, built, not yet run)
+
+Controller-requested "pro-level" improvement research, starting with
+the cheapest option: size by signal strength instead of a fixed 1
+contract always. Measures breakout_magnitude and vwap_distance (both
+derivable from existing EntrySignal fields) against real outcomes, by
+tercile, with a permutation significance test. Full details:
+`docs/trading/decisions.md` D-0101.
+
+Also recorded: Alpaca supports multi-leg options orders (spreads, iron
+condors) in paper trading -- the "risk-defined spreads" professionalization
+option is genuinely buildable, flagged as its own future dedicated
+design project, bigger than this sizing measurement.
+
+STATUS: script built and smoke-tested, NOT YET RUN against real data.
