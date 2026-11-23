@@ -10002,3 +10002,31 @@ Run command (on the VM):
 cd ~/Treading-bot-Claude && set -a && source .env && set +a && \
 PYTHONPATH=src python3.11 scripts/spx0dte_measure_signal_strength.py --start 2025-06-01 --end 2025-12-31
 ```
+
+## D-0101 FINAL — closed, no real edge found; neither metric meets the significance bar
+
+**Run 1 (2025-06-01..2025-12-31, n=868 after VIX+econ filters):**
+`breakout_magnitude` high tercile pf=1.2155, p=0.2056. `vwap_distance`
+high tercile pf=1.0529, p=0.6142 (mid tercile was actually best, 1.29).
+
+**Run 2 (2026-01-01..2026-06-30, n=643, fully independent):**
+`breakout_magnitude` high tercile still best (pf=1.1326) but p=0.3144,
+and the internal ordering broke (mid tercile dipped below low).
+`vwap_distance` completely REVERSED -- low tercile now best by a wide
+margin (pf=1.6908), high tercile now worst (pf=0.5661, p=0.999, i.e.
+essentially certain to be worse than chance, not better).
+
+**FINAL RESULT:** `vwap_distance` closed outright (direction reverses
+between periods, no relationship). `breakout_magnitude` shows the same
+directional winner (high tercile) in both runs, but NEITHER run reaches
+anywhere near significance (p=0.21, p=0.31 -- both far from the 0.01
+bar this project requires, per the Controller's own standard just
+applied in D-0100). Per Controller decision 2026-11-23: closed with a
+negative finding rather than chasing a third period on an effect this
+weak in both runs already.
+
+No code changed -- neither metric was ever wired into sizing, so there
+is nothing to revert. `sizing.CONTRACTS_PER_TRADE` stays fixed at 1,
+Controller-approved, unchanged.
+
+This closes P-107.

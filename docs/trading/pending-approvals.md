@@ -5918,7 +5918,7 @@ decisions.md` D-0100 FINAL.
 
 STATUS: RESOLVED. Full suite 2119 passed, zero regressions.
 
-## P-107 — Signal-strength sizing measurement (OPEN, built, not yet run)
+## P-107 — Signal-strength sizing measurement (CLOSED -- negative finding)
 
 Controller-requested "pro-level" improvement research, starting with
 the cheapest option: size by signal strength instead of a fixed 1
@@ -5932,4 +5932,11 @@ condors) in paper trading -- the "risk-defined spreads" professionalization
 option is genuinely buildable, flagged as its own future dedicated
 design project, bigger than this sizing measurement.
 
-STATUS: script built and smoke-tested, NOT YET RUN against real data.
+STATUS: RESOLVED -- CLOSED. Two independent periods run.
+`vwap_distance` reverses direction completely between periods (closed
+outright). `breakout_magnitude` wins the same direction in both but
+neither reaches significance (p=0.21, p=0.31). Controller decided to
+close with this negative finding rather than run a third period on an
+effect already this weak twice. `sizing.CONTRACTS_PER_TRADE` stays
+fixed at 1, unchanged. Full details: `docs/trading/decisions.md`
+D-0101 FINAL.
