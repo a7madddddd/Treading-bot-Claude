@@ -49,11 +49,16 @@ class TestLiquidityOk(unittest.TestCase):
 
 
 class TestRunAllFilters(unittest.TestCase):
-    def test_runs_exactly_the_three_backtested_filters(self):
+    def test_runs_exactly_the_two_backtested_filters(self):
+        # 2026-11-23 (Controller-approved): time_quality_window measured
+        # against three independent real periods and found no real
+        # discriminating power (docs/trading/decisions.md D-0100) -- removed
+        # from run_all_filters, same disposition as volume_confirmed/
+        # cross_market_confirmed.
         entry = datetime(2026, 7, 1, 13, 45, tzinfo=timezone.utc)
         results = run_all_filters(vix_level=20.0, entry_time=entry, hold_cap_minutes=40)
-        # vix_in_tradeable_range, economic_calendar_clear, time_quality_window
-        self.assertEqual(len(results), 3)
+        # vix_in_tradeable_range, economic_calendar_clear
+        self.assertEqual(len(results), 2)
 
 
 if __name__ == "__main__":

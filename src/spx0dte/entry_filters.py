@@ -96,7 +96,17 @@ def time_quality_window(
     repeatedly in professional-practice research as low-liquidity,
     low-conviction, false-signal-prone. entry_time is UTC; converts
     with the same rough DST rule used across this module -- good
-    enough for a filter, not for anything safety-critical."""
+    enough for a filter, not for anything safety-critical.
+
+    2026-11-23 (Controller-approved): measured against real data for
+    the first time (`scripts/spx0dte_measure_time_patterns.py`,
+    docs/trading/decisions.md D-0100) across THREE independent periods
+    -- the rejected subset performed no worse than the passed subset
+    in 2 of 3, reversing the one period that looked promising. No real
+    discriminating power found, same disposition as `volume_confirmed`/
+    `cross_market_confirmed`. Deliberately NOT included in
+    `run_all_filters` any more -- kept here, not deleted, in case
+    future data revives it."""
     is_dst = (3, 15) <= (entry_time.month, entry_time.day) <= (11, 1)
     offset = 4 if is_dst else 5
     et_hour = (entry_time.hour - offset) % 24
@@ -164,12 +174,11 @@ def liquidity_ok(bid: float, ask: float, max_spread_pct: float = 0.10) -> Filter
 def run_all_filters(
     vix_level: Optional[float], entry_time: datetime, hold_cap_minutes: float,
 ) -> List[FilterResult]:
-    """The filters the D-0095 backtest actually ran: VIX range,
-    economic calendar, and the lunch-chop time window. volume_confirmed
-    and cross_market_confirmed are deliberately excluded -- see module
-    and function docstrings."""
+    """The filters the D-0095 backtest actually ran: VIX range and the
+    economic calendar. `volume_confirmed`, `cross_market_confirmed`,
+    and (2026-11-23, Controller-approved) `time_quality_window` are
+    deliberately excluded -- see module and function docstrings."""
     return [
         vix_in_tradeable_range(vix_level),
         economic_calendar_clear(entry_time, hold_cap_minutes),
-        time_quality_window(entry_time),
     ]

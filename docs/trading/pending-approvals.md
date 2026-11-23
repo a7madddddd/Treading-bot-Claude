@@ -5903,3 +5903,17 @@ decision only if p-value is low AND direction still agrees. Full
 details: `docs/trading/decisions.md` D-0100 UPDATE.
 
 STATUS: OPEN, third period not yet run.
+
+## P-106 FINAL — closed with a clean negative finding; lunch-chop window disabled (RESOLVED)
+
+A third independent period reversed the hour-11 pattern that had
+agreed across the first two (p=0.53, no significance) -- confirms the
+Controller's own caution that two periods agreeing can happen by
+chance. No real edge found for time-of-day or day-of-week across three
+independent periods. `entry_filters.time_quality_window` (the existing
+12:00-13:30 ET lunch-chop bootstrap, never previously measured) showed
+no real discriminating power in 2 of 3 runs -- Controller-approved:
+removed from `run_all_filters`. Full details: `docs/trading/
+decisions.md` D-0100 FINAL.
+
+STATUS: RESOLVED. Full suite 2119 passed, zero regressions.

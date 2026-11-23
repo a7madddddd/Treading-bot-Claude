@@ -9914,3 +9914,45 @@ p-value AND agreement across independent periods -- direction agreement
 alone is no longer the bar.
 
 STATUS: tool extended and verified; third period not yet run.
+
+## D-0100 FINAL — three independent periods, no real edge found; lunch-chop window disabled
+
+**Run 3 (2024-01-01..2024-06-30, n=622, fully independent of runs 1 and
+2):**
+- Lunch-chop: reject pf=1.005 vs pass pf=1.156 -- no real difference,
+  agrees with run 2, reverses run 1.
+- Hour 11:00-11:59 ET (the one bucket that agreed in runs 1 and 2,
+  both losing): pf=1.1629 in run 3 -- WINNING, p=0.53 (no significance
+  at all). The direction the Controller was right to distrust from two
+  periods alone (own instruction, 2026-11-23: "two periods agreeing can
+  happen by chance") completely reverses on the third. No hour bucket
+  held a low p-value with consistent direction across all three runs.
+- Day-of-week: Tuesday near-flat (pf=0.975) in run 3 -- agrees with
+  neither run 1 (worst day) nor run 2 (a positive day). No consistent
+  story across three independent periods anywhere.
+
+**FINAL RESULT, all three measurement lines CLOSED with a clean
+negative finding** (same disposition as the daily-trade-count cap and
+cross-market filter -- a real, honest "no edge found," not an
+unfinished investigation):
+1. Time-of-day (any hour bucket): no real edge.
+2. Day-of-week: no real edge.
+3. `entry_filters.time_quality_window`'s 12:00-13:30 ET lunch-chop
+   bootstrap window: no real discriminating power in 2 of 3 periods --
+   **Controller-approved: DISABLED.**
+
+**FIX, `src/spx0dte/entry_filters.py`:** `time_quality_window` removed
+from `run_all_filters`'s returned list (was one of 3 filters
+D-0095's own backtest ran; now 2: VIX range + economic calendar). The
+function itself is kept, not deleted, per this module's existing
+convention for a measured-and-rejected filter (`volume_confirmed`,
+`cross_market_confirmed`) -- available again if future data revives it.
+
+**Test updated:** `test_entry_filters.py`'s
+`test_runs_exactly_the_three_backtested_filters` renamed to
+`test_runs_exactly_the_two_backtested_filters`, asserting 2 results
+instead of 3. No other test depended on the lunch window's behavior
+inside `run_all_filters`. Full suite: 2119 passed, zero regressions.
+
+This closes P-106. Full numbers for all three runs: this entry plus the
+two "D-0100"/"D-0100 UPDATE" entries directly above.
