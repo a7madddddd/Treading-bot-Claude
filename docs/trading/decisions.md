@@ -9830,3 +9830,43 @@ aren't affected). **Full suite: 2119 passed, zero regressions.**
 STATUS: BUILT AND TESTED. Held for push pending Controller confirmation
 that the SPX 0DTE systemd session (and any manual session) is stopped,
 per the same discipline applied to every other change this session.
+
+## D-0100 — Time-of-day / day-of-week measurement script built (not yet run)
+
+Controller's own request (2026-11-23): quality-improvement research for
+the options module, starting with time-of-day and day-of-week patterns.
+
+Before proposing a new filter, checked what already exists (CLAUDE.md
+§0.b): `entry_filters.time_quality_window` already implements a
+12:00-13:30 ET "lunch chop" bootstrap window, ALREADY wired into
+`run_all_filters` -- but its own docstring admits it was never measured
+against this project's own data either ("good enough for a filter, not
+for anything safety-critical"), same unvalidated-bootstrap status the
+VIX band had before D-0095-A's measurement. So this is validating an
+EXISTING filter, not proposing a new one from scratch.
+
+Built `scripts/spx0dte_measure_time_patterns.py`, same tag-and-compare
+methodology as every other filter measurement in this project (run the
+locked pipeline minus VIX and minus `time_quality_window` itself, tag
+each accepted trade with what `time_quality_window` would have decided,
+compare pnl of the would-reject vs would-pass subsets). In the SAME
+pass, also buckets every accepted trade's pnl by real ET entry hour and
+by day-of-week (`zoneinfo.ZoneInfo("America/New_York")`, deliberately
+MORE precise than the rough DST approximation the filter being measured
+itself uses -- same lookahead/DST-precision lesson D-0099 just applied
+elsewhere, applied here from the start).
+
+Smoke-tested end to end with fake data (entry/exit pricing, ET
+conversion, lunch-window check all verified correct) before being
+considered ready to run on real data -- not run against the real API
+yet (costs real Alpaca/FRED quota and time on the VM).
+
+STATUS: BUILT, NOT YET RUN. Per "calculate from recorded data, never a
+guessed number," no filter change is proposed until this actually runs
+and a result exists; this entry documents the tool, not a finding.
+
+Run command (on the VM):
+```
+cd ~/Treading-bot-Claude && set -a && source .env && set +a && \
+PYTHONPATH=src python3.11 scripts/spx0dte_measure_time_patterns.py --start 2025-06-01 --end 2025-12-31
+```

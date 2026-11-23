@@ -5876,3 +5876,17 @@ skewing real submitted prices ~8 months/year. Full details:
 
 STATUS: BUILT AND TESTED, full suite 2119 passed, zero regressions.
 Held for push pending confirmation the SPX 0DTE session is stopped.
+
+## P-106 — Time-of-day / day-of-week filter measurement (OPEN, built, not yet run)
+
+Controller-requested quality-improvement research. Validates the
+EXISTING, never-measured `time_quality_window` lunch-chop bootstrap
+filter (12:00-13:30 ET, already wired into `run_all_filters`), plus an
+open-ended pnl breakdown by ET hour and by day-of-week. Full details:
+`docs/trading/decisions.md` D-0100.
+
+STATUS: script built and smoke-tested, NOT YET RUN against real data.
+Next step: run on the VM over at least one real period, then a second
+independent period if the first shows anything worth activating (same
+cross-period-agreement rule as every other filter this project has
+measured).
