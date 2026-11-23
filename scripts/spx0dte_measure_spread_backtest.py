@@ -29,11 +29,17 @@ METHODOLOGY:
   points away from the long strike), so all variants see the exact
   same candidates -- a fair, paired comparison, not independent
   samples that could differ by chance alone.
-- The short leg is found via the SAME `find_nearest_traded_strike`
-  the live module already uses, searching near (long_strike + width)
-  for a call / (long_strike - width) for a put -- the REAL actual
-  width achieved is recorded (the nearest strike that actually traded
-  may not sit exactly `width` points away), never assumed.
+- The short leg is found via `find_strike_near_target` (this script's
+  own helper, NOT `alpaca_client.find_nearest_traded_strike` -- that
+  function's coarse-then-fine search is built to find the nearest
+  LIQUID near-the-money strike and converges back to essentially the
+  long leg's own strike regardless of how far away the target is;
+  confirmed empirically on the first real run, 868/868 candidates
+  found "no usable short leg"). `find_strike_near_target` scans a
+  tight, $5-stepped band directly around (long_strike + width) for a
+  call / (long_strike - width) for a put. The REAL actual width
+  achieved is recorded (the nearest strike that actually traded may
+  not sit exactly `width` points away), never assumed.
 - The spread's net price at any moment is (long leg price) - (short
   leg price); its own `simulate_exit` run uses a synthetic bar series
   built by looking up each leg's price AS OF each of the LONG leg's own
@@ -69,7 +75,7 @@ from statistics import mean
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "src"))
 
-from spx0dte.alpaca_client import AlpacaDataError, AlpacaOptionsClient  # noqa: E402
+from spx0dte.alpaca_client import AlpacaDataError, AlpacaOptionsClient, _occ_symbol  # noqa: E402
 from spx0dte.entry_filters import economic_calendar_clear, vix_in_tradeable_range  # noqa: E402
 from spx0dte.exit_logic import DailyPaceTracker, session_pace_width_pct, simulate_exit  # noqa: E402
 from spx0dte.ratio_calibration import RatioProvider  # noqa: E402
@@ -83,6 +89,48 @@ def _bars_to_signal_series(bars: list) -> list:
 
 def _parse_bar_time(bar: dict) -> datetime:
     return datetime.fromisoformat(bar["t"].replace("Z", "+00:00"))
+
+
+_SHORT_LEG_SEARCH_SPAN = 15   # SPX points either side of the target offset
+_SHORT_LEG_SEARCH_STEP = 5    # SPXW strikes near the money step in $5 increments
+_SHORT_LEG_WINDOW_MINUTES = 20
+
+
+def find_strike_near_target(
+    client: AlpacaOptionsClient, date: str, target_level: float, call_put: str, around_time_iso: str,
+) -> "tuple | None":
+    """Finds a strike with a real trade print NEAR `target_level` --
+    deliberately NOT `alpaca_client.find_nearest_traded_strike`, whose
+    coarse-then-fine search is built to find the nearest LIQUID
+    (near-the-money) strike to an approximate underlying level, and
+    converges back to essentially the same near-the-money strike
+    regardless of how far `target_level` is offset from it (confirmed
+    empirically: using it for the short leg returned the long leg's
+    own strike, or nothing, for 868/868 candidates in the first real
+    run of this script -- a real bug in reusing the wrong tool, not a
+    real absence of OTM liquidity). This scans a TIGHT, $5-stepped band
+    directly around `target_level` instead, sorted by how close to the
+    actual target each candidate strike is."""
+    now = datetime.fromisoformat(around_time_iso.replace("Z", "+00:00"))
+    window_start = (now - timedelta(minutes=_SHORT_LEG_WINDOW_MINUTES)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    window_end = (now + timedelta(minutes=_SHORT_LEG_WINDOW_MINUTES)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    center = round(target_level / _SHORT_LEG_SEARCH_STEP) * _SHORT_LEG_SEARCH_STEP
+    offsets = sorted(
+        range(-_SHORT_LEG_SEARCH_SPAN, _SHORT_LEG_SEARCH_SPAN + 1, _SHORT_LEG_SEARCH_STEP), key=abs,
+    )
+    for offset in offsets:
+        strike = int(center + offset)
+        if strike <= 0:
+            continue
+        symbol = _occ_symbol(date, call_put, strike)
+        try:
+            bars = client.get_option_bars(symbol, window_start, window_end, limit=5)
+        except AlpacaDataError:
+            continue
+        if bars:
+            return strike, symbol
+    return None
 
 
 def daterange(start: str, end: str):
@@ -273,8 +321,8 @@ def main() -> None:
             # Each spread width, same candidate, same long leg.
             for width in widths:
                 target_short_level = long_strike + width if entry.direction == "call" else long_strike - width
-                short_found = client.find_nearest_traded_strike(
-                    date, target_short_level, call_put, around_time_iso=entry_time_iso,
+                short_found = find_strike_near_target(
+                    client, date, target_short_level, call_put, around_time_iso=entry_time_iso,
                 )
                 if short_found is None or short_found[0] == long_strike:
                     no_short_leg[width] += 1

@@ -10093,3 +10093,36 @@ Run command (on the VM):
 cd ~/Treading-bot-Claude && set -a && source .env && set +a && \
 PYTHONPATH=src python3.11 scripts/spx0dte_measure_spread_backtest.py --start 2025-06-01 --end 2025-12-31 --widths 10,20,30
 ```
+
+## D-0102 UPDATE — real run found a second, bigger bug: wrong tool for the short-leg search
+
+First real run (2025-06-01..2025-12-31): ALL 868 candidates showed "no
+usable short leg found" for ALL THREE widths (10, 20, 30) -- a 100%
+failure rate, immediately suspicious (OTM liquidity thinning gradually
+would not produce a clean 0%, it would produce a declining-but-nonzero
+rate).
+
+**Root cause, found by reading `alpaca_client.find_nearest_traded_strike`
+directly:** that function's coarse-then-fine search is designed to find
+the nearest LIQUID (near-the-money) traded strike to an approximate
+underlying price -- both its coarse step (100) and its sort-by-distance
+logic actively converge back toward wherever the real trading volume
+is, which is the SAME near-the-money strike the long leg already uses,
+regardless of how far the requested target is offset from it. Feeding
+it `long_strike + 10/20/30` just returned the long leg's own strike (or
+nothing) every time -- the right tool for finding a liquid ATM strike,
+the wrong tool for finding a strike deliberately offset from the money.
+
+**Fix:** added `find_strike_near_target` (this script's own function,
+not a change to `alpaca_client.py`) -- a tight, $5-stepped scan
+centered directly on the target offset, sorted by closeness to that
+target rather than to the money. Verified against synthetic data with
+real strikes 20 and 30 points away from a base (5900): correctly
+returns 5920 and 5930, not 5900.
+
+Re-ran the full end-to-end smoke test (fake Black-Scholes bars at
+distinct real strikes) after the fix -- still produces a believable,
+directionally-correct result (spread losses smaller than the naked
+baseline's). Full suite: 235 passed (spx0dte).
+
+STATUS: fix applied and smoke-tested, NOT YET RUN AGAIN on real data.

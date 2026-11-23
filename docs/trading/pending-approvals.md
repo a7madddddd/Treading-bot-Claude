@@ -5951,5 +5951,11 @@ orders are buildable (covered-leg rule satisfied by a simple vertical)
 before any design work. Full details: `docs/trading/decisions.md`
 D-0102.
 
-STATUS: script built, smoke-tested (caught and fixed a real
-ZeroDivisionError edge case), NOT YET RUN against real data.
+STATUS: First real run found a 100% failure rate (0/868 usable short
+legs) -- root cause: `alpaca_client.find_nearest_traded_strike` is
+built to converge to the nearest LIQUID near-the-money strike, not a
+strike deliberately offset from it, so it kept returning the long
+leg's own strike. Fixed with a dedicated `find_strike_near_target`
+helper in the script itself (not a change to `alpaca_client.py`),
+verified against synthetic data. NOT YET RE-RUN against real data.
+Full details: `docs/trading/decisions.md` D-0102 UPDATE.
