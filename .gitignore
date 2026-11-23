@@ -29,6 +29,12 @@ logs/
 # readability aid for anyone scanning .gitignore.
 engine_lock.sqlite
 
+# Runtime single-instance lock for run_spx0dte_session.py (2026-11-22,
+# P-068/P-070 session's own real incident -- two concurrent sessions
+# against the same account). Created fresh by the process; never
+# meant to be committed.
+spx0dte_session.lock
+
 # Common build/artifact dirs (kept broad; refine when a language is chosen)
 node_modules/
 dist/

@@ -3,29 +3,40 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from execution.broker_client import BrokerClient, BrokerOrderState
+from execution.broker_client import BrokerClient, BrokerClientError, BrokerOrderState
 from spx0dte.greeks import OptionType, black_scholes_price
 from spx0dte.orchestration import (
     build_live_proposal, build_proposal, close_position, create_and_notify,
     expire_stale_pending, process_decisions,
 )
 from spx0dte.proposal import ProposalApprovalState
+from spx0dte.sizing import ConcurrentPositionTracker
 from spx0dte.sqlite_repository import SpxPositionRepository, SpxProposalRepository
 from spx0dte.telegram_approval import ControllerDecision, DecisionKind
 
 
 class FakeBroker(BrokerClient):
-    def __init__(self, filled_avg_price=None):
+    def __init__(self, filled_avg_price=None, fail_submit=False, polled_fill_price=None):
         self.calls = []
         # D-0095-A, 2026-11-19: None reproduces the original "no fill price yet"
         # behavior every existing test here relies on; a real test of the
         # real-fill-over-estimate fix sets this to a specific value.
         self.filled_avg_price = filled_avg_price
+        # 2026-11-22: simulates the broker rejecting/failing the submission
+        # (e.g. a transient BrokerClientError) -- for close_position's own
+        # "don't mark closed on a failed submit" fix.
+        self.fail_submit = fail_submit
+        # 2026-11-22: simulates _resolve_fill_price's follow-up
+        # get_order_by_client_order_id call finding a real fill that the
+        # original synchronous submit_order response did not carry yet.
+        self.polled_fill_price = polled_fill_price
 
     def submit_order(self, *, client_order_id, symbol, side, quantity, limit_price):
         self.calls.append(dict(
             client_order_id=client_order_id, symbol=symbol, quantity=quantity, limit_price=limit_price,
         ))
+        if self.fail_submit:
+            raise BrokerClientError("simulated broker rejection")
         filled = self.filled_avg_price
         return BrokerOrderState(
             broker_order_id=f"B-{client_order_id}", status="accepted" if filled is None else "filled",
@@ -34,7 +45,17 @@ class FakeBroker(BrokerClient):
         )
 
     def get_order_by_client_order_id(self, client_order_id):
-        raise NotImplementedError
+        # 2026-11-22: _resolve_fill_price's one follow-up check calls this
+        # when the submission response had no fill yet. None here means
+        # "nothing newer either", preserving every existing test's fallback
+        # expectation unchanged; a dedicated test sets `polled_fill_price`
+        # to exercise the follow-up poll itself.
+        if self.polled_fill_price is None:
+            return None
+        return BrokerOrderState(
+            broker_order_id=f"B-{client_order_id}", status="filled", is_terminal=True,
+            filled_qty=1, filled_avg_price=self.polled_fill_price,
+        )
 
     def cancel_order(self, client_order_id):
         raise NotImplementedError
@@ -403,6 +424,78 @@ class TestPositionWiring(unittest.TestCase):
         closed = self.position_repo.get(position.proposal_id)
         self.assertAlmostEqual(closed.exit_price, 2.70, places=2)  # unchanged fallback behavior
 
+    def test_close_position_does_not_mark_closed_on_a_failed_submit(self):
+        # 2026-11-22 fix: a broker-rejected SELL must not be recorded as a
+        # successful close -- the position must stay open/untouched so the
+        # caller keeps monitoring it and can retry.
+        proposal = build_proposal(
+            date="2026-11-17", direction="call", strike=5900, occ_symbol="SPXW261117C05900000",
+            entry_time=self.now, hold_cap_minutes=40.0, estimated_premium=1.50, vix=18.0,
+            filters_passed="VIX OK", now=self.now,
+        )
+        self.repo.save(proposal)
+        broker = FakeBroker()
+        decision = ControllerDecision(proposal_id=proposal.proposal_id, kind=DecisionKind.APPROVE, decided_by="111")
+        process_decisions(
+            self.repo, [decision], broker, quantity=1, position_repo=self.position_repo, now=self.now,
+        )
+        position = self.position_repo.list_open()[0]
+
+        broker.fail_submit = True
+        result = close_position(
+            self.position_repo, position, broker, exit_price=2.70, exit_reason="target",
+            now=self.now + timedelta(minutes=20),
+        )
+
+        self.assertFalse(result.success)
+        self.assertEqual(len(self.position_repo.list_open()), 1)  # still open
+        not_closed = self.position_repo.get(position.proposal_id)
+        self.assertFalse(not_closed.is_closed)
+
+    def test_close_position_uses_a_fill_price_found_by_the_follow_up_poll(self):
+        # 2026-11-22 fix: the original synchronous submit response normally
+        # carries no fill yet -- _resolve_fill_price's one follow-up
+        # get_order_by_client_order_id check is what actually finds the
+        # real fill in that (typical) case.
+        proposal = build_proposal(
+            date="2026-11-17", direction="call", strike=5900, occ_symbol="SPXW261117C05900000",
+            entry_time=self.now, hold_cap_minutes=40.0, estimated_premium=1.50, vix=18.0,
+            filters_passed="VIX OK", now=self.now,
+        )
+        self.repo.save(proposal)
+        broker = FakeBroker()  # submit response itself carries no fill (the normal case)
+        decision = ControllerDecision(proposal_id=proposal.proposal_id, kind=DecisionKind.APPROVE, decided_by="111")
+        process_decisions(
+            self.repo, [decision], broker, quantity=1, position_repo=self.position_repo, now=self.now,
+        )
+        position = self.position_repo.list_open()[0]
+
+        broker.polled_fill_price = 3.05  # found only by the follow-up poll, not the submit response
+        close_position(
+            self.position_repo, position, broker, exit_price=2.70, exit_reason="target",
+            now=self.now + timedelta(minutes=20),
+        )
+
+        closed = self.position_repo.get(position.proposal_id)
+        self.assertAlmostEqual(closed.exit_price, 3.05, places=2)
+
+    def test_approve_uses_a_fill_price_found_by_the_follow_up_poll(self):
+        proposal = build_proposal(
+            date="2026-11-17", direction="call", strike=5900, occ_symbol="SPXW261117C05900000",
+            entry_time=self.now, hold_cap_minutes=40.0, estimated_premium=1.50, vix=18.0,
+            filters_passed="VIX OK", now=self.now,
+        )
+        self.repo.save(proposal)
+        broker = FakeBroker(polled_fill_price=1.41)  # not in the submit response, only the follow-up poll
+        decision = ControllerDecision(proposal_id=proposal.proposal_id, kind=DecisionKind.APPROVE, decided_by="111")
+
+        process_decisions(
+            self.repo, [decision], broker, quantity=1, position_repo=self.position_repo, now=self.now,
+        )
+
+        positions = self.position_repo.list_open()
+        self.assertAlmostEqual(positions[0].entry_price, 1.41, places=2)
+
 
 class TestProcessDecisionsSafetyGates(unittest.TestCase):
     """D-0095-A, 2026-11-19 -- the real incident: two proposals for the
@@ -472,6 +565,62 @@ class TestProcessDecisionsSafetyGates(unittest.TestCase):
         self.assertEqual(len(results), MAX_CONCURRENT_POSITIONS)  # the cap, not one more
         self.assertEqual(len(self.position_repo.list_open()), MAX_CONCURRENT_POSITIONS)
         self.assertTrue(any("already open" in n and "cap" in n for n in notes))
+
+    def test_reject_releases_the_concurrency_tracker_slot(self):
+        # 2026-11-22 fix: a REJECT must free the slot reserved at proposal-
+        # creation time, not wait out the proposal's planned hold window.
+        broker = FakeBroker()
+        p = self._approve(strike=7200, occ_symbol="SPXW261119P07200000")
+        far_exit = self.now + timedelta(minutes=40)
+        tracker = ConcurrentPositionTracker(max_concurrent=1)
+        tracker.record_open(self.now, far_exit, proposal_id=p.proposal_id)
+        self.assertFalse(tracker.can_open(self.now))
+
+        decisions = [ControllerDecision(proposal_id=p.proposal_id, kind=DecisionKind.REJECT, decided_by="111")]
+        process_decisions(
+            self.repo, decisions, broker, quantity=1, now=self.now, position_tracker=tracker,
+        )
+
+        self.assertTrue(tracker.can_open(self.now))  # freed immediately, not at far_exit
+
+    def test_submission_time_skip_releases_the_concurrency_tracker_slot(self):
+        # The same-occ_symbol skip (defense in depth) must also release.
+        broker = FakeBroker()
+        p1 = self._approve(strike=7200, occ_symbol="SPXW261119P07200000")
+        p2 = self._approve(strike=7200, occ_symbol="SPXW261119P07200000")
+        far_exit = self.now + timedelta(minutes=40)
+        tracker = ConcurrentPositionTracker(max_concurrent=2)
+        tracker.record_open(self.now, far_exit, proposal_id=p1.proposal_id)
+        tracker.record_open(self.now, far_exit, proposal_id=p2.proposal_id)
+
+        decisions = [
+            ControllerDecision(proposal_id=p1.proposal_id, kind=DecisionKind.APPROVE, decided_by="111"),
+            ControllerDecision(proposal_id=p2.proposal_id, kind=DecisionKind.APPROVE, decided_by="111"),
+        ]
+        process_decisions(
+            self.repo, decisions, broker, quantity=1, position_repo=self.position_repo,
+            now=self.now, position_tracker=tracker,
+        )
+
+        # p1 submitted (slot stays reserved by its real open position); p2's
+        # reservation must have been released since it was never submitted.
+        self.assertEqual(len(self.position_repo.list_open()), 1)
+        tracker.release(p1.proposal_id)  # drop the one real submission's own reservation
+        self.assertTrue(tracker.can_open(self.now))  # nothing left reserved
+
+    def test_expire_stale_pending_releases_the_concurrency_tracker_slot(self):
+        p = self._approve(strike=7200, occ_symbol="SPXW261119P07200000")
+        far_exit = self.now + timedelta(minutes=40)
+        tracker = ConcurrentPositionTracker(max_concurrent=1)
+        tracker.record_open(self.now, far_exit, proposal_id=p.proposal_id)
+        self.assertFalse(tracker.can_open(self.now))
+
+        count = expire_stale_pending(
+            self.repo, older_than=self.now + timedelta(minutes=1), position_tracker=tracker,
+        )
+
+        self.assertEqual(count, 1)
+        self.assertTrue(tracker.can_open(self.now))
 
     def test_gates_are_skipped_entirely_without_position_repo(self):
         # Backward compatible: omitting position_repo (e.g. an older

@@ -83,7 +83,10 @@ class FakeBroker(BrokerClient):
         )
 
     def get_order_by_client_order_id(self, client_order_id):
-        raise NotImplementedError
+        # 2026-11-22: _resolve_fill_price's one follow-up check calls this
+        # when the submission response had no fill yet; None preserves
+        # every existing test's fallback-to-estimate expectation unchanged.
+        return None
 
     def cancel_order(self, client_order_id):
         raise NotImplementedError
@@ -144,6 +147,10 @@ class TestRunOneTick(unittest.TestCase):
             now=self.now, options_client=self.client, broker=self.broker,
             ratio_provider=self.ratio_provider, repo=self.repo, position_repo=self.position_repo,
             pending_decisions=[], bot_token="bad-token", chat_id="1", quantity=1, state=self.state,
+            # 2026-11-22: a known-in-range VIX by default, so tests unrelated to
+            # the VIX filter itself aren't affected by its now-fail-safe (reject
+            # on unknown) behavior -- override explicitly to test VIX itself.
+            vix_provider=FakeVixProvider(20.0),
         )
         kwargs.update(overrides)
         return run_one_tick(**kwargs)
@@ -159,10 +166,14 @@ class TestRunOneTick(unittest.TestCase):
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0].occ_symbol, "SPXW261117C05920000")
 
-    def test_without_vix_provider_behaves_as_before(self):
-        result = self._tick()  # no vix_provider passed -- default None
-        self.assertEqual(result.proposals_created, 1)
-        self.assertEqual(result.proposals_rejected_by_filter, 0)
+    def test_without_vix_provider_fails_safe_rejects(self):
+        # 2026-11-22 fix: no VIX data is now treated as fail-SAFE (reject),
+        # not fail-open -- this filter exists specifically to keep the bot
+        # out of VIX>35 crisis conditions, which is also the condition most
+        # likely to come with a flaky/unavailable data source.
+        result = self._tick(vix_provider=None)
+        self.assertEqual(result.proposals_created, 0)
+        self.assertEqual(result.proposals_rejected_by_filter, 1)
 
     def test_vix_provider_in_tradeable_range_does_not_block(self):
         result = self._tick(vix_provider=FakeVixProvider(20.0))
@@ -174,12 +185,13 @@ class TestRunOneTick(unittest.TestCase):
         self.assertEqual(result.proposals_created, 0)
         self.assertEqual(result.proposals_rejected_by_filter, 1)
 
-    def test_vix_provider_none_level_does_not_block(self):
+    def test_vix_provider_none_level_fails_safe_rejects(self):
         # The provider itself may return None (anchor/live fetch failed) --
-        # must degrade exactly like not having a provider at all.
+        # 2026-11-22 fix: must now be treated as outside tradeable range
+        # (reject), not as "filter skipped".
         result = self._tick(vix_provider=FakeVixProvider(None))
-        self.assertEqual(result.proposals_created, 1)
-        self.assertEqual(result.proposals_rejected_by_filter, 0)
+        self.assertEqual(result.proposals_created, 0)
+        self.assertEqual(result.proposals_rejected_by_filter, 1)
 
     def test_same_opportunity_not_processed_twice(self):
         self._tick()

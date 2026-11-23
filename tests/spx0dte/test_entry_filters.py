@@ -7,8 +7,12 @@ from spx0dte.entry_filters import (
 
 
 class TestVixInTradeableRange(unittest.TestCase):
-    def test_none_skips_not_rejects(self):
-        self.assertTrue(vix_in_tradeable_range(None).passed)
+    def test_none_fails_safe_rejects(self):
+        # 2026-11-22 fix: unknown VIX is now treated as outside the
+        # tradeable range (reject), not as "filter skipped" -- this filter
+        # exists to keep the bot out of real VIX>35 crisis conditions,
+        # which is also when a data source is most likely to be flaky.
+        self.assertFalse(vix_in_tradeable_range(None).passed)
 
     def test_too_low_rejected(self):
         self.assertFalse(vix_in_tradeable_range(10.0).passed)

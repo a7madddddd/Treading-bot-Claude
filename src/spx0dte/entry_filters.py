@@ -60,7 +60,13 @@ def vix_in_tradeable_range(
     range -- only removing the two ends most research agrees are
     unreliable."""
     if vix_level is None:
-        return FilterResult(True, "no VIX data for this date -- filter skipped, not rejected")
+        # 2026-11-22 fix: this filter exists specifically to keep the bot out
+        # of VIX>35 crisis conditions, and missing VIX data is most likely
+        # during exactly that kind of real market/data stress -- failing
+        # OPEN (pass) here meant the filter was most likely to be blind
+        # exactly when it mattered most. Fail SAFE (reject) instead,
+        # consistent with this project's bootstrap-conservative bias.
+        return FilterResult(False, "no VIX data for this date -- treated as outside tradeable range (fail-safe)")
     passed = low <= vix_level <= high
     return FilterResult(
         passed,

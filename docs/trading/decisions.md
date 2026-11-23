@@ -9721,3 +9721,112 @@ equity-ladder unit's own install). **This closes the last open item
 from the full-project priority review that was specific to the SPX
 0DTE module** -- the module now runs unattended, with automatic
 restart-on-crash, exactly like the equity-ladder engine.
+
+## D-0099 — Deep code review of src/spx0dte/: 10 real bugs found, verified, and fixed
+
+Controller asked for a dedicated deep review of the options module plus
+research on quality improvements (2026-11-22). 8 independent finder
+passes (line-by-line, removed-behavior/fail-open audit, cross-file
+contract tracer, reuse, simplification, efficiency, altitude/root-cause,
+CLAUDE.md conventions) surfaced candidates; every one below was
+independently re-verified against the actual code (not just the
+finder's claim) before being accepted. All 10 CONFIRMED and fixed,
+minimal edits, same session.
+
+1. **`orchestration.close_position` no longer marks a position closed on
+   a failed broker submission.** Previously unconditional; a rejected
+   SELL left a real, unmonitored position silently dropped from tracking
+   with a fabricated realized pnl recorded. Now returns early on
+   `not result.success`, leaving the row untouched so `LiveExitTracker`
+   re-triggers and retries (same idempotent `client_order_id`) on a
+   later tick. `live_loop.monitor_open_positions` now checks
+   `close_result.success` too, before any cleanup/pnl recording.
+
+2. **Single-instance flock added to `scripts/run_spx0dte_session.py`.**
+   No pidfile/lock existed; two processes had already run concurrently
+   in production once (caught only by a human running `ps aux`, this
+   same session, 2026-11-19). A non-blocking exclusive `flock` on
+   `spx0dte_session.lock` now refuses a second instance outright
+   (exit 75) rather than relying on orchestration's sequential,
+   non-atomic-across-processes same-symbol/cap checks after the fact.
+
+3. **A `_resolve_fill_price` helper now makes ONE follow-up
+   `get_order_by_client_order_id` call** when the synchronous
+   `submit_order` response carries no fill yet (confirmed: this is the
+   NORMAL case in production -- the project's own `spx0dte_measure_
+   entry_fill_gap.py` measurement found 6/6 real entries and 6/6 real
+   exits had no fill in the synchronous response, meaning the earlier
+   P-104 "real fill" fix rarely actually fired). Used at both the entry
+   (`process_decisions`) and exit (`close_position`) sites, replacing
+   the triplicated inline check.
+
+4. **Daily loss limit lock now retries every tick until it succeeds**,
+   not only once at day-rollover. `sizing.DailyLossLimitTracker` gained
+   `is_locked_for(today)`; the lock attempt in `live_loop.py` moved
+   outside the one-time rollover gate and now also catches `ValueError`
+   (previously only `BrokerClientError`, so a non-positive-equity
+   failure escaped uncaught and the limit stayed unlocked for the rest
+   of the day either way).
+
+5. **`run_one_tick` no longer drops pending Controller decisions on a
+   SPY-bars fetch failure.** Previously returned early before
+   `process_decisions` was ever called; a real APPROVE already dequeued
+   from the Telegram poller for that tick was lost permanently, well
+   within the 5-minute approval window. Now continues with
+   `spy_bars = []` and only skips the part that genuinely needs SPY data
+   (new-opportunity detection).
+
+6. **`vix_in_tradeable_range` now fails SAFE (reject) on unknown VIX,
+   not fail-open (pass).** This filter exists specifically to keep the
+   bot out of VIX>35 crisis conditions -- exactly the condition most
+   likely to come with a flaky/unavailable data source. Every test that
+   relied on the old "no VIX data = pass" default (several, unrelated to
+   VIX itself) was updated to supply an explicit in-range VIX provider.
+
+7. **`sizing.ConcurrentPositionTracker` gained a `release(proposal_id)`
+   method.** Previously a slot reserved at proposal-creation time had no
+   way to be freed early -- a REJECTed proposal, or one skipped by the
+   submission-time cap/duplicate-symbol gates, kept blocking a real,
+   fillable opportunity for up to its full planned hold window (~25-55
+   min). `process_decisions` now releases on REJECT and on each
+   submission-time skip; `expire_stale_pending` releases on expiry.
+   `live_loop.py`'s own `record_open` call now tags the reservation with
+   its `proposal_id`.
+
+8. **Exception-type mismatches fixed in `ratio_calibration.py` and
+   `vix_proxy.py`.** Both classes' docstrings promise a graceful fallback
+   (last good value / `None`) on a real data failure, but each only
+   caught its own module's specific error type -- `AlpacaDataError` from
+   the underlying Alpaca call was not an `OSError` subclass and was not
+   caught by either, crashing the tick instead of degrading as
+   documented. Added to both except clauses.
+
+9. **The real, already-computed `vix_level` is no longer discarded**
+   when building the proposal -- `build_live_proposal(..., vix=None, ...)`
+   was hardcoded; now passes the real `vix_level` used for filtering one
+   line earlier. Fixes an internally inconsistent Telegram message
+   ("VIX: n/a" next to "Filters: VIX=22.3 ... OK") and a permanently-NULL
+   `vix` column for every live-generated proposal row.
+
+10. **`live_pricing.py`'s market-close hour is now DST-aware.** Was a
+    flat `MARKET_CLOSE_UTC_HOUR=21` (EST only), off by a full hour during
+    EDT (~8 months/year) -- feeding the time-to-expiry in the
+    Black-Scholes reprice that becomes the actual submitted `limit_price`,
+    not just a display value. Now picks 20 or 21 UTC via
+    `econ_calendar._is_us_dst` (already existed, now reused instead of a
+    second independent approximation).
+
+**Tests:** 1 new file (`tests/scripts/test_run_spx0dte_session_lock.py`,
+3 tests exercising the flock directly -- two separate `open()` calls to
+the same path correctly simulate two independent processes contending,
+since `flock` is per open-file-description, not per-process), plus new/
+updated tests in `test_orchestration.py` (failed-submit does not close,
+follow-up-poll fill price, four tracker-release call-site tests),
+`test_sizing.py` (3 new `release()` tests), `test_entry_filters.py` and
+`test_live_loop.py` (VIX fail-safe behavior, with the shared `_tick`
+helper's default updated to an in-range VIX provider so unrelated tests
+aren't affected). **Full suite: 2119 passed, zero regressions.**
+
+STATUS: BUILT AND TESTED. Held for push pending Controller confirmation
+that the SPX 0DTE systemd session (and any manual session) is stopped,
+per the same discipline applied to every other change this session.

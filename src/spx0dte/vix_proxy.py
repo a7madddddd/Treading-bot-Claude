@@ -163,7 +163,12 @@ class VixProxyProvider:
         if self._anchor is None or self._anchor.date != today_str:
             try:
                 self._anchor = measure_vix_anchor_now(self.client, self.fred_api_key, now=now)
-            except VixProxyError:
+            except (VixProxyError, AlpacaDataError):
+                # 2026-11-22 fix: measure_vix_anchor_now's own get_stock_daily_bars
+                # call can raise AlpacaDataError directly (not wrapped in
+                # VixProxyError) -- missing it here meant a real Alpaca outage on
+                # the daily anchor refresh crashed the tick instead of degrading
+                # to None as this method's own docstring promises ("never raises").
                 return None
 
         try:

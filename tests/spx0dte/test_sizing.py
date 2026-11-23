@@ -41,6 +41,33 @@ class TestConcurrentPositionTracker(unittest.TestCase):
         self.assertFalse(tracker.can_open(self.t0 + timedelta(minutes=5)))
         self.assertTrue(tracker.can_open(exit_time + timedelta(seconds=1)))
 
+    def test_release_frees_a_slot_immediately_without_waiting_for_exit_time(self):
+        # 2026-11-22 fix: a REJECTed/expired/skipped proposal must not keep
+        # blocking real capacity until its originally planned exit_time.
+        tracker = ConcurrentPositionTracker(max_concurrent=1)
+        far_exit = self.t0 + timedelta(minutes=55)  # a long planned hold
+        tracker.record_open(self.t0, far_exit, proposal_id="SPX-rejected")
+        self.assertFalse(tracker.can_open(self.t0 + timedelta(minutes=1)))
+
+        tracker.release("SPX-rejected")
+
+        self.assertTrue(tracker.can_open(self.t0 + timedelta(minutes=1)))
+
+    def test_release_of_unknown_id_is_a_safe_no_op(self):
+        tracker = ConcurrentPositionTracker(max_concurrent=1)
+        tracker.record_open(self.t0, self.t0 + timedelta(minutes=40), proposal_id="SPX-a")
+        tracker.release("SPX-does-not-exist")  # must not raise
+        self.assertFalse(tracker.can_open(self.t0))  # SPX-a's slot is untouched
+
+    def test_release_only_frees_the_matching_id(self):
+        tracker = ConcurrentPositionTracker(max_concurrent=2)
+        tracker.record_open(self.t0, self.t0 + timedelta(minutes=40), proposal_id="SPX-a")
+        tracker.record_open(self.t0, self.t0 + timedelta(minutes=40), proposal_id="SPX-b")
+        tracker.release("SPX-a")
+        self.assertTrue(tracker.can_open(self.t0))  # one slot freed, one still held
+        tracker.record_open(self.t0, self.t0 + timedelta(minutes=40), proposal_id="SPX-c")
+        self.assertFalse(tracker.can_open(self.t0))  # both slots held again (b and c)
+
 
 class TestDailyTradeCounter(unittest.TestCase):
     def test_unbounded_by_default(self):

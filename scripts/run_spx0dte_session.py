@@ -35,6 +35,7 @@ Env vars required:
 from __future__ import annotations
 
 import argparse
+import fcntl
 import logging
 import os
 import signal
@@ -72,6 +73,36 @@ def _handle_stop_signal(signum, frame) -> None:
     logger.info("Received signal %s -- will stop after the current tick.", signum)
 
 
+_LOCK_FILE_PATH = os.path.join(_REPO_ROOT, "spx0dte_session.lock")
+_lock_file_handle = None  # module-level so the held flock survives for the process's whole life
+
+
+def _acquire_single_instance_lock() -> None:
+    """2026-11-22 fix (P-068/P-070 session's own real incident, 2026-11-19:
+    two run_spx0dte_session.py processes were found running concurrently
+    against the same spx0dte.sqlite and the same broker account, caught
+    only by a human running `ps aux`). A non-blocking exclusive flock on a
+    dedicated lock file refuses to let a second instance start at all,
+    rather than relying on orchestration.py's sequential (non-atomic
+    across processes) same-symbol/cap checks to catch it after the fact.
+    The lock is released automatically when this process exits (or is
+    killed), including by the OS if the process dies without a clean
+    shutdown -- flock locks do not outlive their holding process."""
+    global _lock_file_handle
+    _lock_file_handle = open(_LOCK_FILE_PATH, "w")
+    try:
+        fcntl.flock(_lock_file_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print(
+            f"FATAL: another run_spx0dte_session.py is already running "
+            f"(could not acquire {_LOCK_FILE_PATH}) -- refusing to start a second instance.",
+            file=sys.stderr,
+        )
+        sys.exit(75)  # EX_TEMPFAIL -- a real other instance holds this, not a config error
+    _lock_file_handle.write(str(os.getpid()))
+    _lock_file_handle.flush()
+
+
 def _required_env(name: str) -> str:
     value = os.environ.get(name, "")
     if not value:
@@ -81,6 +112,8 @@ def _required_env(name: str) -> str:
 
 
 def main() -> int:
+    _acquire_single_instance_lock()
+
     parser = argparse.ArgumentParser(description="D-0095-A SPX 0DTE session runner")
     parser.add_argument("--max-hours", type=float, default=7.0,
                          help="session time cap (a US trading day is ~6.5h)")

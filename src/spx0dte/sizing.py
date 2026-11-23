@@ -83,6 +83,7 @@ def contracts_for_trade() -> int:
 @dataclass
 class _OpenPosition:
     exit_time: datetime
+    proposal_id: Optional[str] = None
 
 
 @dataclass
@@ -92,7 +93,15 @@ class ConcurrentPositionTracker:
     positions are still open at that moment. A rejected candidate
     occupies no slot and therefore can never block a later one --
     matches the measurement this cap was derived from
-    (measure_concurrency_cap.py's simulate_with_cap)."""
+    (measure_concurrency_cap.py's simulate_with_cap).
+
+    A slot is reserved at PROPOSAL-CREATION time (`record_open`),
+    before the Controller's decision is known -- `release` frees it
+    immediately once that proposal is REJECTed, expires, or is skipped
+    at submission time (cap/duplicate-symbol), rather than waiting for
+    its originally planned `exit_time` to pass (2026-11-22 fix: a
+    rejected proposal was otherwise blocking a real, fillable
+    opportunity for up to its full planned hold window)."""
 
     max_concurrent: int = MAX_CONCURRENT_POSITIONS
     _open: List[_OpenPosition] = field(default_factory=list)
@@ -105,9 +114,17 @@ class ConcurrentPositionTracker:
         self._open = [p for p in self._open if p.exit_time > at]
         return len(self._open) < self.max_concurrent
 
-    def record_open(self, at: datetime, exit_time: datetime) -> None:
+    def record_open(self, at: datetime, exit_time: datetime, proposal_id: Optional[str] = None) -> None:
         self._open = [p for p in self._open if p.exit_time > at]
-        self._open.append(_OpenPosition(exit_time=exit_time))
+        self._open.append(_OpenPosition(exit_time=exit_time, proposal_id=proposal_id))
+
+    def release(self, proposal_id: str) -> None:
+        """Frees the reservation recorded under `proposal_id`, if any.
+        A no-op if the id isn't found (already released, already
+        expired naturally, or recorded without an id) -- never raises,
+        since every caller site is itself a decision-outcome handler,
+        not a place that should fail over bookkeeping."""
+        self._open = [p for p in self._open if p.proposal_id != proposal_id]
 
 
 @dataclass
@@ -151,6 +168,16 @@ class DailyLossLimitTracker:
     def __post_init__(self) -> None:
         if not (0.0 < self.limit_pct < 1.0):
             raise ValueError("limit_pct must be between 0 and 1 (exclusive)")
+
+    def is_locked_for(self, today: str) -> bool:
+        """True once `start_new_day` has successfully locked `today`'s
+        equity. 2026-11-22: lets a caller retry the lock attempt every
+        tick (cheap -- just this check, no network call) until it
+        succeeds, instead of only once at day-rollover -- a single
+        failed equity fetch on the first tick of the day used to leave
+        the limit unlocked, and therefore unenforced, for the rest of
+        that day."""
+        return self._current_date == today
 
     def start_new_day(self, today: str, equity: float) -> None:
         if self._current_date == today:

@@ -5858,3 +5858,21 @@ unit is `active (running)`, the dashboard responds, and lingering is
 enabled. Full details: `docs/trading/decisions.md` D-0098. This was
 the last open SPX 0DTE-specific item from the full project priority
 review.
+
+## P-105 — Deep code review of src/spx0dte/: 10 real bugs found and fixed (RESOLVED)
+
+Controller-requested deep review surfaced 10 real, independently
+verified bugs across the options module -- failed-close-marked-as-
+closed, no cross-process lock (already caused a real incident), the
+P-104 real-fill fix rarely firing in production, the daily loss limit
+able to silently stay unenforced for a day, pending decisions dropped
+on a data-fetch failure, the VIX safety filter failing open instead of
+safe, concurrency-slot reservations never released for rejected/expired
+proposals, a wrong exception type skipping the documented graceful
+fallback in two providers, a real VIX value discarded before it reached
+the Controller's Telegram message, and a DST-unaware market-close hour
+skewing real submitted prices ~8 months/year. Full details:
+`docs/trading/decisions.md` D-0099.
+
+STATUS: BUILT AND TESTED, full suite 2119 passed, zero regressions.
+Held for push pending confirmation the SPX 0DTE session is stopped.

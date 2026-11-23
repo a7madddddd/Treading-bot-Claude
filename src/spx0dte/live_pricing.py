@@ -35,12 +35,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from spx0dte.alpaca_client import AlpacaDataError, AlpacaOptionsClient
+from spx0dte.econ_calendar import _is_us_dst
 from spx0dte.greeks import OptionType, reprice_from_stale_quote
 from spx0dte.ratio_calibration import RatioProvider
 
 RISK_FREE_RATE = 0.045  # same approximation used throughout this module's validation
 STALE_QUOTE_OFFSET_MINUTES = 40  # matches spx0dte_verify_order.py's own fix for the same restriction
-MARKET_CLOSE_UTC_HOUR = 21  # 4:00pm ET in EST; DST days are off by ~1h, acceptable for this estimate
+MARKET_CLOSE_UTC_HOUR_EST = 21  # 4:00pm ET in EST (winter)
+MARKET_CLOSE_UTC_HOUR_EDT = 20  # 4:00pm ET in EDT (summer, roughly mid-March to early November)
 MEASURED_BIAS_PCT = 0.038
 """Median overestimate measured by scripts/spx0dte_validate_greeks.py
 over 128 real samples, 2026-10-01 to 2026-11-13 (see
@@ -122,7 +124,14 @@ def reprice_known_symbol(
 
     now = now or datetime.now(timezone.utc)
     today = now.strftime("%Y-%m-%d")
-    expiry = now.replace(hour=MARKET_CLOSE_UTC_HOUR, minute=0, second=0, microsecond=0)
+    # 2026-11-22 fix: was a flat EST-only hour, off by a full hour during
+    # EDT (~8 months/year) -- a real distortion since this feeds the
+    # time-to-expiry used in the Black-Scholes reprice that becomes the
+    # actual submitted limit_price, not just a display value. Reuses
+    # econ_calendar's existing (rough, already-acknowledged-approximate)
+    # DST window rather than a second, independent approximation.
+    close_hour = MARKET_CLOSE_UTC_HOUR_EDT if _is_us_dst(now.month, now.day) else MARKET_CLOSE_UTC_HOUR_EST
+    expiry = now.replace(hour=close_hour, minute=0, second=0, microsecond=0)
 
     live_S, ratio, spy_bars = _live_underlying_price(client, ratio_provider, today, now)
     stale_time = now - timedelta(minutes=STALE_QUOTE_OFFSET_MINUTES)

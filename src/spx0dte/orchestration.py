@@ -21,7 +21,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from execution.broker_client import BrokerClient
+from execution.broker_client import BrokerClient, BrokerClientError
 
 from spx0dte.alpaca_client import AlpacaOptionsClient
 from spx0dte.execution import SubmissionResult, submit_entry_order, submit_exit_order
@@ -31,7 +31,7 @@ from spx0dte.live_pricing import (
 from spx0dte.position import OpenPosition
 from spx0dte.proposal import OptionTradeProposal, ProposalApprovalState
 from spx0dte.ratio_calibration import RatioProvider
-from spx0dte.sizing import MAX_CONCURRENT_POSITIONS
+from spx0dte.sizing import MAX_CONCURRENT_POSITIONS, ConcurrentPositionTracker
 from spx0dte.sqlite_repository import SpxPositionRepository, SpxProposalRepository
 from spx0dte.telegram_approval import ControllerDecision, DecisionKind, send_proposal_message
 
@@ -107,6 +107,35 @@ def create_and_notify(
     )
 
 
+def _resolve_fill_price(
+    broker: BrokerClient, *, client_order_id: str, result: SubmissionResult, fallback_price: float,
+) -> float:
+    """The real confirmed fill price, when one can be determined, else
+    `fallback_price` (the pre-trade estimate used to submit the order).
+
+    2026-11-22 fix: `submit_order`'s own synchronous response almost
+    never carries a fill yet (Alpaca typically reports "accepted", not
+    "filled", in that same response) -- the project's own measurement
+    (`scripts/spx0dte_measure_entry_fill_gap.py`, decisions.md) found
+    this was true in 6 of 6 real sampled entries AND exits, meaning the
+    earlier "prefer the broker's real fill" fix rarely actually fired.
+    This makes ONE follow-up `get_order_by_client_order_id` call to
+    check again right after submission, rather than relying solely on
+    the original response. Still not a full reconciliation loop (no
+    sleep/retry/wait here -- that would block the tick) -- a fill that
+    isn't confirmed by this one extra check still falls back to the
+    estimate, same as before."""
+    if result.order_state is not None and result.order_state.filled_avg_price is not None:
+        return result.order_state.filled_avg_price
+    try:
+        latest = broker.get_order_by_client_order_id(client_order_id)
+    except BrokerClientError:
+        return fallback_price
+    if latest is not None and latest.filled_avg_price is not None:
+        return latest.filled_avg_price
+    return fallback_price
+
+
 def process_decisions(
     repo: SpxProposalRepository, decisions: List[ControllerDecision],
     broker: BrokerClient, *, quantity: int,
@@ -115,6 +144,7 @@ def process_decisions(
     position_repo: Optional[SpxPositionRepository] = None,
     now: Optional[datetime] = None,
     notes: Optional[List[str]] = None,
+    position_tracker: Optional[ConcurrentPositionTracker] = None,
 ) -> List[SubmissionResult]:
     """Applies each decision to its proposal and, for an APPROVE still
     inside the 5-minute window, submits a buy order. Returns one
@@ -181,14 +211,24 @@ def process_decisions(
         repo.save(decided)
 
         if not approved:
+            # 2026-11-22: a REJECT frees this proposal's concurrency-cap
+            # reservation immediately -- it was made at creation time,
+            # before this decision was known (sizing.ConcurrentPositionTracker's
+            # own docstring).
+            if position_tracker is not None:
+                position_tracker.release(decided.proposal_id)
             continue
 
         if not decided.is_approval_still_valid(now=now):
+            if position_tracker is not None:
+                position_tracker.release(decided.proposal_id)
             continue  # expired between decision and this processing pass
 
         if position_repo is not None:
             currently_open = position_repo.list_open()
             if len(currently_open) >= MAX_CONCURRENT_POSITIONS:
+                if position_tracker is not None:
+                    position_tracker.release(decided.proposal_id)
                 if notes is not None:
                     notes.append(
                         f"{decided.proposal_id}: approved but NOT submitted -- "
@@ -196,6 +236,8 @@ def process_decisions(
                     )
                 continue
             if any(p.occ_symbol == decided.occ_symbol for p in currently_open):
+                if position_tracker is not None:
+                    position_tracker.release(decided.proposal_id)
                 if notes is not None:
                     notes.append(
                         f"{decided.proposal_id}: approved but NOT submitted -- "
@@ -221,9 +263,9 @@ def process_decisions(
         results.append(result)
 
         if result.success and position_repo is not None:
-            recorded_entry_price = limit_price
-            if result.order_state is not None and result.order_state.filled_avg_price is not None:
-                recorded_entry_price = result.order_state.filled_avg_price
+            recorded_entry_price = _resolve_fill_price(
+                broker, client_order_id=decided.proposal_id, result=result, fallback_price=limit_price,
+            )
             position_repo.save(OpenPosition(
                 proposal_id=decided.proposal_id, occ_symbol=decided.occ_symbol,
                 direction=decided.direction, quantity=quantity, strike=decided.strike,
@@ -238,48 +280,65 @@ def close_position(
     position_repo: SpxPositionRepository, position: OpenPosition, broker: BrokerClient,
     *, exit_price: float, exit_reason: str, now: datetime,
 ) -> SubmissionResult:
-    """Submits the SELL order that closes `position` and persists the
-    closed state -- called by `live_loop.monitor_open_positions` once
-    `live_exit.LiveExitTracker` signals an exit trigger. Per
-    `.claude/rules/01-roles-and-authority.md`, a protective exit needs
-    no Controller approval (the exit RULE was already approved under
-    D-0095); this function only submits and records, it does not ask.
+    """Submits the SELL order that closes `position` and, ONLY if the
+    submission actually succeeded, persists the closed state -- called
+    by `live_loop.monitor_open_positions` once `live_exit.
+    LiveExitTracker` signals an exit trigger. Per `.claude/rules/
+    01-roles-and-authority.md`, a protective exit needs no Controller
+    approval (the exit RULE was already approved under D-0095); this
+    function only submits and records, it does not ask.
 
-    The position row is marked closed regardless of submission
-    success -- an order the broker rejected is still a position this
-    tracker must stop monitoring (the caller is responsible for
-    surfacing a failed close prominently; silently retrying forever
-    is not this function's job).
+    2026-11-22 fix: the position row is NO LONGER marked closed when
+    the broker rejects/fails the order -- doing so previously left a
+    real, still-open position silently untracked (popped from the
+    caller's in-memory trackers) and recorded a fabricated realized
+    pnl from the pre-trade estimate, while the real position could
+    still be open and unmonitored at the broker. On a failed
+    submission the row is left untouched so the caller keeps
+    monitoring it and `LiveExitTracker` can re-trigger (and this
+    function re-submit, under the SAME idempotent client_order_id) on
+    a later tick. `SubmissionResult.success` is always returned so the
+    caller can react -- it must check it, not assume a close happened.
 
     `exit_price` is the pre-trade estimate used to SUBMIT the order;
-    the row's recorded `exit_price` is the broker's own
-    `filled_avg_price` when the submission response includes one, the
-    same real-fill-over-estimate correction applied to `entry_price`
-    in `process_decisions` (D-0095-A, 2026-11-19) -- realized pnl must
-    be computed from what the trade actually paid/received, not from
-    the stale-quote reprice that was only ever a submission target."""
+    on success, the row's recorded `exit_price` prefers the broker's
+    real confirmed fill (via `_resolve_fill_price`'s one follow-up
+    check, 2026-11-22 -- the original synchronous response rarely
+    carries a fill yet) over the estimate, so realized pnl is computed
+    from what the trade actually paid/received, not from the
+    stale-quote reprice that was only ever a submission target."""
     client_order_id = f"{position.proposal_id}-exit"
     result = submit_exit_order(
         broker, client_order_id=client_order_id, occ_symbol=position.occ_symbol,
         quantity=position.quantity, limit_price=exit_price,
     )
-    recorded_exit_price = exit_price
-    if result.order_state is not None and result.order_state.filled_avg_price is not None:
-        recorded_exit_price = result.order_state.filled_avg_price
+    if not result.success:
+        return result
+    recorded_exit_price = _resolve_fill_price(
+        broker, client_order_id=client_order_id, result=result, fallback_price=exit_price,
+    )
     position_repo.save(
         position.with_exit(exit_time=now, exit_price=recorded_exit_price, exit_reason=exit_reason)
     )
     return result
 
 
-def expire_stale_pending(repo: SpxProposalRepository, *, older_than: datetime) -> int:
+def expire_stale_pending(
+    repo: SpxProposalRepository, *, older_than: datetime,
+    position_tracker: Optional[ConcurrentPositionTracker] = None,
+) -> int:
     """Expires every PENDING proposal created before `older_than`.
     Returns the count expired. A proposal the Controller never acted
     on must not sit PENDING forever -- mirrors the equity-ladder
-    flow's own supersession/expiry discipline."""
+    flow's own supersession/expiry discipline. Also frees its
+    concurrency-cap reservation (2026-11-22), the same as a REJECT
+    does in `process_decisions` -- an expiry is a decision outcome
+    too, just one the Controller never made in time."""
     count = 0
     for proposal in repo.list_pending():
         if proposal.created_at < older_than:
             repo.save(proposal.expire(expired_at=older_than))
+            if position_tracker is not None:
+                position_tracker.release(proposal.proposal_id)
             count += 1
     return count

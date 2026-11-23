@@ -258,6 +258,19 @@ def monitor_open_positions(
                 position_repo, position, broker,
                 exit_price=quote.bias_corrected_price, exit_reason=reason, now=now,
             )
+            if not close_result.success:
+                # 2026-11-22 fix: a rejected/failed SELL must NOT be treated as a
+                # close -- close_position itself already left the position row
+                # untouched (still open) on this path. Keep tracking it exactly
+                # as before (no pop, no pnl, no manual-close discard) so
+                # LiveExitTracker re-evaluates and this re-submits (same
+                # idempotent client_order_id) on a later tick, instead of a real
+                # open position silently vanishing from monitoring.
+                notes.append(
+                    f"{position.proposal_id}: close ({reason}) FAILED, still open -- "
+                    f"will retry next tick: {close_result.error}"
+                )
+                continue
             # Realized pnl must come from the broker's own confirmed fill when
             # one is available, same real-fill-over-estimate correction `close_position`
             # itself applies to the persisted exit_price (D-0095-A, 2026-11-19) --
@@ -371,13 +384,16 @@ def run_one_tick(
     try:
         spy_bars = options_client.get_spy_minute_bars(today)
     except AlpacaDataError as e:
-        return TickResult(
-            date=today, dynamic_cap=state.dynamic_cap_today, new_opportunities_seen=0,
-            proposals_created=0, proposals_rejected_by_filter=0,
-            proposals_rejected_by_concurrency=0, decisions_processed=0,
-            orders_submitted=0, proposals_expired=0, proposals_rejected_by_loss_limit=0,
-            positions_monitored=0, positions_closed=0, notes=[f"SPY fetch failed: {e}"],
-        )
+        # 2026-11-22 fix: do NOT return early here -- pending_decisions for
+        # this tick were already dequeued from the Telegram poller by the
+        # caller (SpxTelegramDecisionSource.poll() drains its queue), so an
+        # early return here used to silently lose a real Controller
+        # APPROVE/REJECT with no retry and no trace. New-opportunity
+        # detection genuinely needs spy_bars, so that part alone is
+        # skipped (guarded below); decisions and open-position monitoring
+        # need no SPY data and must still run this tick.
+        spy_bars = []
+        notes.append(f"SPY fetch failed -- new-opportunity detection skipped this tick: {e}")
 
     if state.current_date != today:
         state.current_date = today
@@ -385,15 +401,6 @@ def run_one_tick(
         state.processed_entry_keys = set()
         state.proposals_created_today = 0
         state.unusual_day_alert_sent = False
-        try:
-            equity = broker.get_account_equity()
-            state.loss_limit_tracker.start_new_day(today, equity)
-            notes.append(
-                f"daily loss limit locked for {today}: equity=${equity:,.2f}, "
-                f"limit={state.loss_limit_tracker.limit_pct:.1%}"
-            )
-        except BrokerClientError as e:
-            notes.append(f"could not fetch account equity -- daily loss limit NOT locked today: {e}")
 
         recent_counts = repo.recent_daily_counts(before_date=today, limit=UNUSUAL_DAY_LOOKBACK_DAYS)
         if len(recent_counts) >= UNUSUAL_DAY_MIN_HISTORY_DAYS:
@@ -410,6 +417,26 @@ def run_one_tick(
                 "trading days of history so far"
             )
 
+    # 2026-11-22 fix: retried every tick (cheap no-op once locked --
+    # `is_locked_for`/`start_new_day` are pure in-memory checks, no
+    # network call happens once today is already locked) until it
+    # succeeds, rather than only once at day-rollover. A single failed
+    # or invalid equity fetch on the first tick of the day used to
+    # leave the Controller-approved 2% daily loss limit unlocked, and
+    # therefore unenforced, for the rest of that trading day. Catches
+    # ValueError too (DailyLossLimitTracker.start_new_day raises on
+    # non-positive equity), which previously escaped uncaught here.
+    if not state.loss_limit_tracker.is_locked_for(today):
+        try:
+            equity = broker.get_account_equity()
+            state.loss_limit_tracker.start_new_day(today, equity)
+            notes.append(
+                f"daily loss limit locked for {today}: equity=${equity:,.2f}, "
+                f"limit={state.loss_limit_tracker.limit_pct:.1%}"
+            )
+        except (BrokerClientError, ValueError) as e:
+            notes.append(f"could not lock daily loss limit for {today} yet -- will retry next tick: {e}")
+
     if state.dynamic_cap_today is None and len(spy_bars) >= 15:
         pace = session_pace_width_pct(spy_bars, minutes=15)
         state.dynamic_cap_today = state.pace_tracker.record_and_get_cap(pace)
@@ -423,7 +450,7 @@ def run_one_tick(
 
     vix_level = vix_provider.get_vix_level(now=now) if vix_provider is not None else None
 
-    if state.dynamic_cap_today is not None:
+    if state.dynamic_cap_today is not None and spy_bars:
         opportunities = find_breakout_opportunities(_bars_to_signal_series(spy_bars))
         for entry in opportunities:
             key = _entry_key(entry)
@@ -452,7 +479,11 @@ def run_one_tick(
                 proposal = build_live_proposal(
                     options_client, ratio_provider, date=today, direction=entry.direction,
                     entry_time=entry.entry_time, hold_cap_minutes=state.dynamic_cap_today,
-                    vix=None, filters_passed="; ".join(r.reason for r in filter_results), now=now,
+                    # 2026-11-22 fix: was hardcoded None, discarding the real
+                    # vix_level computed above and already used for filtering --
+                    # made every Telegram message and persisted row show "n/a"
+                    # despite a real measured value existing for this tick.
+                    vix=vix_level, filters_passed="; ".join(r.reason for r in filter_results), now=now,
                 )
             except LivePricingUnavailableError as e:
                 notes.append(f"{key}: live pricing unavailable, skipped: {e}")
@@ -460,7 +491,7 @@ def run_one_tick(
 
             create_and_notify(repo, proposal, bot_token=bot_token, chat_id=chat_id)
             planned_exit = entry.entry_time + timedelta(minutes=state.dynamic_cap_today)
-            state.position_tracker.record_open(entry.entry_time, planned_exit)
+            state.position_tracker.record_open(entry.entry_time, planned_exit, proposal_id=proposal.proposal_id)
             proposals_created += 1
             state.proposals_created_today += 1
 
@@ -484,9 +515,12 @@ def run_one_tick(
         repo, pending_decisions, broker, quantity=quantity,
         options_client=options_client, ratio_provider=ratio_provider,
         position_repo=position_repo, now=now, notes=notes,
+        position_tracker=state.position_tracker,
     )
 
-    expired = expire_stale_pending(repo, older_than=now - STALE_PROPOSAL_MAX_AGE)
+    expired = expire_stale_pending(
+        repo, older_than=now - STALE_PROPOSAL_MAX_AGE, position_tracker=state.position_tracker,
+    )
 
     positions_monitored, positions_closed, exit_notes = monitor_open_positions(
         now=now, options_client=options_client, broker=broker, ratio_provider=ratio_provider,

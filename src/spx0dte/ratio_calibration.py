@@ -34,7 +34,7 @@ from datetime import datetime, timedelta, timezone
 from statistics import median
 from typing import Dict, Optional
 
-from spx0dte.alpaca_client import AlpacaOptionsClient
+from spx0dte.alpaca_client import AlpacaDataError, AlpacaOptionsClient
 
 FRED_BASE_URL = "https://api.stlouisfed.org/fred"
 DEFAULT_LOOKBACK_DAYS = 30  # calendar days; ~20 trading days
@@ -138,7 +138,11 @@ class RatioProvider:
             self._last_ratio = fresh
             self._last_measured_at = now
             return fresh
-        except (RatioCalibrationError, OSError):
+        except (RatioCalibrationError, OSError, AlpacaDataError):
+            # 2026-11-22 fix: measure_ratio_now's real Alpaca call raises
+            # AlpacaDataError (not an OSError subclass) on retry exhaustion --
+            # missing it here meant a real outage crashed the caller instead
+            # of falling back to the last good ratio as this docstring promises.
             if self._last_ratio is not None:
                 return self._last_ratio  # stale but real, not a guess
             return BOOTSTRAP_RATIO  # only reachable on a fresh process's first, failed attempt
