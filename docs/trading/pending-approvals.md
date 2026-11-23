@@ -5940,3 +5940,16 @@ close with this negative finding rather than run a third period on an
 effect already this weak twice. `sizing.CONTRACTS_PER_TRADE` stays
 fixed at 1, unchanged. Full details: `docs/trading/decisions.md`
 D-0101 FINAL.
+
+## P-108 — Risk-defined spread Phase 1 backtest (OPEN, built, not yet run)
+
+Controller-approved Phase 1 of the "spreads" professionalization
+design: backtest-only comparison of a vertical debit spread (several
+candidate short-leg widths) against today's naked long option, no live
+execution code. Verified against Alpaca's real API docs that multi-leg
+orders are buildable (covered-leg rule satisfied by a simple vertical)
+before any design work. Full details: `docs/trading/decisions.md`
+D-0102.
+
+STATUS: script built, smoke-tested (caught and fixed a real
+ZeroDivisionError edge case), NOT YET RUN against real data.

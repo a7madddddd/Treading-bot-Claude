@@ -10030,3 +10030,66 @@ is nothing to revert. `sizing.CONTRACTS_PER_TRADE` stays fixed at 1,
 Controller-approved, unchanged.
 
 This closes P-107.
+
+## D-0102 — Risk-defined spread Phase 1 (backtest, no live code): measurement script built
+
+Controller's "pro-level" improvement request, third direction: risk-
+defined vertical debit spreads (buy near strike, sell a further OTM
+strike, same type/expiry) instead of the current naked long option.
+
+**Research done before any design (FACT, verified against Alpaca's
+own docs, read verbatim via a real fetch, not summarized):**
+- Multi-leg ("mleg") orders ARE supported, including in paper trading.
+  Exact request shape (`order_class: "mleg"`, top-level `qty` = number
+  of spread units, `legs` array with `symbol`/`ratio_qty`/`side`/
+  `position_intent`), and the sign convention for `limit_price`
+  (positive = net debit, negative = net credit).
+- Critical constraint found: "an MLeg order is accepted only if all
+  its legs are covered within the same MLeg order" -- a simple
+  vertical (long near strike + short far strike, same type/expiry) IS
+  a covered structure, so this is genuinely buildable, unlike GEX data
+  which was a real dead end.
+- Gap found: no documented example exists for closing a plain long
+  debit spread (only "roll" examples, which close+open in one order)
+  -- flagged as needing real verification on the paper account before
+  any live exit design, not assumed safe.
+
+**Per this project's own rule ("calculate from recorded data, never a
+guessed number"), Phase 1 is backtest-only, no live code.** Built
+`scripts/spx0dte_measure_spread_backtest.py`: for every historical
+candidate that already passes the real current filter set (VIX range +
+economic calendar), simulates BOTH the baseline (today's naked long)
+AND the spread at multiple candidate short-leg widths (default 10/20/30
+SPX points) in the SAME pass -- a fair, paired comparison, not
+independent samples. The short leg is found via the same
+`find_nearest_traded_strike` the live module already uses; the actual
+achieved width (nearest real traded strike, which may differ from the
+requested width) is recorded, never assumed. The spread's net price
+series is built by looking up each leg's last-known price AS OF each of
+the long leg's own bar timestamps, then fed into `exit_logic.
+simulate_exit` completely UNMODIFIED -- reuses the existing target/
+stop/stall logic for a 2-leg instrument rather than writing a second
+copy of it.
+
+**Real bug caught by the script's own smoke test, fixed before trusting
+it on real data:** a non-positive net entry price (two separately-
+printed last-TRADE prices that don't line up into a sane spread at that
+exact moment) crashed `simulate_exit` with `ZeroDivisionError` (P0=0).
+Fixed by excluding such candidates before calling `simulate_exit`,
+recorded as a skip, not silently dropped or allowed to crash.
+
+Smoke-tested end to end with fake Black-Scholes-priced bars at two
+distinct real strikes (not identical placeholder prices) -- confirmed
+the spread's dollar swings are smaller than the naked baseline's in a
+believable, directionally-correct way before running on real data.
+
+STATUS: BUILT AND SMOKE-TESTED, NOT YET RUN against real data. No live
+execution code written. Phase 2 (live design: multi-leg broker
+submission, schema, exit logic, Telegram format) only starts if this
+backtest shows real, cross-period-consistent evidence.
+
+Run command (on the VM):
+```
+cd ~/Treading-bot-Claude && set -a && source .env && set +a && \
+PYTHONPATH=src python3.11 scripts/spx0dte_measure_spread_backtest.py --start 2025-06-01 --end 2025-12-31 --widths 10,20,30
+```
