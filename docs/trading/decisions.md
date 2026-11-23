@@ -9870,3 +9870,47 @@ Run command (on the VM):
 cd ~/Treading-bot-Claude && set -a && source .env && set +a && \
 PYTHONPATH=src python3.11 scripts/spx0dte_measure_time_patterns.py --start 2025-06-01 --end 2025-12-31
 ```
+
+## D-0100 UPDATE — two independent periods run; permutation test added for statistical sharpness
+
+**Run 1 (2025-06-01..2025-12-31, n=1044):** lunch-chop reject pf=0.8847
+vs pass pf=1.167 -- looked like real discrimination. Hour 11:00-11:59 ET
+the lone losing hour (pf=0.7629, n=103). Tuesday the lone losing weekday
+(pf=0.8418, n=298).
+
+**Run 2 (2026-01-01..2026-06-30, n=836, fully independent, no date
+overlap with run 1):** lunch-chop reject pf=1.0286 vs pass pf=1.0642 --
+essentially no difference, REVERSES run 1's apparent discrimination.
+Hour 11:00-11:59 ET again the loser (pf=0.6055, n=91) -- CONSISTENT.
+Day-of-week direction inconsistent across the two runs (Tuesday flips
+from worst to positive; Friday flips from best to worst) -- Wednesday
+and Thursday the only days positive in both.
+
+**Conclusions so far:**
+- Lunch-chop window (12:00-13:30 ET, ALREADY ACTIVE in `run_all_filters`):
+  direction reversed between independent periods -- same disposition as
+  the already-rejected volume/cross-market filters. NOT validated by
+  this data, despite being live since D-0095.
+- Day-of-week: direction inconsistent -- closed, no filter, same
+  "real negative finding" disposition as the daily-trade-count cap.
+- Hour 11:00-11:59 ET: consistent losing direction in both periods.
+
+**Controller's own methodological correction, 2026-11-23:** two periods
+agreeing on DIRECTION can happen by chance, especially at this sample
+size -- not itself a sharp decision. Added a permutation test to
+`spx0dte_measure_time_patterns.py` (`permutation_p_value`, `--permutations`
+flag, default 10,000 draws): for each hour, draws many random same-size
+subsets of that period's own trade pnls and reports what fraction are at
+least as bad as the real hour's mean -- a numeric answer to "is this
+explainable by chance alone", not just a direction match. Verified the
+function itself against synthetic data (a deliberately-bad synthetic
+subgroup: p=0.0; a random, non-special subgroup: p=0.79) before trusting
+it on real data.
+
+**Agreed next step (Controller-approved, "go ahead with both"):** a
+THIRD independent period, plus the permutation test on all three runs,
+before any filter is proposed for building. A bucket needs BOTH a low
+p-value AND agreement across independent periods -- direction agreement
+alone is no longer the bar.
+
+STATUS: tool extended and verified; third period not yet run.

@@ -18,6 +18,17 @@ than two separate runs, same candidates underlie both):
    filter's specific 12:00-13:30 boundary -- genuinely new, not yet
    tried per docs/trading/decisions.md.
 
+STATISTICAL SHARPNESS (Controller's own instruction, 2026-11-23): two
+independent periods agreeing on DIRECTION is suggestive, not proof --
+it can happen by chance, especially with a modest sample. A
+permutation test makes the decision sharp and numeric instead of "it
+agreed twice": for each hour bucket, draw many random same-size subsets
+of ALL that period's trade pnls and ask what fraction of purely random
+draws are at least as bad as the real hour's mean pnl. A small fraction
+(the reported p-value) means the hour's result is NOT explainable by
+chance alone. `--permutations` controls how many random draws (default
+10,000); 0 disables the test.
+
 METHODOLOGY NOTES:
 - Uses `zoneinfo.ZoneInfo("America/New_York")` for the REAL ET
   conversion, not the module's own rough DST approximation
@@ -36,12 +47,14 @@ METHODOLOGY NOTES:
 Run on the VM where the real .env is loaded:
 
   cd ~/Treading-bot-Claude && set -a && source .env && set +a && \\
-  PYTHONPATH=src python3.11 scripts/spx0dte_measure_time_patterns.py --start 2025-06-01 --end 2025-12-31
+  PYTHONPATH=src python3.11 scripts/spx0dte_measure_time_patterns.py \\
+      --start 2025-06-01 --end 2025-12-31 --permutations 10000
 """
 from __future__ import annotations
 
 import argparse
 import os
+import random
 import sys
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -91,11 +104,36 @@ def summarize(label: str, trades: list) -> None:
     )
 
 
+def permutation_p_value(all_pnls: list, subgroup_pnls: list, iterations: int, rng: random.Random) -> float:
+    """One-sided: what fraction of random same-size draws from
+    `all_pnls` have a mean at or below `subgroup_pnls`'s real mean?
+    Small (e.g. < 0.01) means the subgroup's bad result is NOT
+    explainable by chance alone -- a sharp, numeric answer instead of
+    "it agreed across periods," which can happen by chance. Returns
+    1.0 (no evidence) if there's nothing to compare."""
+    n = len(subgroup_pnls)
+    if n == 0 or n >= len(all_pnls) or iterations <= 0:
+        return 1.0
+    observed_mean = mean(subgroup_pnls)
+    at_least_as_bad = 0
+    for _ in range(iterations):
+        draw = rng.sample(all_pnls, n)
+        if mean(draw) <= observed_mean:
+            at_least_as_bad += 1
+    return at_least_as_bad / iterations
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--start", required=True)
     parser.add_argument("--end", required=True)
+    parser.add_argument(
+        "--permutations", type=int, default=10_000,
+        help="random draws for the per-hour significance test (0 disables it)",
+    )
+    parser.add_argument("--seed", type=int, default=None, help="RNG seed, for a reproducible run")
     args = parser.parse_args()
+    rng = random.Random(args.seed)
 
     key_id = os.environ.get("ALPACA_API_KEY_ID", "")
     secret_key = os.environ.get("ALPACA_API_SECRET_KEY", "")
@@ -203,9 +241,17 @@ def main() -> None:
         "\nindependent period before deciding either way."
     )
 
+    all_pnls = [p for pnls in pnl_by_hour.values() for p in pnls]
+
     print("\n=== (2) By ET entry hour (open-ended, no existing filter boundary) ===")
     for hour in sorted(pnl_by_hour):
         summarize(f"hour {hour:02d}:00-{hour:02d}:59 ET", pnl_by_hour[hour])
+        if args.permutations > 0:
+            p = permutation_p_value(all_pnls, pnl_by_hour[hour], args.permutations, rng)
+            print(
+                f"    permutation p-value (one-sided, {args.permutations} draws): {p:.4f}"
+                f"{'  <-- NOT explainable by chance at the 1% level' if p < 0.01 else ''}"
+            )
 
     print("\n=== (2) By day of week ===")
     for wd in sorted(pnl_by_weekday):
@@ -214,8 +260,11 @@ def main() -> None:
     print(
         "\nThese two breakdowns are DESCRIPTIVE, not a proposed filter -- per"
         "\nthis project's own rule, nothing is activated from a single period's"
-        "\nnumbers alone. Any bucket that looks promising needs a second,"
-        "\nindependent period in agreement before being proposed as a real filter."
+        "\nnumbers alone, and (Controller's own instruction, 2026-11-23) not from"
+        "\ntwo periods merely agreeing on direction either -- that can happen by"
+        "\nchance. The permutation p-value above is the sharp, numeric answer for"
+        "\neach hour; a bucket needs BOTH a low p-value AND agreement across"
+        "\nindependent periods before being proposed as a real filter."
     )
 
 

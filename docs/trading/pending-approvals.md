@@ -5890,3 +5890,16 @@ Next step: run on the VM over at least one real period, then a second
 independent period if the first shows anything worth activating (same
 cross-period-agreement rule as every other filter this project has
 measured).
+
+## P-106 UPDATE — two periods run, direction mostly inconsistent; sharper test added
+
+Lunch-chop window and day-of-week: direction REVERSED between two
+independent periods -- not validated, closed. Hour 11:00-11:59 ET: the
+one consistent losing bucket across both. Controller correctly pointed
+out two periods agreeing is not itself a sharp decision (can happen by
+chance) -- added a permutation significance test to the script
+(verified against synthetic data). Next: a third independent period,
+decision only if p-value is low AND direction still agrees. Full
+details: `docs/trading/decisions.md` D-0100 UPDATE.
+
+STATUS: OPEN, third period not yet run.
