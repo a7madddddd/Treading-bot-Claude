@@ -10126,3 +10126,50 @@ directionally-correct result (spread losses smaller than the naked
 baseline's). Full suite: 235 passed (spx0dte).
 
 STATUS: fix applied and smoke-tested, NOT YET RUN AGAIN on real data.
+
+## D-0102 FINAL — three independent periods: real structural trade-off found, not a proven profitability edge
+
+**Period 3 (2024-01-01..2024-06-30, n=583 baseline, fully independent):**
+baseline pf=1.1635 (the STRONGEST baseline of all three periods) --
+width 30 pf=0.9644 (losing), width 40 pf=0.9327 (losing more). This
+REVERSES the improvement seen in periods 1 and 2.
+
+**Profit factor across all three independent periods:**
+| period | naked long (baseline) | width 30 | width 40 |
+|---|---|---|---|
+| 2025 H2 | 1.104 | 1.112 | 1.096 |
+| 2026 H1 | 1.043 | 1.260 | 1.265 |
+| 2024 H1 | 1.164 | 0.964 | 0.933 |
+
+2 of 3 periods favored the spread; the third reversed it by a similar
+margin. Same "two periods can agree by chance" pattern already learned
+from D-0100 -- **profitability improvement is NOT proven.**
+
+**What IS consistent across all three periods, without exception:** the
+spread's worst single trade is always substantially smaller than the
+naked long's (41-73% reduction depending on period/width) -- this is a
+near-mechanical consequence of selling a covering leg (caps the
+maximum possible loss by construction), not a fragile statistical
+finding the way the profit-factor result is.
+
+**Claude's recommendation, given directly on request:** do NOT proceed
+to Phase 2 (live execution). The profitability case is unproven, the
+operational complexity is real (unverified close-order mechanics per
+Alpaca's own docs, new schema, new exit logic), and the current
+naked-long approach already has portfolio-level protection (2% daily
+loss limit, 2-position concurrency cap) covering the risk a per-trade
+spread would additionally address.
+
+**Controller's decision, 2026-11-23:** close this research line, keep
+the current naked-long approach as the live strategy, unchanged.
+Explicitly interested in a follow-up: a "looser" (wider) protective
+leg specifically chosen to cost little-to-nothing in normal/good
+regimes while still capping genuine catastrophic moves, rather than a
+tighter spread that measurably trades away upside. Not yet measured --
+next step, same script, wider `--widths` values (e.g. 50/75/100) across
+the same three periods, looking for a width where profit_factor stays
+close to the naked baseline in ALL THREE periods (not just 2 of 3)
+while still reducing the worst-case tail.
+
+This closes P-108's current scope; a follow-up ("loose protection")
+continues under the same P-number.

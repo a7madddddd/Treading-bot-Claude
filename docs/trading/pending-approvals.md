@@ -5959,3 +5959,28 @@ leg's own strike. Fixed with a dedicated `find_strike_near_target`
 helper in the script itself (not a change to `alpaca_client.py`),
 verified against synthetic data. NOT YET RE-RUN against real data.
 Full details: `docs/trading/decisions.md` D-0102 UPDATE.
+
+## P-108 FINAL — closed; current naked-long approach kept unchanged; "loose protection" follow-up opened
+
+Three independent periods measured. Profit factor improved in 2 of 3
+periods, reversed in the third (same margin) -- not proven. Worst-case
+loss reduction (41-73%) was consistent in all three, a near-mechanical
+property of selling a covering leg. Claude recommended against Phase 2
+(live execution) given the unproven profitability case and real
+operational complexity (unverified spread-close mechanics, new schema,
+new exit logic) against portfolio-level protection the system already
+has (2% daily loss limit, 2-position cap). Controller decision,
+2026-11-23: close this scope, keep the current naked-long approach
+live and unchanged.
+
+Follow-up opened, same script (`scripts/spx0dte_measure_spread_backtest.py`,
+already supports arbitrary widths, no new code needed): measure wider
+("loose") short-leg widths (e.g. 50/75/100 SPX points) across the same
+three periods, looking for a width where profit_factor stays close to
+the naked baseline in ALL THREE periods (not 2 of 3) while still
+capping genuine tail risk -- an insurance-style leg rather than a
+return-trading-off spread. Full details: `docs/trading/decisions.md`
+D-0102 FINAL.
+
+STATUS: current approach UNCHANGED (no code touched). "Loose
+protection" measurement not yet run.
