@@ -10328,3 +10328,24 @@ position than any prior measurement this session (no period has even
 shown the hypothesized direction yet).
 
 STATUS: period 1 run, negative/reversed. Period 2 pending.
+
+## D-0104 FINAL — closed; direction reversed between the two periods
+
+**Period 2 (2026-01-01..2026-06-30, n=643, skips=4, undefined=0):**
+CONFIRMED (5-min bar still outside ORB range): n=141, profit_factor=1.4116
+-- now BETTER than not-confirmed.
+NOT confirmed: n=502, profit_factor=0.9656 -- now losing.
+Permutation p=0.1191 for confirmed being better -- no significance.
+
+This is a full reversal of period 1 (there, NOT-confirmed was better,
+pf=1.1297 vs 1.0013, p=0.6676). Same disposition as the signal-strength
+sizing study (D-0101): two independent periods disagreeing in direction
+is enough to close, without needing a third, per the pattern the
+Controller already established there.
+
+**FINAL:** no real, durable relationship between 5-minute multi-timeframe
+breakout confirmation and 0DTE outcome found. Closed with a negative
+finding. No entry-logic code changed -- nothing was ever wired into
+production.
+
+This closes P-110.

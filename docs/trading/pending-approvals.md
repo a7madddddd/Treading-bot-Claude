@@ -6025,3 +6025,12 @@ real data. Next step: run on the VM for period 1 (2025-06-01..2025-12-31),
 then at least one more fully independent period before any decision --
 same cross-period-agreement + permutation-significance standard as
 every prior measurement this session.
+
+## P-110 FINAL — closed; multi-timeframe ORB confirmation, direction reversed between periods (see decisions.md D-0104 FINAL)
+
+Period 1 (2025 H2): not-confirmed bucket better (pf 1.1297 vs 1.0013,
+p=0.6676). Period 2 (2026 H1): confirmed bucket better (pf 1.4116 vs
+0.9656, p=0.1191) -- full reversal, neither period significant.
+
+STATUS: RESOLVED -- negative finding, research closed.
+No production code changed.
