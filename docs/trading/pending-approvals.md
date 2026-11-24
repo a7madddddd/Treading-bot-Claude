@@ -5624,7 +5624,7 @@ buildable on an exhaustive basis. **All three of the Controller's
 original improvement priorities (signal quality / risk+sizing /
 market context) are now closed.**
 
-## P-101 — Concurrency cap not re-checked at approval time, found live, 2026-11-19 (OPEN)
+## P-101 — Concurrency cap not re-checked at approval time, found live, 2026-11-19 (RESOLVED -- see "P-101 UPDATE" below)
 
 Found during the Controller's requested full live-cycle dry run:
 three proposals were created and sent within ~40 minutes because
