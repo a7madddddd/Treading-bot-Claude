@@ -6016,3 +6016,12 @@ gap-direction analysis also flipped from winning (1.4141) to losing
 
 STATUS: RESOLVED -- negative finding, research closed.
 No production code changed.
+
+## P-110 — Multi-timeframe ORB confirmation research (OPEN)
+
+Measurement script `scripts/spx0dte_measure_multi_timeframe.py` built
+and smoke-tested (see docs/trading/decisions.md D-0104). Not yet run on
+real data. Next step: run on the VM for period 1 (2025-06-01..2025-12-31),
+then at least one more fully independent period before any decision --
+same cross-period-agreement + permutation-significance standard as
+every prior measurement this session.

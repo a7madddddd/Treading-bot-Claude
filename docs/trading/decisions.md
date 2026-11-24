@@ -10274,3 +10274,34 @@ reversed between independent periods.
 
 This closes P-109. No code changed -- nothing was ever wired into
 production.
+
+## D-0104 — Multi-timeframe ORB confirmation measurement script built (not yet run)
+
+Controller chose Option 2 of the pro-level improvement menu
+(2026-11-23/24): "multi-timeframe ORB confirmation". Current production
+signal (`signal.find_breakout_opportunities`, D-0095) detects a
+breakout on a SINGLE 1-minute print, confirmed only by a TWAP/VWAP-side
+check on that same print -- it never checks whether the move holds on a
+slower timeframe.
+
+Built `scripts/spx0dte_measure_multi_timeframe.py`: derives 5-minute
+OHLC bars from the SAME `get_spy_minute_bars` 1-minute series already
+fetched for ORB detection (no new data source). For each real candidate
+(full real filter chain -- VIX range + econ calendar -- already
+applied, same population reaching a live proposal today), tags whether
+the most recently CLOSED 5-minute bar strictly before entry_time is
+still on the breakout side of the ORB boundary ("confirmed") or not
+("not confirmed"); excludes (does not force False) the undefined case
+where no 5-minute bar has closed yet. Compares pnl/profit_factor across
+confirmed vs not-confirmed, plus the same one-sided permutation
+significance test used for D-0101's high tercile.
+
+Smoke-tested by hand before trusting it on real data:
+`aggregate_bars` verified against 12 synthetic 1-minute bars ->
+3 five-minute buckets with the correct OHLC; `multi_tf_confirmed`
+verified for all three return states (True/False/None) against
+hand-picked entries and ORB boundaries.
+
+STATUS: BUILT, NOT YET RUN. No entry-logic change proposed until this
+actually runs and agrees across independent periods (same discipline
+as D-0100/D-0101/D-0102/D-0103).
