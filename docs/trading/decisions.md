@@ -10211,3 +10211,37 @@ consistent enough (no win across 7 widths) that more granularity
 between already-tested widths is very unlikely to change the
 conclusion. `sizing`/`entry_filters`/`orchestration` all unchanged --
 no production code was ever touched by this entire research line.
+
+## D-0103 — Opening-gap measurement script built (not yet run)
+
+Controller's continued "pro-level" improvement research, next
+direction: SPY's own opening gap (today's open vs yesterday's real
+close) as a regime/direction signal. Checked decisions.md first (CLAUDE.md
+§0.b): SPY realized volatility was tested ONLY as a candidate VIX-proxy
+ingredient and rejected for THAT specific purpose (D-0095-A) -- opening
+gap itself has never been measured for anything in this project, no
+duplicate work.
+
+Built `scripts/spx0dte_measure_opening_gap.py`, same tag-and-compare
+methodology as every other study: real SPY daily bars (not minute bars)
+give the real prior-trading-day close and today's real open, so the gap
+itself is exact, not inferred. Two things measured in one pass:
+1. |gap| tercile (from this run's own distribution) vs pnl, with the
+   same permutation significance test as D-0100/D-0101.
+2. Trade direction vs gap direction -- "with the gap" (e.g. a call on a
+   gap-up day) vs "against the gap" vs flat-gap days (|gap| < 0.1%,
+   kept separate rather than forced into either side).
+
+The real current filter set (VIX range + economic calendar) is applied
+before tagging, matching live proposals. Smoke-tested with synthetic
+SPY daily bars (a known +0.509% gap up) -- confirmed the gap arithmetic
+and the "with/against the gap" direction classification both landed
+correctly before trusting it on real data.
+
+STATUS: BUILT AND SMOKE-TESTED, NOT YET RUN against real data.
+
+Run command (on the VM):
+```
+cd ~/Treading-bot-Claude && set -a && source .env && set +a && \
+PYTHONPATH=src python3.11 scripts/spx0dte_measure_opening_gap.py --start 2025-06-01 --end 2025-12-31
+```

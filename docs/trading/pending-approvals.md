@@ -5991,3 +5991,16 @@ naked-long approach. Current approach remains UNCHANGED -- no
 production code was touched by this entire research line. Full
 details: `docs/trading/decisions.md`, the "LOOSE PROTECTION FOLLOW-UP
 RESULT" entry.
+
+## P-109 — Opening-gap measurement (OPEN, built, not yet run)
+
+Controller-requested "pro-level" improvement research, continuing
+after the spread research closed: SPY's own opening gap (real daily
+bars, not inferred) as a regime/direction signal -- genuinely untried,
+distinct from the already-rejected use of SPY realized volatility as a
+VIX-proxy ingredient. Measures |gap| tercile and trade-direction-vs-
+gap-direction alignment, with the same permutation significance test
+used in D-0100/D-0101. Full details: `docs/trading/decisions.md`
+D-0103.
+
+STATUS: script built and smoke-tested, NOT YET RUN against real data.
