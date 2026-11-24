@@ -10245,3 +10245,32 @@ Run command (on the VM):
 cd ~/Treading-bot-Claude && set -a && source .env && set +a && \
 PYTHONPATH=src python3.11 scripts/spx0dte_measure_opening_gap.py --start 2025-06-01 --end 2025-12-31
 ```
+
+## D-0103 FINAL — closed; a p=0.0003 single-period result completely failed to replicate
+
+**Period 2 (2026-01-01..2026-06-30, n=643, fully independent):**
+|gap| high tercile pf=1.0909, p=0.4433 (no significance at all -- the
+period 1 effect, pf=1.7746 with p=0.0003, vanished entirely; the LOW
+tercile was actually best this time, pf=1.1412, reversing the ordering).
+"WITH the gap" pf=0.7896 (losing), reversing period 1's pf=1.4141
+(winning); "flat-gap days" flipped from the WORST bucket in period 1
+(pf=0.60) to the BEST in period 2 (pf=1.8781).
+
+**Lesson, stated explicitly because it is a new one this session:** a
+very low permutation p-value in a single period (0.0003, far past the
+1% bar) is NOT, by itself, proof of a durable relationship -- it only
+rules out that period's result being random noise WITHIN that sample.
+It cannot detect genuine regime change between periods, which is
+exactly what happened here. This is a sharper demonstration of the
+same principle the Controller already insisted on for D-0100's hour-11
+finding (there, the p-values were weak in both periods; here, the
+first period's p-value was about as strong as a single-period result
+can get, and it STILL failed to replicate).
+
+**FINAL:** no real, durable relationship between SPY's opening gap
+(magnitude or direction) and 0DTE outcome found. Closed with a negative
+finding, same disposition as every other measurement this session that
+reversed between independent periods.
+
+This closes P-109. No code changed -- nothing was ever wired into
+production.

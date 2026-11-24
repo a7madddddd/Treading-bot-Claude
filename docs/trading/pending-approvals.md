@@ -6004,3 +6004,15 @@ used in D-0100/D-0101. Full details: `docs/trading/decisions.md`
 D-0103.
 
 STATUS: script built and smoke-tested, NOT YET RUN against real data.
+
+## P-109 FINAL — closed; SPY opening gap, no durable edge (see decisions.md D-0103 FINAL)
+
+Period 1 showed a very strong single-period result (|gap| high tercile
+profit factor 1.7746, p=0.0003). Period 2 (fully independent,
+2026-01-01..2026-06-30) completely reversed it: profit factor 1.0909,
+p=0.4433 (no significance), low tercile best instead of high; the
+gap-direction analysis also flipped from winning (1.4141) to losing
+(0.7896).
+
+STATUS: RESOLVED -- negative finding, research closed.
+No production code changed.
