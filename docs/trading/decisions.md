@@ -10387,3 +10387,19 @@ treated as "zero volatility day").
 STATUS: BUILT, NOT YET RUN. No entry/sizing change proposed until this
 runs and agrees across independent periods (same discipline as
 D-0100/D-0101/D-0102/D-0103/D-0104).
+
+## D-0105 UPDATE — period 1 run; cleanest monotonic result of the session so far
+
+**Period 1 (2025-06-01..2025-12-31, n=868, skips=4):**
+low tercile: profit_factor=0.6769 (losing).
+mid tercile: profit_factor=1.1697.
+high tercile: profit_factor=1.3652.
+Fully monotonic across all three buckets, not just "high vs rest".
+Permutation p=0.0155 for the high tercile being better -- significant
+at the 5% level, not yet at this project's stricter 1% bar.
+
+Per the D-0103 lesson (a strong single-period result, p=0.0003, fully
+reversed in period 2), no decision follows from this period alone. A
+second fully independent period is required next.
+
+STATUS: period 1 run, positive and monotonic. Period 2 pending.
