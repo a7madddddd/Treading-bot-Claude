@@ -10173,3 +10173,41 @@ while still reducing the worst-case tail.
 
 This closes P-108's current scope; a follow-up ("loose protection")
 continues under the same P-number.
+
+## D-0102 "LOOSE PROTECTION" FOLLOW-UP RESULT — no width (10-100 SPX points) consistently beats the naked long across three periods
+
+Controller asked specifically whether a WIDER ("loose", insurance-style)
+short leg could cap tail risk at little-to-no profitability cost. Same
+script, no code changes, widths 50/75/100 measured across the same
+three independent periods already used for widths 10-40.
+
+| width | 2025 H2 (baseline 1.104) | 2026 H1 (baseline 1.043) | 2024 H1 (baseline 1.1635) |
+|---|---|---|---|
+| 50  | 1.1421 (better) | 1.187 (better)  | 0.9755 (worse) |
+| 75  | 1.0894 (worse)  | 1.0796 (better) | 1.0648 (worse) |
+| 100 | 1.1125 (better) | 1.0484 (better) | 1.0668 (worse) |
+
+**2024 H1 (the period with the STRONGEST naked-long baseline of all
+three) beats EVERY width tested, 10 through 100 SPX points, without
+exception.** Consistent with a strong-trend/momentum regime where full
+upside exposure captures large moves that ANY capped structure,
+however wide, partially gives back. No width anywhere in the
+10-100 range achieves cross-period consistency -- this is not a
+narrow-spread-only problem that a wider leg fixes; it is a structural
+property of capping upside at all, in any amount, during a trending
+regime.
+
+**FINAL, comprehensive conclusion (7 widths x 3 periods, this round
+and D-0102 FINAL combined):** there is no "free" risk reduction here --
+every tested width trades some upside for some downside protection,
+and whether that trade nets positive depends entirely on the market
+regime during the holding period, which cannot be known in advance.
+The Controller's original decision (keep the current naked-long
+approach, no live spread execution) is confirmed, not merely
+unchallenged, by this broader search.
+
+STATUS: CLOSED. No further width search planned -- the pattern is
+consistent enough (no win across 7 widths) that more granularity
+between already-tested widths is very unlikely to change the
+conclusion. `sizing`/`entry_filters`/`orchestration` all unchanged --
+no production code was ever touched by this entire research line.

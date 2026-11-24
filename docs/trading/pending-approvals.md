@@ -5982,5 +5982,12 @@ capping genuine tail risk -- an insurance-style leg rather than a
 return-trading-off spread. Full details: `docs/trading/decisions.md`
 D-0102 FINAL.
 
-STATUS: current approach UNCHANGED (no code touched). "Loose
-protection" measurement not yet run.
+STATUS: RESOLVED -- CLOSED. Widths 50/75/100 measured across the same
+three periods: the strongest naked-long baseline period (2024 H1,
+pf=1.1635) beat EVERY width tested without exception. No width in
+10-100 SPX points achieves cross-period consistency. Confirms (does
+not merely leave unchallenged) the decision to keep the current
+naked-long approach. Current approach remains UNCHANGED -- no
+production code was touched by this entire research line. Full
+details: `docs/trading/decisions.md`, the "LOOSE PROTECTION FOLLOW-UP
+RESULT" entry.
