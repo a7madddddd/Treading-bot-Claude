@@ -6034,3 +6034,11 @@ p=0.6676). Period 2 (2026 H1): confirmed bucket better (pf 1.4116 vs
 
 STATUS: RESOLVED -- negative finding, research closed.
 No production code changed.
+
+## P-111 — SPY realized-volatility-so-far research (OPEN)
+
+Measurement script `scripts/spx0dte_measure_realized_vol.py` built and
+smoke-tested (see docs/trading/decisions.md D-0105). Not yet run.
+Next step: run on the VM for period 1 (2025-06-01..2025-12-31), then at
+least one more fully independent period -- same cross-period-agreement
++ permutation-significance standard as every prior measurement.

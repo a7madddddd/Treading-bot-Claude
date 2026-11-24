@@ -10349,3 +10349,41 @@ finding. No entry-logic code changed -- nothing was ever wired into
 production.
 
 This closes P-110.
+
+## D-0105 — SPY realized-volatility-so-far measurement script built (not yet run)
+
+Controller chose Option 3 of the pro-level improvement menu
+(2026-11-24): "SPY's own realized volatility as an independent
+feature". Checked against this project's own history first (CLAUDE.md
+§0.b): SPY realized volatility was already measured ONCE
+(`scripts/spx0dte_measure_vix_proxy.py`), but only as a candidate
+VIX-PROXY ingredient, and REJECTED for that purpose (mean abs error
+23.7% vs real VIX -- `src/spx0dte/vix_proxy.py` docstring). That
+answered "does SPY's realized-vol ratio track VIX's ratio". This is a
+different question: regardless of VIX-tracking accuracy, does today's
+realized vol, by itself, predict a better/worse 0DTE outcome right
+now. Also checked against `exit_logic.session_pace_width_pct` (the
+existing day-pace metric): that is a frozen first-15-minutes
+high-low RANGE, computed once per day for the exit hold-cap; this
+feature is a continuously-updated STANDARD DEVIATION of 1-minute log
+returns, computed fresh at each trade's own entry_time. No overlap
+with either prior finding.
+
+Built `scripts/spx0dte_measure_realized_vol.py`: reuses the exact raw
+arithmetic from the already-measured `realized_vol` (stdev of 1-minute
+log returns) but truncated to "up to entry_time" (lookahead-safe)
+instead of a whole day. Hypothesis: a long-gamma 0DTE position should
+do better when the underlying is genuinely moving. Real filter chain
+(VIX range + econ calendar) applied before tagging. Tercile buckets
+from the run's own distribution, permutation significance test on the
+HIGH tercile, same methodology as D-0101/D-0104.
+
+Smoke-tested before trusting it on real data: flat-price series ->
+vol=0.0; a hand-picked varying series -> matched Python's own
+`statistics.pstdev` of hand-computed log returns exactly; a cutoff too
+early in the session (fewer than 3 prior bars) -> vol=0.0 (not falsely
+treated as "zero volatility day").
+
+STATUS: BUILT, NOT YET RUN. No entry/sizing change proposed until this
+runs and agrees across independent periods (same discipline as
+D-0100/D-0101/D-0102/D-0103/D-0104).
