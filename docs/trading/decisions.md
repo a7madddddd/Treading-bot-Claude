@@ -10305,3 +10305,26 @@ hand-picked entries and ORB boundaries.
 STATUS: BUILT, NOT YET RUN. No entry-logic change proposed until this
 actually runs and agrees across independent periods (same discipline
 as D-0100/D-0101/D-0102/D-0103).
+
+## D-0104 UPDATE — period 1 run; direction already REVERSED from the hypothesis
+
+**Period 1 (2025-06-01..2025-12-31, n=868, skips=4, undefined=0):**
+CONFIRMED (5-min bar still outside ORB range): n=178, profit_factor=1.0013
+(essentially breakeven).
+NOT confirmed (5-min bar snapped back inside): n=690, profit_factor=1.1297
+-- BETTER than the confirmed bucket.
+Permutation p=0.6676 for confirmed being better -- no significance, and
+the direction itself is already opposite the hypothesis (multi-timeframe
+confirmation was expected to mark the STRONGER breakouts; instead the
+bucket that snaps back on the 5-minute close performs better).
+
+Note: most real breakouts (690/868, ~79%) do NOT hold on a 5-minute
+close -- consistent with 0DTE's actual character (fast, mean-reverting
+intraday prints), not a rare edge case.
+
+Second independent period still required before closing, per this
+project's cross-period-agreement rule -- but this starts from a weaker
+position than any prior measurement this session (no period has even
+shown the hypothesized direction yet).
+
+STATUS: period 1 run, negative/reversed. Period 2 pending.
