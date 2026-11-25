@@ -10403,3 +10403,33 @@ reversed in period 2), no decision follows from this period alone. A
 second fully independent period is required next.
 
 STATUS: period 1 run, positive and monotonic. Period 2 pending.
+
+## D-0105 FINAL — closed; full ordering reversal between the two periods
+
+**Period 2 (2026-01-01..2026-06-30, n=643, skips=4):**
+low tercile: profit_factor=1.4444 -- now the BEST.
+mid tercile: profit_factor=0.9391.
+high tercile: profit_factor=0.9139 -- now the WORST.
+Permutation p=0.8043 for the high tercile being better -- no
+significance, and the entire monotonic ordering from period 1 is
+reversed, not just one bucket.
+
+This is the same disposition as D-0103 (opening gap): a clean,
+significant-looking single-period result (there p=0.0003, here
+p=0.0155 with a fully monotonic ordering across all three buckets)
+failed to replicate at all in a second independent period.
+
+**FINAL:** no real, durable relationship between SPY's realized
+volatility-so-far and 0DTE outcome found. Closed with a negative
+finding. No entry/sizing code changed -- nothing was ever wired into
+production.
+
+This closes P-111. All three ideas from the 2026-11-23/24 pro-level
+improvement menu (opening gap, multi-timeframe ORB confirmation,
+realized-vol-so-far) are now closed negative, in addition to
+signal-strength sizing (D-0101) and risk-defined spreads (D-0102) from
+the earlier menu -- five independent research lines this session, all
+measured with the same cross-period-agreement + permutation-
+significance discipline, all closed without any change to production
+entry/exit/sizing logic. The only structural change that DID survive
+this discipline is D-0100 FINAL (lunch-chop time window disabled).

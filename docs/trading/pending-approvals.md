@@ -6042,3 +6042,11 @@ smoke-tested (see docs/trading/decisions.md D-0105). Not yet run.
 Next step: run on the VM for period 1 (2025-06-01..2025-12-31), then at
 least one more fully independent period -- same cross-period-agreement
 + permutation-significance standard as every prior measurement.
+
+## P-111 FINAL — closed; realized-vol-so-far, full ordering reversed between periods (see decisions.md D-0105 FINAL)
+
+Period 1: monotonic positive (pf 0.68/1.17/1.37 low/mid/high, p=0.0155).
+Period 2: monotonic reversal (pf 1.44/0.94/0.91 low/mid/high, p=0.8043).
+
+STATUS: RESOLVED -- negative finding, research closed.
+No production code changed.
