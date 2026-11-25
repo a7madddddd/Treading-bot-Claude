@@ -10433,3 +10433,37 @@ measured with the same cross-period-agreement + permutation-
 significance discipline, all closed without any change to production
 entry/exit/sizing logic. The only structural change that DID survive
 this discipline is D-0100 FINAL (lunch-chop time window disabled).
+
+## D-0106 — VIX-within-band measurement script built (not yet run)
+
+Controller's own request (2026-11-25): after every filter idea tried
+this session closed negative, asked for a conclusion review plus a
+fresh brainstorm. Presented a status table of every filter/feature
+ever measured in this project (all rejected except the original
+VIX-range + econ-calendar gate, which survived every pass) and a new
+4-idea menu. Controller chose idea 1: measure VIX LEVEL as a
+CONTINUOUS feature among trades that already PASS the existing 12-35
+`vix_in_tradeable_range` gate -- refining the one thing already shown
+to matter, instead of adding an unrelated new feature (the pattern
+behind all five rejections this session).
+
+Checked against this project's history first (CLAUDE.md §0.b):
+`vix_in_tradeable_range` has only ever been tested as a binary
+pass/fail gate -- no prior script buckets the VIX level itself into
+terciles among the passing trades. No overlap with D-0100/D-0101/
+D-0103/D-0104/D-0105.
+
+Built `scripts/spx0dte_measure_vix_within_band.py`: tags each real
+candidate that passes the real filter chain with its own estimated
+VIX level, terciles from the run's own distribution, pnl/profit_factor
+compared, BOTH high-tercile and low-tercile permutation tests reported
+(no directional assumption baked in, same descriptive-only spirit as
+the day-of-week study). Reuses the exact `tercile_buckets`/
+`permutation_p_value` implementations already smoke-tested in
+D-0101/D-0105 (byte-identical copies) -- not re-smoke-tested here,
+since that arithmetic is already verified; the only new logic is a
+trivial single tagging line.
+
+STATUS: BUILT, NOT YET RUN. No filter change proposed until this runs
+and agrees across independent periods (same discipline as every prior
+measurement this session).

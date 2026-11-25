@@ -6050,3 +6050,11 @@ Period 2: monotonic reversal (pf 1.44/0.94/0.91 low/mid/high, p=0.8043).
 
 STATUS: RESOLVED -- negative finding, research closed.
 No production code changed.
+
+## P-112 — VIX-within-band research (OPEN)
+
+Measurement script `scripts/spx0dte_measure_vix_within_band.py` built
+(see docs/trading/decisions.md D-0106). Not yet run. Next step: run on
+the VM for period 1 (2025-06-01..2025-12-31), then at least one more
+fully independent period -- same cross-period-agreement +
+permutation-significance standard as every prior measurement.
