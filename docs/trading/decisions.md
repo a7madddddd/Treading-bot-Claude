@@ -10467,3 +10467,20 @@ trivial single tagging line.
 STATUS: BUILT, NOT YET RUN. No filter change proposed until this runs
 and agrees across independent periods (same discipline as every prior
 measurement this session).
+
+## D-0106 UPDATE — period 1 run; non-monotonic, not significant
+
+**Period 1 (2025-06-01..2025-12-31, n=868, skips=4):**
+VIX range observed: 13.4-26.7.
+low tercile: profit_factor=1.1519.
+mid tercile: profit_factor=0.8362 -- the WORST, not the middle value.
+high tercile: profit_factor=1.282.
+Non-monotonic "U" shape with no clear economic rationale for the mid
+bucket being worst. Permutation p=0.0578 for high (not significant
+even at 5%), p=0.4968 for low.
+
+Weaker starting position than D-0105 (which was at least cleanly
+monotonic in period 1). Second independent period still required
+before closing.
+
+STATUS: period 1 run, weak/non-monotonic. Period 2 pending.
