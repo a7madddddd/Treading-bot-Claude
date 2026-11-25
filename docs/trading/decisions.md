@@ -10592,3 +10592,34 @@ finding. No entry code changed.
 
 This closes P-113. Seven independent research lines are now closed
 negative this session.
+
+## D-0108 — Prior-day-trend measurement script built (not yet run)
+
+Controller said "next" after D-0107 closed negative. Moved to idea 3
+of the 2026-11-25 brainstorm menu: yesterday's own full-day
+close-to-close return as a momentum/reversion feature for today's
+0DTE trades.
+
+Checked against this project's history first (CLAUDE.md §0.b): D-0103
+measured today's OPEN vs yesterday's CLOSE (overnight gap). This
+measures yesterday's CLOSE vs the day BEFORE yesterday's CLOSE --
+yesterday's own whole-session return, a different number with no
+necessary relationship to the gap (a day can have a big gap and flat
+prior-day return, or the reverse). No overlap.
+
+Built `scripts/spx0dte_measure_prior_day_trend.py`: same two-part
+structure as D-0103 (magnitude tercile + direction-alignment buckets:
+WITH yesterday's trend / AGAINST / flat), since the question shape is
+identical, just a different daily-bar feature. Real filter chain (VIX
+range + econ calendar) applied before tagging.
+
+Smoke-tested the one piece of genuinely new logic (the prior-day date
+selection and return calculation) against hand-picked SPY daily
+closes (100.0 -> 102.0 -> expected return +0.02, i.e. +2%) before
+trusting it; the rest of the script's arithmetic (tercile_buckets,
+permutation_p_value_better) is a byte-identical copy of code already
+smoke-tested in D-0101/D-0103/D-0105/D-0106.
+
+STATUS: BUILT, NOT YET RUN. No filter change proposed until this runs
+and agrees across independent periods (same discipline as every prior
+measurement this session).
