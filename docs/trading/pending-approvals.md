@@ -6067,3 +6067,12 @@ significant) while high VIX reversed to losing (pf=0.9047).
 
 STATUS: RESOLVED -- negative finding, research closed.
 No production code changed.
+
+## P-113 — Breakout sequence-position research (OPEN)
+
+Measurement script `scripts/spx0dte_measure_opportunity_index.py`
+built and smoke-tested (see docs/trading/decisions.md D-0107). Not yet
+run. Next step: run on the VM for period 1 (2025-06-01..2025-12-31),
+then at least one more fully independent period -- same
+cross-period-agreement + permutation-significance standard as every
+prior measurement.

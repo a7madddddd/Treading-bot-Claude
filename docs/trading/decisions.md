@@ -10512,3 +10512,33 @@ plus the two from before this session (volume, cross-market). The
 12-35 binary gate itself, and the lunch-chop-window removal, remain
 the only pieces of this research program that changed production
 behavior.
+
+## D-0107 — Breakout sequence-position measurement script built (not yet run)
+
+Controller said "continue" after D-0106 closed negative. Moved to idea
+2 of the 2026-11-25 brainstorm menu: does a breakout's RAW position in
+the day's own opportunity sequence (1st, 2nd, 3rd-or-later) predict a
+better/worse real outcome.
+
+Checked against this project's history first (CLAUDE.md §0.b): D-0095
+measured opportunity COUNT per day (mean ~7.5/day) -- a throughput
+question, motivating the "scan all day" redesign. This asks a
+different question about SEQUENCE POSITION among opportunities that
+reach a live proposal. No prior script tags or compares by sequence
+position. No overlap with D-0100 (clock time, not sequence) or any
+other measurement.
+
+Built `scripts/spx0dte_measure_opportunity_index.py`: numbers each
+day's opportunities 1, 2, 3... using the RAW pre-filter list index
+from `signal.find_breakout_opportunities` (so "opportunity 3" always
+means the real third breakout that day, never renumbered after
+filtering), groups into "1st"/"2nd"/"3rd_or_later" (collapsing the
+long tail per D-0095's own count distribution), compares pnl/
+profit_factor, permutation test on "1st" being genuinely better.
+
+Smoke-tested: `group_label` verified for indices 1, 2, 3, 4, 10
+against the expected bucket names.
+
+STATUS: BUILT, NOT YET RUN. No entry change proposed until this runs
+and agrees across independent periods (same discipline as every prior
+measurement this session).
