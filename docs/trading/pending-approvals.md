@@ -6076,3 +6076,12 @@ run. Next step: run on the VM for period 1 (2025-06-01..2025-12-31),
 then at least one more fully independent period -- same
 cross-period-agreement + permutation-significance standard as every
 prior measurement.
+
+## P-113 FINAL — closed; breakout sequence position, ordering fully reversed between periods (see decisions.md D-0107 FINAL)
+
+Period 1: 1st weakest (pf=1.0131), 2nd strongest (pf=1.7476).
+Period 2: 1st strongest (pf=2.0005), 2nd middle (pf=1.2181) -- mirror
+reversal. "1st" bucket also inherently small-sample (n=49 then n=19).
+
+STATUS: RESOLVED -- negative finding, research closed.
+No production code changed.

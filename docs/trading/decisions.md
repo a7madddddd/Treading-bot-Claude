@@ -10566,3 +10566,29 @@ alone.
 
 STATUS: period 1 run, hypothesis (1st best) rejected; unexpected "2nd"
 pattern noted for a cross-period check. Period 2 pending.
+
+## D-0107 FINAL — closed; ordering fully reversed between periods, samples too thin to trust anyway
+
+**Period 2 (2026-01-01..2026-06-30, skips=4):**
+1st: n=19, profit_factor=2.0005 -- now the STRONGEST (was weakest in
+period 1).
+2nd: n=60, profit_factor=1.2181 -- now the middle value (was
+strongest in period 1).
+3rd_or_later: n=564, profit_factor=0.9924 -- now the weakest (was
+middle in period 1).
+Permutation p=0.0952 for "1st" being better -- closer to significant
+and now the hypothesized direction, but still not significant, and
+the full three-way ordering is a mirror-image reversal of period 1.
+
+The "1st" bucket's sample size (49 then 19) is inherently small in
+both periods -- most days' first opportunity is rejected by the
+VIX/econ-calendar filters before it is ever counted -- so this
+feature is sample-fragile by construction, independent of the
+direction instability.
+
+**FINAL:** no real, durable relationship between a breakout's sequence
+position in the day and 0DTE outcome found. Closed with a negative
+finding. No entry code changed.
+
+This closes P-113. Seven independent research lines are now closed
+negative this session.
