@@ -10667,3 +10667,34 @@ as PRE-REGISTERED 2026-11-25, with the reason stated in the printed
 text itself.
 
 STATUS: script updated, not yet run on period 3. Next: run on 2024 H1.
+
+## D-0108 FINAL — closed; both pre-registered post-hoc patterns failed to replicate in period 3
+
+**Period 3 (2024-01-01..2024-06-30, n=583, skips=4):**
+LOW tercile: no longer distinctly best -- pf=1.3578 vs mid's
+pf=1.3549 (essentially tied), high pf=0.824. p=0.2151 for LOW -- no
+significance.
+"flat prior day": collapsed from pf=1.8415 and pf=3.0038 in periods
+1-2 to just pf=1.076 here. p=0.5150 -- no significance.
+
+Both pre-registered tests (locked in BEFORE this period was run, per
+D-0108 UPDATE 2) failed. This is the expected signature of the
+periods-1-2 pattern being regression-to-the-mean noise, not a real
+effect -- exactly the risk flagged when the tests were pre-registered.
+
+Side observation, NOT elevated to a finding: "WITH yesterday's trend"
+beat "AGAINST" in all three periods (1.1329>0.9808, 1.0012>0.9484,
+1.4539>0.9566), but its own p-value never crossed significance in any
+period (0.4367, 0.6273, 0.1185) -- noted for a possible future
+cross-reference if a related pattern resurfaces, not acted on now.
+
+**FINAL:** no real, durable relationship between yesterday's own
+close-to-close return (magnitude or direction) and today's 0DTE
+outcome found. Closed with a negative finding, including the two
+patterns that looked promising after periods 1-2 -- this closure is
+itself evidence the project's pre-registration discipline is working
+as intended (it caught an overfit pattern before it could be mistaken
+for a real one). No filter code changed.
+
+This closes P-114. Eight independent research lines are now closed
+negative this session.

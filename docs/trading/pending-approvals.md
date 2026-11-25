@@ -6094,3 +6094,12 @@ Next step: run on the VM for period 1 (2025-06-01..2025-12-31), then
 at least one more fully independent period -- same
 cross-period-agreement + permutation-significance standard as every
 prior measurement.
+
+## P-114 FINAL — closed; prior-day trend, both pre-registered post-hoc patterns failed period 3 (see decisions.md D-0108 FINAL)
+
+Period 1-2 both showed LOW tercile and "flat prior day" leading;
+pre-registered tests on period 3 (2024 H1) failed both
+(p=0.2151, p=0.5150), with the effect sizes themselves collapsing.
+
+STATUS: RESOLVED -- negative finding, research closed.
+No production code changed.
