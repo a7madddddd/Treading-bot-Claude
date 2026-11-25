@@ -10623,3 +10623,22 @@ smoke-tested in D-0101/D-0103/D-0105/D-0106.
 STATUS: BUILT, NOT YET RUN. No filter change proposed until this runs
 and agrees across independent periods (same discipline as every prior
 measurement this session).
+
+## D-0108 UPDATE — period 1 run; weak, non-significant in both parts
+
+**Period 1 (2025-06-01..2025-12-31, n=868, skips=4, no_trend_data=0):**
+(1) |prior return| tercile: low pf=1.4177, mid pf=0.8464 (worst, not
+middle), high pf=1.1016 -- non-monotonic, p=0.4638 (no significance).
+(2) direction alignment: WITH trend pf=1.1329, AGAINST pf=0.9808,
+flat-day pf=1.8415 (the actual best bucket) -- p=0.4367 (no
+significance).
+
+Cross-check: total pnl = 132.79 - 58.78 + 47.25 = 121.26, matching the
+exact same aggregate figure independently reproduced by D-0104/D-0105/
+D-0106/D-0107 for this same period -- continues the verification the
+Controller asked for (2026-11-25): the shared trade population and
+pnl arithmetic is confirmed identical across five independently
+written scripts.
+
+STATUS: period 1 run, weak and non-significant in both parts. Period 2
+pending.
