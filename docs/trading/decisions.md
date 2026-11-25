@@ -10484,3 +10484,31 @@ monotonic in period 1). Second independent period still required
 before closing.
 
 STATUS: period 1 run, weak/non-monotonic. Period 2 pending.
+
+## D-0106 FINAL — closed; best tercile swapped between periods
+
+**Period 2 (2026-01-01..2026-06-30, n=643, skips=4):**
+low tercile: profit_factor=1.7955, p=0.0031 -- NOT explainable by
+chance at the 1% level.
+mid tercile: profit_factor=0.7255 -- worst.
+high tercile: profit_factor=0.9047, p=0.8143 -- now losing (was the
+leading bucket in period 1, pf=1.282).
+
+A real single-period significant result (p=0.0031) again fails the
+cross-period test: period 1's leading bucket (high VIX) is period 2's
+losing bucket, and period 2's leading bucket (low VIX) was mediocre
+and non-significant in period 1. Same disposition as D-0103 and
+D-0105 -- strong single-period significance, no cross-period
+durability.
+
+**FINAL:** no real, durable relationship between VIX level within the
+already-passing 12-35 band and 0DTE outcome found. Closed with a
+negative finding. No filter code changed.
+
+This closes P-112. Six independent research lines are now closed
+negative this session (signal-strength sizing, risk-defined spreads,
+opening gap, multi-timeframe ORB, realized-vol-so-far, VIX-within-band),
+plus the two from before this session (volume, cross-market). The
+12-35 binary gate itself, and the lunch-chop-window removal, remain
+the only pieces of this research program that changed production
+behavior.

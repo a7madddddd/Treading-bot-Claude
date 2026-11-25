@@ -6058,3 +6058,12 @@ Measurement script `scripts/spx0dte_measure_vix_within_band.py` built
 the VM for period 1 (2025-06-01..2025-12-31), then at least one more
 fully independent period -- same cross-period-agreement +
 permutation-significance standard as every prior measurement.
+
+## P-112 FINAL — closed; VIX-within-band, best tercile swapped between periods (see decisions.md D-0106 FINAL)
+
+Period 1: high VIX tercile led (pf=1.282, p=0.0578, not significant).
+Period 2: low VIX tercile led instead (pf=1.7955, p=0.0031,
+significant) while high VIX reversed to losing (pf=0.9047).
+
+STATUS: RESOLVED -- negative finding, research closed.
+No production code changed.
