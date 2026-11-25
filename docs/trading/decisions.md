@@ -10698,3 +10698,56 @@ for a real one). No filter code changed.
 
 This closes P-114. Eight independent research lines are now closed
 negative this session.
+
+## D-0109 — Entry-Greeks measurement script built (not yet run)
+
+Controller's own request (2026-11-25): test the Greeks/Black-Scholes
+idea, but as a measurement step BEFORE any exit-logic redesign, per
+Claude's own recommendation (tag-and-compare first, same discipline as
+every other feature this session, since a real exit redesign would be
+a trading-behavior change needing full approval).
+
+Also addressed the Controller's separate question about tracking
+political figures for 0DTE option contracts: checked this project's
+own existing measurement first (CLAUDE.md §0.b) --
+`docs/trading/political-data-source-research-2026-10-06.md` already
+measured the real disclosure lag for the existing (separate, stock-
+picking) political-trading feature: median 32-71 days between trade
+and filing, 78.8% filed later than 30 days, 94.7% later than 14 days.
+A 0DTE position opens and closes within the SAME DAY -- a disclosure
+arriving weeks to months later cannot inform it under any
+circumstance. This is a structural data-availability fact (the STOCK
+Act's mandatory filing delay), not a backtest question, so no
+measurement script was built for it; verdict given directly from
+existing evidence.
+
+Checked against this project's history first for the Greeks idea
+(CLAUDE.md §0.b): `src/spx0dte/greeks.py` (D-0095-A, "Option B") has a
+full validated Black-Scholes + implied-volatility solver, built so far
+ONLY for re-pricing a stale quote to a live moment
+(`scripts/spx0dte_validate_greeks.py` validated PRICING accuracy, a
+different question). No prior script ties Greeks to trade OUTCOME. No
+overlap.
+
+Built `scripts/spx0dte_measure_greeks_at_entry.py`: backs a real
+implied volatility out of each candidate's own observed entry option
+price (never a guessed sigma -- skips a candidate if no sigma in
+[0.001, 5.0] reproduces the price), computes entry |delta| and a
+normalized theta-burn-rate (|theta|/entry_price), terciles from the
+run's own distribution, permutation tests on BOTH tails (no
+directional assumption). Reuses the exact production constants
+(RISK_FREE_RATE, MARKET_CLOSE_UTC_HOUR_EST/EDT, econ_calendar.
+_is_us_dst) from `live_pricing.py` for the DST-aware same-day expiry,
+not a new guess.
+
+Smoke-tested before trusting it on real data: `same_day_expiry`
+verified for a DST date (2025-06-15 -> 20:00 UTC close) and a non-DST
+date (2025-01-15 -> 21:00 UTC close); a full round-trip of the IV
+chain (known sigma -> Black-Scholes price -> implied_volatility solver
+recovers sigma -> black_scholes_greeks on the recovered sigma
+reproduces delta within 1.2e-8 relative error and theta within 5.8e-6
+relative error of the values computed directly from the known sigma).
+
+STATUS: BUILT, NOT YET RUN. No exit-logic change proposed until this
+runs and agrees across independent periods (same discipline as every
+prior measurement this session).

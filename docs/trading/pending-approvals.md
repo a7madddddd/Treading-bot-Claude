@@ -6103,3 +6103,25 @@ pre-registered tests on period 3 (2024 H1) failed both
 
 STATUS: RESOLVED -- negative finding, research closed.
 No production code changed.
+
+## P-115 — Entry-Greeks research (OPEN)
+
+Measurement script `scripts/spx0dte_measure_greeks_at_entry.py` built
+and smoke-tested (see docs/trading/decisions.md D-0109). Not yet run.
+Next step: run on the VM for period 1 (2025-06-01..2025-12-31), then
+at least one more fully independent period -- same
+cross-period-agreement + permutation-significance standard as every
+prior measurement.
+
+## P-116 — Political-figure tracking for 0DTE option contracts: NOT FEASIBLE (CLOSED, no measurement needed)
+
+Controller asked whether political-figure trading could be tracked
+for SPX 0DTE option contracts. Existing measurement already in this
+project (`docs/trading/political-data-source-research-2026-10-06.md`)
+shows a median 32-71 day disclosure lag (78.8% later than 30 days),
+a structural STOCK Act filing delay. A 0DTE position opens and closes
+the same day, so this data cannot inform it under any circumstance --
+a data-availability fact, not something a backtest could overturn.
+
+STATUS: RESOLVED -- not feasible for 0DTE by data timing alone, no
+script built, no production code changed.
