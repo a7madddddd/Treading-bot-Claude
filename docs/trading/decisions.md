@@ -10542,3 +10542,27 @@ against the expected bucket names.
 STATUS: BUILT, NOT YET RUN. No entry change proposed until this runs
 and agrees across independent periods (same discipline as every prior
 measurement this session).
+
+## D-0107 UPDATE — period 1 run; hypothesis direction wrong, an unexpected pattern appears
+
+**Period 1 (2025-06-01..2025-12-31, skips=4):**
+1st: n=49, profit_factor=1.0131 -- the WEAKEST bucket (hypothesis was
+that 1st would be the strongest). Small sample -- most days' first
+opportunity gets rejected by the VIX/econ-calendar filters before it
+is ever counted here, so this bucket is sample-size-fragile.
+2nd: n=85, profit_factor=1.7476 -- notably the strongest bucket, not
+hypothesized in advance.
+3rd_or_later: n=734, profit_factor=1.044.
+Permutation p=0.5767 for "1st" being better -- no significance, wrong
+direction.
+
+The "2nd" bucket's strength was NOT the tested hypothesis and was not
+given its own permutation test this run -- noted as an observation,
+not elevated to a finding, consistent with not testing a pattern that
+was only noticed after seeing the data (which would overstate its
+significance). If period 2 also shows "2nd" standing out, that would
+be the trigger to add a proper test for it, not this run's result
+alone.
+
+STATUS: period 1 run, hypothesis (1st best) rejected; unexpected "2nd"
+pattern noted for a cross-period check. Period 2 pending.
