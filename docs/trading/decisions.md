@@ -10642,3 +10642,28 @@ written scripts.
 
 STATUS: period 1 run, weak and non-significant in both parts. Period 2
 pending.
+
+## D-0108 UPDATE 2 — pre-registering two post-hoc patterns before the third period, per Controller instruction
+
+Period 1 and period 2 both showed two patterns the original hypothesis
+did not predict: the LOW |prior-return| tercile leading in both
+(pf=1.4177, then pf=1.5786) and the "flat prior day" bucket leading in
+both by a wide margin (pf=1.8415, then pf=3.0038), with WITH-trend also
+beating AGAINST-trend in both periods (modest effect: 1.1329>0.9808,
+then 1.0012>0.9484).
+
+Controller's own instruction (2026-11-25, "lets try"): rather than
+either closing immediately or accepting this as a finding, test it
+properly on a genuinely independent third period (2024 H1, matching
+the convention already used for D-0102's third-period check) -- with
+the test PRE-REGISTERED in code before that period is run, so it is
+locked in ahead of the data, not fit to it after seeing the result
+(the same "fishing" risk flagged for D-0107's unplanned "2nd" bucket).
+
+Added two permutation tests to `scripts/spx0dte_measure_prior_day_trend.py`:
+LOW tercile being genuinely better, and "flat prior day" being
+genuinely better -- both explicitly labeled in the script's own output
+as PRE-REGISTERED 2026-11-25, with the reason stated in the printed
+text itself.
+
+STATUS: script updated, not yet run on period 3. Next: run on 2024 H1.

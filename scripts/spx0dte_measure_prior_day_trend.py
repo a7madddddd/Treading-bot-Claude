@@ -302,6 +302,20 @@ def main() -> None:
             f"(one-sided, {args.permutations} draws): {p:.4f}"
             f"{'  <-- NOT explainable by chance at the 1% level' if p < 0.01 else ''}"
         )
+    if args.permutations > 0 and buckets["low"]:
+        # 2026-11-25 (Controller-approved, D-0108 UPDATE 2): LOW tercile
+        # being better was NOT the original hypothesis -- it was noticed
+        # only after seeing periods 1 and 2 both show it as the strongest
+        # bucket. Pre-registering it here, BEFORE running period 3, so
+        # this test is locked in ahead of the data it is checked against,
+        # not fit to it after the fact.
+        p_low = permutation_p_value_better(all_pnls, buckets["low"], args.permutations, rng)
+        print(
+            f"    permutation p-value for the LOW |prior return| tercile being genuinely BETTER "
+            f"(one-sided, {args.permutations} draws, PRE-REGISTERED 2026-11-25 after periods "
+            f"1-2 both showed this bucket leading): {p_low:.4f}"
+            f"{'  <-- NOT explainable by chance at the 1% level' if p_low < 0.01 else ''}"
+        )
 
     print("\n=== (2) Trade direction vs yesterday's own close-to-close direction ===")
     summarize("WITH yesterday's trend (continuation)", aligned_pnls)
@@ -314,6 +328,18 @@ def main() -> None:
             f"    permutation p-value for 'WITH yesterday's trend' being genuinely BETTER "
             f"(one-sided, {args.permutations} draws): {p:.4f}"
             f"{'  <-- NOT explainable by chance at the 1% level' if p < 0.01 else ''}"
+        )
+    if args.permutations > 0 and flat_day_pnls and (aligned_pnls + against_pnls + flat_day_pnls):
+        # Same pre-registration note as the LOW tercile test above: the
+        # "flat prior day" bucket being best was noticed only after
+        # periods 1-2, not hypothesized beforehand.
+        all_directional = aligned_pnls + against_pnls + flat_day_pnls
+        p_flat = permutation_p_value_better(all_directional, flat_day_pnls, args.permutations, rng)
+        print(
+            f"    permutation p-value for 'flat prior day' being genuinely BETTER "
+            f"(one-sided, {args.permutations} draws, PRE-REGISTERED 2026-11-25 after periods "
+            f"1-2 both showed this bucket leading): {p_flat:.4f}"
+            f"{'  <-- NOT explainable by chance at the 1% level' if p_flat < 0.01 else ''}"
         )
 
     print(
