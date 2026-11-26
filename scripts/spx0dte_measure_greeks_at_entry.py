@@ -50,7 +50,7 @@ import argparse
 import os
 import random
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from statistics import mean
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -103,10 +103,15 @@ def estimate_vix_at(
 
 def same_day_expiry(date: str) -> datetime:
     """DST-aware 4:00pm ET close, reusing the exact production
-    constants from `live_pricing.py` -- not a new guess."""
+    constants from `live_pricing.py` -- not a new guess. Returns a
+    UTC-AWARE datetime (bug found live on the VM 2026-11-26: the
+    first version returned a naive datetime, which crashed every
+    comparison against `entry.entry_time`, a UTC-aware value from
+    `signal.find_breakout_opportunities` -- "can't subtract
+    offset-naive and offset-aware datetimes")."""
     naive = datetime.strptime(date, "%Y-%m-%d")
     close_hour = MARKET_CLOSE_UTC_HOUR_EDT if _is_us_dst(naive.month, naive.day) else MARKET_CLOSE_UTC_HOUR_EST
-    return naive.replace(hour=close_hour, minute=0, second=0)
+    return naive.replace(hour=close_hour, minute=0, second=0, tzinfo=timezone.utc)
 
 
 def tercile_buckets(tagged: list) -> dict:

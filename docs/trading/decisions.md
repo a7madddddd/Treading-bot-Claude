@@ -10751,3 +10751,26 @@ relative error of the values computed directly from the known sigma).
 STATUS: BUILT, NOT YET RUN. No exit-logic change proposed until this
 runs and agrees across independent periods (same discipline as every
 prior measurement this session).
+
+## D-0109 UPDATE — real bug found on first VM run, fixed and re-verified
+
+**Bug found live (2026-11-26):** `same_day_expiry` returned a NAIVE
+datetime (`datetime.strptime` with no tzinfo); `entry.entry_time`
+(from `signal.find_breakout_opportunities`) is UTC-AWARE. The very
+first subtraction (`expiry - entry.entry_time`) crashed immediately:
+`TypeError: can't subtract offset-naive and offset-aware datetimes`.
+
+This is exactly the kind of bug the Controller asked about on
+2026-11-25 ("did you ensure the filters were written correctly") --
+a real one, caught immediately on the first real run, not after a
+misleading result. It crashed loudly instead of silently producing a
+wrong number, which is the honest failure mode this project's
+conventions are meant to produce.
+
+**Fix:** added `tzinfo=timezone.utc` to the `.replace(...)` call;
+added the `timezone` import. Re-verified with an expanded smoke test
+that reproduces the exact failure mode from the VM traceback (subtracting
+an aware `entry_time` from the fixed `expiry`), confirmed it no longer
+raises and produces the expected `t_years` value.
+
+STATUS: fixed, re-smoke-tested, not yet re-run on real data.
