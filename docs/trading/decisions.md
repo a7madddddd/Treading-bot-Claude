@@ -10774,3 +10774,22 @@ an aware `entry_time` from the fixed `expiry`), confirmed it no longer
 raises and produces the expected `t_years` value.
 
 STATUS: fixed, re-smoke-tested, not yet re-run on real data.
+
+## D-0109 UPDATE 2 — period 1 run; entry |delta| monotonic but not yet significant, theta-burn-rate flat
+
+**Period 1 (2025-06-01..2025-12-31, skips=4, iv_solver_skips=79):**
+Cross-check: 263+263+263+79 = 868, matching the established total for
+this period across every prior measurement this session.
+
+Entry |delta|: low pf=0.8271 (losing), mid pf=1.148, high pf=1.2599 --
+clean monotonic ordering. p=0.0934 for high -- close to, but not under,
+the 5% bar, let alone this project's 1% bar.
+Entry theta-burn-rate: low pf=1.1774, mid pf=1.1799 (nearly identical),
+high pf=1.2503 -- no real separation, p=0.2532/0.7420, no significance
+in either direction.
+
+Entry |delta| is the cleanest-ordered result of this run but not yet
+significant. Second independent period required before any conclusion,
+same discipline as every prior measurement.
+
+STATUS: period 1 run. Period 2 pending.
