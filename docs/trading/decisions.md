@@ -10793,3 +10793,30 @@ significant. Second independent period required before any conclusion,
 same discipline as every prior measurement.
 
 STATUS: period 1 run. Period 2 pending.
+
+## D-0109 UPDATE 3 — period 2 run; entry |delta| HIGH tercile consistent across both periods, now significant
+
+**Period 2 (2026-01-01..2026-06-30, skips=4, iv_solver_skips=76):**
+Cross-check: 189+189+189+76 = 643, matching the established total for
+this period.
+
+Entry |delta|: low pf=1.1021, mid pf=0.6744 (now the weakest, not
+low), high pf=1.5574 -- HIGH tercile is STILL the best bucket, same
+as period 1 (pf=1.2599, p=0.0934). This period: p=0.0007 -- significant
+at the 1% level. This is the FIRST feature this entire session where
+the same tercile leads in both periods, with the p-value IMPROVING
+rather than reversing (0.0934 -> 0.0007).
+
+Entry theta-burn-rate: NOT consistent -- low pf=1.6089 (now the best,
+p=0.0003) vs period 1 where low was not distinguished and high was
+nominally best. Direction flips between periods; this metric is
+dropped from further testing per this project's standard (D-0107/
+D-0108 precedent for an inconsistent metric).
+
+Controller approved (2026-11-26, "yes") running a genuinely independent
+third period (2024 H1) to test the entry-|delta|-HIGH-tercile
+hypothesis specifically, before any conclusion -- same standard
+applied to D-0102's spreads and D-0108's prior-day-trend.
+
+STATUS: period 1-2 both show HIGH |delta| leading, improving
+significance. Period 3 (2024 H1) pending before any decision.
