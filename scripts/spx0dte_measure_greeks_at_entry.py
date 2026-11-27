@@ -210,6 +210,7 @@ def main() -> None:
     theta_burn_tagged: list = []   # (abs_theta_burn_rate, pnl)
     skip_notes = 0
     iv_solver_skips = 0
+    iv_skip_details: list = []  # (moneyness, reason) -- diagnostic, see below
 
     for i, date in enumerate(dates):
         prior_dates = [d for d in sorted_vix_dates if d < date]
@@ -292,6 +293,17 @@ def main() -> None:
                 sigma = implied_volatility(entry_price, approx_spx, strike, t_years, RISK_FREE_RATE, option_type)
             except ImpliedVolatilityError:
                 iv_solver_skips += 1
+                # 2026-11-27 (Controller-approved verification): record WHY
+                # each skip happened and WHERE in moneyness it sits, so a
+                # skip-rate difference between terciles can be checked
+                # directly instead of assumed harmless. moneyness > 0 means
+                # ITM at entry, < 0 means OTM -- if skips cluster at one
+                # extreme, they could distort which tercile a nearby
+                # surviving trade lands in.
+                moneyness = (approx_spx - strike) if option_type is OptionType.CALL else (strike - approx_spx)
+                intrinsic = max(moneyness, 0.0)
+                reason = "price_below_intrinsic" if entry_price < intrinsic else "price_above_max_producible"
+                iv_skip_details.append((moneyness, reason))
                 continue
             entry_greeks = black_scholes_greeks(approx_spx, strike, t_years, RISK_FREE_RATE, sigma, option_type)
 
@@ -304,6 +316,20 @@ def main() -> None:
             print(f"  ...{i + 1}/{len(dates)} dates processed")
 
     print(f"\nFetch/data skips: {skip_notes}, implied-vol solver skips: {iv_solver_skips}")
+    if iv_skip_details:
+        below_intrinsic = [m for m, r in iv_skip_details if r == "price_below_intrinsic"]
+        above_max = [m for m, r in iv_skip_details if r == "price_above_max_producible"]
+        itm_skips = [m for m, _ in iv_skip_details if m > 0]
+        otm_skips = [m for m, _ in iv_skip_details if m <= 0]
+        print(
+            f"  skip diagnostic (Controller-requested verification, 2026-11-27): "
+            f"below_intrinsic={len(below_intrinsic)}, above_max_producible={len(above_max)}, "
+            f"ITM_at_skip={len(itm_skips)}, OTM_at_skip={len(otm_skips)}"
+        )
+        if itm_skips:
+            print(f"    ITM skip moneyness: min={min(itm_skips):.2f} max={max(itm_skips):.2f} mean={mean(itm_skips):.2f}")
+        if otm_skips:
+            print(f"    OTM skip moneyness: min={min(otm_skips):.2f} max={max(otm_skips):.2f} mean={mean(otm_skips):.2f}")
 
     report_tercile("entry |delta|", delta_tagged, args, rng)
     report_tercile("entry theta-burn-rate (|theta|/price)", theta_burn_tagged, args, rng)

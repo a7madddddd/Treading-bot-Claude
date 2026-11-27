@@ -10820,3 +10820,34 @@ applied to D-0102's spreads and D-0108's prior-day-trend.
 
 STATUS: period 1-2 both show HIGH |delta| leading, improving
 significance. Period 3 (2024 H1) pending before any decision.
+
+## D-0109 UPDATE 4 — Controller-requested verification: do IV-solver skips bias which tercile a trade lands in?
+
+Controller declined to close D-0109 on the period-3 result alone
+("no we need to verify first", 2026-11-27) -- a legitimate concern:
+~9-12% of candidates are excluded per period because
+`implied_volatility` cannot find a solution, and if those skips
+cluster at one end of the delta spectrum (e.g. mostly deep-ITM stale
+quotes), the surviving sample's tercile boundaries could shift in a
+way that is NOT random, biasing the very comparison this script runs.
+
+Added a diagnostic to `scripts/spx0dte_measure_greeks_at_entry.py`:
+on every `ImpliedVolatilityError`, records the trade's own moneyness
+((underlying - strike) for a call, (strike - underlying) for a put --
+positive = ITM, negative = OTM at entry) and WHY it failed
+(`price_below_intrinsic` -- the classic stale-print cause -- vs
+`price_above_max_producible`, a quote too high for even sigma=5.0 to
+reach, which is a different and rarer data problem). Reports counts
+and min/max/mean moneyness for the ITM-skip and OTM-skip groups
+separately at the end of the run.
+
+Smoke-tested the classification logic against two hand-built cases
+before trusting it: a deep-ITM call with a stale below-intrinsic price
+(moneyness +50, correctly classified `price_below_intrinsic`), and a
+deep-OTM put with a near-zero price (moneyness -50, correctly NOT
+misclassified as `price_below_intrinsic` since its own intrinsic is 0).
+
+STATUS: diagnostic added, not yet re-run. Next: re-run period 3 (and
+ideally periods 1-2 too) with this diagnostic to see whether skips
+cluster at one end of moneyness before trusting the tercile
+comparison's periods 1-3 pattern.
