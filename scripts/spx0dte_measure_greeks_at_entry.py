@@ -279,18 +279,45 @@ def main() -> None:
                 continue
 
             entry_price = None
+            entry_price_time = None
             for b in sorted(bars, key=lambda b: b["t"]):
                 bt = datetime.fromisoformat(b["t"].replace("Z", "+00:00"))
                 if bt >= entry.entry_time:
                     entry_price = b["c"]
+                    entry_price_time = bt
                     break
             if entry_price is None:
                 continue
 
+            # 2026-11-27 (Controller-requested fix, D-0109 UPDATE 4
+            # diagnostic): the option's own first post-signal print can
+            # arrive several minutes AFTER entry.entry_time, especially
+            # for a thinly-traded contract right at a breakout moment --
+            # by then SPY may have moved (often reverted, per D-0104's own
+            # finding that most breakouts snap back on a 5-minute close).
+            # Using approx_spx from entry.entry_time as "S" while
+            # entry_price was actually quoted at a LATER, different
+            # underlying level produced a real, confirmed, 100%-ITM-
+            # clustered skip pattern (see decisions.md D-0109 UPDATE 4).
+            # Fix: recompute S at entry_price's OWN timestamp, not the
+            # signal's, so the price and the underlying level being
+            # compared to it are from the same moment.
+            spy_price_at_entry_bar = None
+            for sb in sorted(spy_bars, key=lambda b: b["t"]):
+                sbt = datetime.fromisoformat(sb["t"].replace("Z", "+00:00"))
+                if sbt <= entry_price_time:
+                    spy_price_at_entry_bar = sb["c"]
+                else:
+                    break
+            if spy_price_at_entry_bar is None:
+                continue
+            greeks_ratio = ratio_provider.get_ratio(now=entry_price_time)
+            greeks_s = spy_price_at_entry_bar * greeks_ratio
+
             t_years = max((expiry - entry.entry_time).total_seconds(), 1) / 86400 / 365
             option_type = OptionType.CALL if entry.direction == "call" else OptionType.PUT
             try:
-                sigma = implied_volatility(entry_price, approx_spx, strike, t_years, RISK_FREE_RATE, option_type)
+                sigma = implied_volatility(entry_price, greeks_s, strike, t_years, RISK_FREE_RATE, option_type)
             except ImpliedVolatilityError:
                 iv_solver_skips += 1
                 # 2026-11-27 (Controller-approved verification): record WHY
@@ -300,12 +327,12 @@ def main() -> None:
                 # ITM at entry, < 0 means OTM -- if skips cluster at one
                 # extreme, they could distort which tercile a nearby
                 # surviving trade lands in.
-                moneyness = (approx_spx - strike) if option_type is OptionType.CALL else (strike - approx_spx)
+                moneyness = (greeks_s - strike) if option_type is OptionType.CALL else (strike - greeks_s)
                 intrinsic = max(moneyness, 0.0)
                 reason = "price_below_intrinsic" if entry_price < intrinsic else "price_above_max_producible"
                 iv_skip_details.append((moneyness, reason))
                 continue
-            entry_greeks = black_scholes_greeks(approx_spx, strike, t_years, RISK_FREE_RATE, sigma, option_type)
+            entry_greeks = black_scholes_greeks(greeks_s, strike, t_years, RISK_FREE_RATE, sigma, option_type)
 
             pnl = result.exit_price - entry_price
             delta_tagged.append((abs(entry_greeks.delta), pnl))

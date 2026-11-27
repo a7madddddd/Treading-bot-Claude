@@ -10851,3 +10851,40 @@ STATUS: diagnostic added, not yet re-run. Next: re-run period 3 (and
 ideally periods 1-2 too) with this diagnostic to see whether skips
 cluster at one end of moneyness before trusting the tercile
 comparison's periods 1-3 pattern.
+
+## D-0109 UPDATE 5 — fixed the confirmed timing bias, re-smoke-tested before re-running
+
+Root cause confirmed: `approx_spx` (the underlying "S" fed to the IV
+solver and `black_scholes_greeks`) was computed at `entry.entry_time`
+(the signal moment), but `entry_price` (the real observed option
+print) can come from a LATER bar -- the first available print at or
+after entry_time, which for a thinly-traded 0DTE contract right at a
+breakout can be several minutes later. If SPY reverted in that gap
+(consistent with D-0104's own finding that ~79% of breakouts snap
+back on a 5-minute close), the option's real price reflects the
+REVERTED underlying level, while the stale entry_time-based S still
+reflected the spike -- producing an option price that looks "below
+intrinsic" relative to the wrong S, not a real data error. This
+explains the 100%-ITM, 6-47-point clustering found in D-0109 UPDATE 4.
+
+Fix in `scripts/spx0dte_measure_greeks_at_entry.py`: added
+`entry_price_time` (the entry-price bar's own timestamp, captured
+alongside entry_price) and recompute S ("greeks_s") from the SPY price
+AT THAT SAME TIMESTAMP, with its own `ratio_provider.get_ratio(now=
+entry_price_time)` call -- not the signal-time S. `implied_volatility`,
+`black_scholes_greeks`, and the skip-moneyness diagnostic all now use
+`greeks_s` consistently. The strike-selection `approx_spx` (used
+earlier, for `find_nearest_traded_strike`) is left UNCHANGED -- that
+one correctly reflects what a live trader would have seen at the
+signal moment, a different and still-correct use.
+
+Smoke-tested the fix directly against the exact failure mechanism:
+built a synthetic SPY series that spikes to 592.3 at the signal minute
+then reverts to 590.3 by the time the option's first real print
+arrives 4 minutes later; confirmed the new logic picks 590.3 (the
+underlying level AT the option's own print time), not the stale 592.3
+spike snapshot -- removing exactly the artificial extra moneyness that
+caused the false below-intrinsic skips.
+
+STATUS: fixed and smoke-tested. Next: re-run all three periods
+(2025 H2, 2026 H1, 2024 H1) from scratch with the corrected logic.
